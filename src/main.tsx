@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Info, Play, Plus, RefreshCw, Save, ShieldCheck, Trash2, XCircle } from 'lucide-react';
+import { Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Info, Play, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Trash2, XCircle } from 'lucide-react';
 import './styles.css';
 
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -37,6 +37,20 @@ type AppConfig = {
   providers: unknown[];
 };
 
+type ClientEnvStatus = {
+  client: string;
+  configured: boolean;
+  variables: Record<string, string>;
+  missing: string[];
+  note: string;
+};
+
+type ClientsEnvStatus = {
+  listen_url: string;
+  claude: ClientEnvStatus;
+  codex: ClientEnvStatus;
+};
+
 type ProviderForm = {
   id?: string;
   name: string;
@@ -62,6 +76,7 @@ function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>('');
@@ -69,16 +84,18 @@ function App() {
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextProviders, nextConfig, nextLogs] = await Promise.all([
+    const [nextStatus, nextProviders, nextConfig, nextLogs, nextClients] = await Promise.all([
       invoke<RuntimeStatus>('get_status'),
       invoke<ProviderView[]>('list_providers'),
       invoke<AppConfig>('get_config'),
       invoke<string[]>('read_logs', { lines: 120 }),
+      invoke<ClientsEnvStatus>('get_clients_env_status'),
     ]);
     setStatus(nextStatus);
     setProviders(nextProviders);
     setConfig(nextConfig);
     setLogs(nextLogs);
+    setClients(nextClients);
   }, []);
 
   useEffect(() => {
@@ -122,6 +139,22 @@ function App() {
     if (!status) return <span className="badge neutral">加载中</span>;
     return status.running ? <span className="badge ok">运行中</span> : <span className="badge stop">已停止</span>;
   }, [status]);
+
+  const clientCard = (client?: ClientEnvStatus) => {
+    if (!client) return null;
+    return (
+      <div className="client-card">
+        <div className="client-head">
+          <strong>{client.client}</strong>
+          <span className={client.configured ? 'badge ok' : 'badge stop'}>{client.configured ? '已接管' : '未接管'}</span>
+        </div>
+        <div className="env-list">
+          {Object.entries(client.variables).map(([name, value]) => <code key={name}>{name}={value}</code>)}
+        </div>
+        <p className="hint">{client.note}</p>
+      </div>
+    );
+  };
 
   return (
     <main className="app-shell">
@@ -185,7 +218,19 @@ function App() {
                 <span>故障转移</span>
                 <input type="checkbox" checked={Boolean(config?.failover_enabled)} onChange={(event) => run(() => invoke('set_failover', { enabled: event.target.checked }), '故障转移设置已更新')} />
               </label>
-              <div className="hint">客户端配置 Base URL：<code>{status?.listen_url}/v1</code>，API Key 可填写任意非空字符串。</div>
+              <div className="hint">OpenAI Base URL：<code>{status?.listen_url}/v1</code>；Anthropic Base URL：<code>{status?.listen_url}</code>。</div>
+            </div>
+
+            <div className="card client-panel">
+              <div className="section-title">
+                <h3>Claude / Codex 接管</h3>
+                <button className="tiny" disabled={busy} onClick={() => run(() => invoke('install_clients_env'), '已写入用户环境变量；请重新打开终端后启动 claude/codex')}><PlugZap size={14} />一键接管</button>
+              </div>
+              <div className="client-grid">
+                {clientCard(clients?.claude)}
+                {clientCard(clients?.codex)}
+              </div>
+              <p className="hint">需要先启动 SUGT 服务；环境变量写入后仅对新打开的终端生效。</p>
             </div>
 
             <div className="card log-card">

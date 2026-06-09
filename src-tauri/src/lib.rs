@@ -1,5 +1,6 @@
 pub mod app;
 pub mod autostart;
+pub mod clients;
 pub mod commands;
 pub mod config;
 pub mod gateway;

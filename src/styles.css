@@ -51,20 +51,20 @@ code { color: #8ee8ff; }
 .nav.active { border: 1px solid rgba(142, 232, 255, .3); box-shadow: inset 0 0 18px rgba(22, 241, 255, .08); }
 .sidebar-footer { margin-top: auto; display: flex; gap: 8px; align-items: center; color: #80f7c4; font-size: 13px; }
 
-.content { padding: 28px; overflow: auto; }
-.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.content { padding: 24px; overflow: auto; }
+.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .topbar h2 { margin: 0 0 6px; font-size: 28px; }
 .topbar p { margin: 0; }
 
 .card {
   border: 1px solid rgba(142, 232, 255, .16);
-  border-radius: 24px;
+  border-radius: 22px;
   background: linear-gradient(180deg, rgba(18, 29, 47, .82), rgba(8, 14, 26, .86));
   box-shadow: 0 18px 48px rgba(0, 0, 0, .28);
-  padding: 22px;
+  padding: 20px;
 }
-.grid { display: grid; gap: 18px; }
-.console-grid { grid-template-columns: 1.6fr .9fr; }
+.grid { display: grid; gap: 16px; }
+.console-grid { grid-template-columns: minmax(0, 1.25fr) minmax(360px, .9fr); }
 .log-card { grid-column: 1 / -1; }
 .hero-title { display: flex; align-items: center; gap: 14px; }
 .hero-title h3, .card h3 { margin: 0 0 4px; }
@@ -73,9 +73,9 @@ code { color: #8ee8ff; }
 .badge.ok { background: rgba(10, 255, 157, .16); color: #80f7c4; }
 .badge.stop { background: rgba(255, 98, 127, .16); color: #ff95a7; }
 .badge.neutral { background: rgba(255, 255, 255, .1); color: #d3dce7; }
-.metric-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 22px 0; }
-.metric { padding: 16px; border-radius: 18px; background: rgba(255, 255, 255, .045); display: flex; flex-direction: column; gap: 8px; }
-.metric strong { font-size: 16px; overflow: hidden; text-overflow: ellipsis; }
+.metric-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
+.metric { min-width: 0; padding: 15px; border-radius: 18px; background: rgba(255, 255, 255, .045); display: flex; flex-direction: column; gap: 8px; }
+.metric strong { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .primary { background: linear-gradient(135deg, #12dfff, #6d5cff); padding: 12px 18px; font-weight: 700; }
 .danger { background: linear-gradient(135deg, #ff4d6d, #ff8754); padding: 12px 18px; font-weight: 700; }
@@ -89,8 +89,15 @@ button:not(:disabled):hover { transform: translateY(-1px); }
 .switch-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .switch-line input { width: 42px; height: 22px; accent-color: #16f1ff; }
 .hint { color: #a8bbcd; font-size: 13px; line-height: 1.6; }
+.client-panel { grid-column: 1 / -1; }
+.client-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.client-card { padding: 14px; border-radius: 18px; background: rgba(255,255,255,.045); min-width: 0; }
+.client-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.client-head .badge { margin-left: 0; }
+.env-list { display: flex; flex-direction: column; gap: 7px; }
+.env-list code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-card pre {
-  height: 310px; margin: 12px 0 0; padding: 16px; overflow: auto; border-radius: 18px;
+  height: 260px; margin: 12px 0 0; padding: 16px; overflow: auto; border-radius: 18px;
   background: #03070d; color: #9df7d4; font-size: 12px; line-height: 1.55;
   border: 1px solid rgba(142, 232, 255, .12);
 }
@@ -127,5 +134,5 @@ button:not(:disabled):hover { transform: translateY(-1px); }
   .brand h1, .brand span, .nav:not(.active), .sidebar-footer span { display: none; }
   .brand { justify-content: center; }
   .nav { justify-content: center; padding: 14px; }
-  .console-grid, .models-layout, .about-grid { grid-template-columns: 1fr; }
+  .console-grid, .models-layout, .about-grid, .client-grid { grid-template-columns: 1fr; }
 }

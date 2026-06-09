@@ -1,4 +1,4 @@
-use crate::{autostart, config::{self, AppPaths}, gateway::{self, GatewayState}, model::{AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, RuntimeStatus}};
+use crate::{autostart, clients::{self, ClientsEnvStatus}, config::{self, AppPaths}, gateway::{self, GatewayState}, model::{AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, RuntimeStatus}};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -143,6 +143,19 @@ pub async fn get_config(runtime: State<'_, AppRuntime>) -> Result<AppConfig, Str
 #[tauri::command]
 pub async fn open_config_dir(runtime: State<'_, AppRuntime>) -> Result<(), String> {
     open_path(&runtime.paths.config_dir).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_clients_env_status(runtime: State<'_, AppRuntime>) -> Result<ClientsEnvStatus, String> {
+    let config = runtime.config.read().await.clone();
+    Ok(clients::status(&config))
+}
+
+#[tauri::command]
+pub async fn install_clients_env(runtime: State<'_, AppRuntime>) -> Result<ClientsEnvStatus, String> {
+    let config = runtime.config.read().await.clone();
+    clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
+    clients::install(&config).map_err(|err| err.to_string())
 }
 
 fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {

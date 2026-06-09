@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use sugt_lib::{config, gateway::GatewayState, logging, model::ProviderConfig};
+use sugt_lib::{clients, config, gateway::GatewayState, logging, model::ProviderConfig};
 use tokio::signal;
 
 #[derive(Parser)]
@@ -28,6 +28,17 @@ enum Command {
         port: Option<u16>,
     },
     Test,
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnvCommand {
+    Status,
+    Install,
+    Print,
 }
 
 #[tokio::main]
@@ -76,7 +87,33 @@ async fn main() -> Result<()> {
                 println!("{}: {:?}", provider.name, status);
             }
         }
+        Command::Env { command } => {
+            let (paths, app_config) = config::load_or_init_config()?;
+            match command {
+                EnvCommand::Status => print_env_status(&clients::status(&app_config)),
+                EnvCommand::Install => {
+                    clients::write_launch_scripts(&paths, &app_config)?;
+                    let status = clients::install(&app_config)?;
+                    print_env_status(&status);
+                    println!("launch_scripts={}", paths.config_dir.display());
+                }
+                EnvCommand::Print => print!("{}", clients::print_launch_script(&app_config)),
+            }
+        }
     }
 
     Ok(())
+}
+
+fn print_env_status(status: &clients::ClientsEnvStatus) {
+    println!("listen_url={}", status.listen_url);
+    for client in [&status.claude, &status.codex] {
+        println!("{} configured={}", client.client, client.configured);
+        for (name, value) in &client.variables {
+            println!("  {}={}", name, value);
+        }
+        if !client.missing.is_empty() {
+            println!("  missing={}", client.missing.join(","));
+        }
+    }
 }

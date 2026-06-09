@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "SUGT - su gateway",
-        "width": 1120,
-        "height": 760,
-        "minWidth": 960,
-        "minHeight": 640,
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1180,
+        "minHeight": 760,
         "resizable": true,
         "visible": true,
         "skipTaskbar": true
