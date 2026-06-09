@@ -57,7 +57,7 @@ impl GatewayState {
 
     pub async fn start(&self) -> Result<String> {
         let (host, port) = {
-            let mut inner = self.inner.write().await;
+            let inner = self.inner.write().await;
             if inner.running {
                 return Ok(format!("http://{}:{}", inner.config.host, inner.config.port));
             }
@@ -182,7 +182,7 @@ async fn proxy_openai(State(state): State<GatewayState>, headers: HeaderMap, req
 }
 
 async fn proxy_request(state: GatewayState, headers: HeaderMap, request: Request<Body>) -> Result<Response<Body>> {
-    let path = request.uri().path().trim_start_matches('/');
+    let path = request.uri().path().trim_start_matches('/').to_string();
     let query = request.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
     let method = request.method().clone();
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
@@ -194,7 +194,7 @@ async fn proxy_request(state: GatewayState, headers: HeaderMap, request: Request
 
     let mut last_error = None;
     for provider in providers {
-        let target = format!("{}/{}{}", provider.base_url, path, query);
+        let target = build_target_url(&provider.base_url, &path, &query);
         let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
         let mut builder = state.client.request(method.clone(), &target);
         builder = copy_headers(builder, &headers, &provider.api_key)?;
@@ -244,6 +244,12 @@ fn select_provider(config: &AppConfig) -> Option<&ProviderConfig> {
         }
     }
     config.providers.iter().find(|provider| provider.enabled)
+}
+
+fn build_target_url(base_url: &str, path: &str, query: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let path = path.strip_prefix("v1/").unwrap_or(path).trim_start_matches('/');
+    format!("{}/{}{}", base, path, query)
 }
 
 fn rewrite_model(body: Bytes, model_name: &str) -> Bytes {
@@ -307,20 +313,6 @@ fn json_error(status: StatusCode, message: &str) -> Response<Body> {
 }
 
 pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
-    let models_url = format!("{}/models", provider.base_url);
-    let response = client
-        .get(models_url)
-        .bearer_auth(&provider.api_key)
-        .timeout(Duration::from_secs(12))
-        .send()
-        .await;
-
-    match response {
-        Ok(resp) if resp.status().is_success() => return Ok(()),
-        Ok(resp) => warn!(provider = %provider.name, status = %resp.status(), "models endpoint test failed; trying chat completion"),
-        Err(err) => warn!(provider = %provider.name, error = %err, "models endpoint unavailable; trying chat completion"),
-    }
-
     let chat_url = format!("{}/chat/completions", provider.base_url);
     let response = client
         .post(chat_url)
@@ -336,9 +328,18 @@ pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig
         .await?;
 
     if response.status().is_success() {
-        Ok(())
-    } else {
-        bail!("连接测试失败，HTTP {}", response.status())
+        return Ok(());
+    }
+
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    warn!(provider = %provider.name, %status, body = %text, "chat completion test failed");
+
+    let models_url = format!("{}/models", provider.base_url);
+    match client.get(models_url).bearer_auth(&provider.api_key).timeout(Duration::from_secs(12)).send().await {
+        Ok(resp) if resp.status().is_success() => bail!("聊天接口不可用，HTTP {}；models 接口可访问", status),
+        Ok(resp) => bail!("聊天接口不可用，HTTP {}；models 接口 HTTP {}", status, resp.status()),
+        Err(err) => bail!("聊天接口不可用，HTTP {}；models 接口请求失败: {}", status, err),
     }
 }
 
@@ -358,6 +359,12 @@ mod tests {
         let rewritten = rewrite_model(body, "new-model");
         let value: Value = serde_json::from_slice(&rewritten).unwrap();
         assert_eq!(value["model"], "new-model");
+    }
+
+    #[test]
+    fn maps_local_v1_path_to_provider_base() {
+        let target = build_target_url("https://example.com/v1", "v1/chat/completions", "?x=1");
+        assert_eq!(target, "https://example.com/v1/chat/completions?x=1");
     }
 
     #[test]

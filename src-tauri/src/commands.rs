@@ -1,7 +1,7 @@
 use crate::{autostart, config::{self, AppPaths}, gateway::{self, GatewayState}, model::{AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, RuntimeStatus}};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
 
 #[derive(Clone)]

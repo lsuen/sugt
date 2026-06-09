@@ -6,10 +6,12 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let stop = MenuItem::with_id(app, "stop", "停止服务", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &start, &stop, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("sugt-tray").tooltip("SUGT - su gateway");
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
 
-    TrayIconBuilder::with_id("sugt-tray")
-        .tooltip("SUGT - su gateway")
-        .icon(app.default_window_icon().cloned().unwrap_or_default())
+    builder
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {

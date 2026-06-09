@@ -9,8 +9,8 @@
 .env
 .env.*
 *.local
-/.qwen/tmp
-/.qwen/scripts/tmp
+/.qwen/
+/release/
 /sensitive
 *.key
 *.pem
