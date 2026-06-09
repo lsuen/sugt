@@ -1,5 +1,5 @@
 use crate::{commands, logging, tray};
-use tauri::{Manager, WindowEvent};
+use tauri::WindowEvent;
 use tracing::error;
 
 pub fn run() {
@@ -26,9 +26,6 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::setup(app)?;
-            if let Some(window) = app.get_webview_window("main") {
-                window.hide()?;
-            }
             Ok(())
         })
         .on_window_event(|window, event| match event {
