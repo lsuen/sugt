@@ -2,6 +2,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderProtocol {
+    #[default]
+    #[serde(alias = "open_ai", alias = "OpenAi", alias = "OpenAI")]
+    OpenAi,
+    Anthropic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderStatus {
     Unknown,
@@ -17,6 +26,8 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key: String,
     pub model_name: String,
+    #[serde(default)]
+    pub protocol: ProviderProtocol,
     pub enabled: bool,
     pub status: ProviderStatus,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -24,7 +35,13 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    pub fn new(name: impl Into<String>, provider: impl Into<String>, base_url: impl Into<String>, api_key: impl Into<String>, model_name: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        provider: impl Into<String>,
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model_name: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
@@ -32,6 +49,7 @@ impl ProviderConfig {
             base_url: trim_base_url(base_url.into()),
             api_key: api_key.into(),
             model_name: model_name.into(),
+            protocol: ProviderProtocol::OpenAi,
             enabled: true,
             status: ProviderStatus::Unknown,
             last_checked_at: None,
@@ -75,6 +93,20 @@ pub struct RuntimeStatus {
     pub active_provider: Option<String>,
     pub config_dir: String,
     pub log_file: String,
+    pub trial: TrialStatusView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialStatusView {
+    pub edition: String,
+    pub trial_enabled: bool,
+    pub valid: bool,
+    pub status: String,
+    pub message: String,
+    pub build_id: String,
+    pub expires_at: Option<String>,
+    pub expires_date: Option<String>,
+    pub days_remaining: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +117,8 @@ pub struct ProviderInput {
     pub base_url: String,
     pub api_key: String,
     pub model_name: String,
+    #[serde(default)]
+    pub protocol: ProviderProtocol,
     pub enabled: bool,
 }
 
@@ -96,6 +130,7 @@ pub struct ProviderView {
     pub base_url: String,
     pub api_key_masked: String,
     pub model_name: String,
+    pub protocol: ProviderProtocol,
     pub enabled: bool,
     pub status: ProviderStatus,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -111,6 +146,7 @@ impl From<&ProviderConfig> for ProviderView {
             base_url: value.base_url.clone(),
             api_key_masked: value.masked_key(),
             model_name: value.model_name.clone(),
+            protocol: value.protocol.clone(),
             enabled: value.enabled,
             status: value.status.clone(),
             last_checked_at: value.last_checked_at,
@@ -131,9 +167,71 @@ pub fn trim_base_url(mut base_url: String) -> String {
     base_url
 }
 
+/// 按协议规范化 Base URL（魔搭 OpenAI 需 /v1，Anthropic 原生通常不带 /v1）
+pub fn normalize_base_url_for_protocol(base_url: String, protocol: &ProviderProtocol) -> String {
+    let base = trim_base_url(base_url);
+    match protocol {
+        ProviderProtocol::OpenAi => {
+            if base.ends_with("/v1") {
+                base
+            } else {
+                format!("{}/v1", base)
+            }
+        }
+        ProviderProtocol::Anthropic => base,
+    }
+}
+
 pub fn mask_secret(secret: &str) -> String {
     if secret.len() <= 8 {
         return "********".to_string();
     }
     format!("{}****{}", &secret[..4], &secret[secret.len() - 4..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserializes_protocol_aliases() {
+        assert_eq!(
+            serde_json::from_str::<ProviderProtocol>(r#""openai""#).unwrap(),
+            ProviderProtocol::OpenAi
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderProtocol>(r#""open_ai""#).unwrap(),
+            ProviderProtocol::OpenAi
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderProtocol>(r#""anthropic""#).unwrap(),
+            ProviderProtocol::Anthropic
+        );
+    }
+
+    #[test]
+    fn serializes_protocol_as_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ProviderProtocol::OpenAi).unwrap(),
+            r#""openai""#
+        );
+    }
+
+    #[test]
+    fn normalizes_openai_base_url() {
+        let url = normalize_base_url_for_protocol(
+            "https://api-inference.modelscope.cn".into(),
+            &ProviderProtocol::OpenAi,
+        );
+        assert_eq!(url, "https://api-inference.modelscope.cn/v1");
+    }
+
+    #[test]
+    fn keeps_anthropic_base_without_v1() {
+        let url = normalize_base_url_for_protocol(
+            "https://api-inference.modelscope.cn".into(),
+            &ProviderProtocol::Anthropic,
+        );
+        assert_eq!(url, "https://api-inference.modelscope.cn");
+    }
 }

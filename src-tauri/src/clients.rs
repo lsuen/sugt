@@ -28,15 +28,35 @@ pub fn status(config: &AppConfig) -> ClientsEnvStatus {
 
     ClientsEnvStatus {
         listen_url,
-        claude: client_status("Claude Code", claude_expected, "Claude Code 新终端读取 ANTHROPIC_BASE_URL 与 Anthropic Key 变量后走 SUGT 的 Anthropic 兼容层。"),
-        codex: client_status("Codex", codex_expected, "Codex 新终端读取 OPENAI_BASE_URL/OPENAI_API_KEY 后走 SUGT 的 OpenAI 兼容层。"),
+        claude: client_status(
+            "Claude Code",
+            claude_expected,
+            "Anthropic 协议，重启终端后生效",
+        ),
+        codex: client_status("Codex", codex_expected, "OpenAI 协议，重启终端后生效"),
     }
 }
 
 pub fn install(config: &AppConfig) -> Result<ClientsEnvStatus> {
     let listen_url = listen_url(config);
-    for (name, value) in claude_vars(&listen_url).into_iter().chain(codex_vars(&listen_url)) {
+    for (name, value) in claude_vars(&listen_url)
+        .into_iter()
+        .chain(codex_vars(&listen_url))
+    {
         set_user_env(&name, &value)?;
+    }
+    Ok(status(config))
+}
+
+pub fn uninstall(config: &AppConfig) -> Result<ClientsEnvStatus> {
+    let listen_url = listen_url(config);
+    for (name, expected) in claude_vars(&listen_url)
+        .into_iter()
+        .chain(codex_vars(&listen_url))
+    {
+        if std::env::var(&name).unwrap_or_default() == expected {
+            unset_user_env(&name)?;
+        }
     }
     Ok(status(config))
 }
@@ -118,9 +138,13 @@ fn mask_env_value(name: &str, value: &str) -> String {
 
 #[cfg(windows)]
 fn set_user_env(name: &str, value: &str) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
     let status = std::process::Command::new("setx")
         .arg(name)
         .arg(value)
+        .creation_flags(CREATE_NO_WINDOW)
         .status()?;
     if status.success() {
         std::env::set_var(name, value);
@@ -130,7 +154,31 @@ fn set_user_env(name: &str, value: &str) -> Result<()> {
     }
 }
 
+#[cfg(windows)]
+fn unset_user_env(name: &str) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let status = std::process::Command::new("reg")
+        .args(["delete", r"HKCU\Environment", "/v", name, "/f"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if status.success() {
+        std::env::remove_var(name);
+        Ok(())
+    } else {
+        Err(anyhow!("删除用户环境变量 {} 失败", name))
+    }
+}
+
 #[cfg(not(windows))]
 fn set_user_env(_name: &str, _value: &str) -> Result<()> {
-    Err(anyhow!("当前平台暂不支持自动写入用户环境变量，请使用 sugt-cli env print 输出临时启动变量"))
+    Err(anyhow!(
+        "当前平台暂不支持自动写入用户环境变量，请使用 sugt-cli env print 输出临时启动变量"
+    ))
+}
+
+#[cfg(not(windows))]
+fn unset_user_env(_name: &str) -> Result<()> {
+    Err(anyhow!("当前平台暂不支持自动删除用户环境变量"))
 }

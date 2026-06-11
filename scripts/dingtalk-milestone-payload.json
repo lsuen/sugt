@@ -1,0 +1,16 @@
+{
+  "title": "网关与体验优化",
+  "milestone": "Claude Code 流式转发 + Anthropic 原生协议 + UI 优化",
+  "newFiles": ["src-tauri/src/anthropic_adapter.rs"],
+  "modifiedFiles": [
+    { "path": "src-tauri/src/gateway.rs", "change": "流式 SSE 双向转换；Anthropic 原生优先；超时/keepalive 增强" },
+    { "path": "src-tauri/src/model.rs", "change": "ProviderProtocol 枚举 openai/anthropic" },
+    { "path": "src-tauri/src/clients.rs", "change": "setx 静默无黑窗；接管描述精简" },
+    { "path": "src/main.tsx", "change": "协议选择器；接管面板简化；响应式" },
+    { "path": "src/styles.css", "change": "clamp 响应式布局" },
+    { "path": "src-tauri/tauri.conf.json", "change": "1080x720；backgroundColor；启动隐藏" }
+  ],
+  "logicSummary": "根因：Claude Code 流式请求收到 OpenAI SSE 导致卡住\n修复：OpenAI SSE 实时转 Anthropic SSE 事件流\n模型可配 Anthropic Native 直连 /v1/messages\n未配置则走 OpenAI 适配层自动转换（含 tool_use）",
+  "testResult": "cargo test 9/9 通过；npm run check + build 通过",
+  "emoji": "✅"
+}

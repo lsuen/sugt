@@ -1,0 +1,8 @@
+{
+  "defaultTrialDays": 30,
+  "defaultTrialExpiresAt": null,
+  "buildTrialByDefault": true,
+  "buildSelfByDefault": true,
+  "defaultTarget": "all",
+  "createZipByDefault": true
+}

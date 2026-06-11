@@ -1,3 +1,4 @@
+pub mod anthropic_adapter;
 pub mod app;
 pub mod autostart;
 pub mod clients;
@@ -7,5 +8,6 @@ pub mod gateway;
 pub mod logging;
 pub mod model;
 pub mod tray;
+pub mod trial;
 
 pub use app::run;

@@ -1,5 +1,5 @@
 use crate::{commands, logging, tray};
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 use tracing::error;
 
 pub fn run() {
@@ -17,6 +17,7 @@ pub fn run() {
             commands::save_provider,
             commands::delete_provider,
             commands::set_active_provider,
+            commands::set_provider_enabled,
             commands::test_provider,
             commands::set_failover,
             commands::set_autostart,
@@ -25,9 +26,14 @@ pub fn run() {
             commands::open_config_dir,
             commands::get_clients_env_status,
             commands::install_clients_env,
+            commands::uninstall_clients_env,
         ])
         .setup(|app| {
             tray::setup(app)?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             Ok(())
         })
         .on_window_event(|window, event| match event {

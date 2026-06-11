@@ -8,7 +8,18 @@
     "build": "tsc && vite build",
     "tauri": "tauri",
     "tauri:build": "tauri build",
-    "check": "tsc --noEmit"
+    "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",
+    "package:release:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self -Zip",
+    "package:release:trial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30",
+    "package:release:trial:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30 -Zip",
+    "package:release:self": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",
+    "package:release:self:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self -Zip",
+    "package:release:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-all.ps1",
+    "package:release:all:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-all.ps1 -Zip",
+    "package:release:wizard": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-wizard.ps1",
+    "package:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30 -Test",
+    "test:connectivity": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-connectivity.ps1",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
@@ -20,6 +31,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.0",
     "@tauri-apps/cli-win32-x64-msvc": "^2.9.0",
+    "@types/node": "^25.9.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

@@ -387,6 +387,108 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the delete_provider command",
+          "type": "string",
+          "const": "allow-delete-provider",
+          "markdownDescription": "Enables the delete_provider command"
+        },
+        {
+          "description": "Enables the get_clients_env_status command",
+          "type": "string",
+          "const": "allow-get-clients-env-status",
+          "markdownDescription": "Enables the get_clients_env_status command"
+        },
+        {
+          "description": "Enables the get_config command",
+          "type": "string",
+          "const": "allow-get-config",
+          "markdownDescription": "Enables the get_config command"
+        },
+        {
+          "description": "Enables the get_status command",
+          "type": "string",
+          "const": "allow-get-status",
+          "markdownDescription": "Enables the get_status command"
+        },
+        {
+          "description": "Enables the install_clients_env command",
+          "type": "string",
+          "const": "allow-install-clients-env",
+          "markdownDescription": "Enables the install_clients_env command"
+        },
+        {
+          "description": "Enables the list_providers command",
+          "type": "string",
+          "const": "allow-list-providers",
+          "markdownDescription": "Enables the list_providers command"
+        },
+        {
+          "description": "Enables the open_config_dir command",
+          "type": "string",
+          "const": "allow-open-config-dir",
+          "markdownDescription": "Enables the open_config_dir command"
+        },
+        {
+          "description": "Enables the read_logs command",
+          "type": "string",
+          "const": "allow-read-logs",
+          "markdownDescription": "Enables the read_logs command"
+        },
+        {
+          "description": "Enables the save_provider command",
+          "type": "string",
+          "const": "allow-save-provider",
+          "markdownDescription": "Enables the save_provider command"
+        },
+        {
+          "description": "Enables the set_active_provider command",
+          "type": "string",
+          "const": "allow-set-active-provider",
+          "markdownDescription": "Enables the set_active_provider command"
+        },
+        {
+          "description": "Enables the set_autostart command",
+          "type": "string",
+          "const": "allow-set-autostart",
+          "markdownDescription": "Enables the set_autostart command"
+        },
+        {
+          "description": "Enables the set_failover command",
+          "type": "string",
+          "const": "allow-set-failover",
+          "markdownDescription": "Enables the set_failover command"
+        },
+        {
+          "description": "Enables the set_provider_enabled command",
+          "type": "string",
+          "const": "allow-set-provider-enabled",
+          "markdownDescription": "Enables the set_provider_enabled command"
+        },
+        {
+          "description": "Enables the start_gateway command",
+          "type": "string",
+          "const": "allow-start-gateway",
+          "markdownDescription": "Enables the start_gateway command"
+        },
+        {
+          "description": "Enables the stop_gateway command",
+          "type": "string",
+          "const": "allow-stop-gateway",
+          "markdownDescription": "Enables the stop_gateway command"
+        },
+        {
+          "description": "Enables the test_provider command",
+          "type": "string",
+          "const": "allow-test-provider",
+          "markdownDescription": "Enables the test_provider command"
+        },
+        {
+          "description": "Enables the uninstall_clients_env command",
+          "type": "string",
+          "const": "allow-uninstall-clients-env",
+          "markdownDescription": "Enables the uninstall_clients_env command"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

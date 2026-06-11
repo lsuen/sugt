@@ -1,0 +1,84 @@
+[[permission]]
+identifier = "allow-get-status"
+description = "Enables the get_status command"
+commands.allow = ["get_status"]
+
+[[permission]]
+identifier = "allow-start-gateway"
+description = "Enables the start_gateway command"
+commands.allow = ["start_gateway"]
+
+[[permission]]
+identifier = "allow-stop-gateway"
+description = "Enables the stop_gateway command"
+commands.allow = ["stop_gateway"]
+
+[[permission]]
+identifier = "allow-list-providers"
+description = "Enables the list_providers command"
+commands.allow = ["list_providers"]
+
+[[permission]]
+identifier = "allow-save-provider"
+description = "Enables the save_provider command"
+commands.allow = ["save_provider"]
+
+[[permission]]
+identifier = "allow-delete-provider"
+description = "Enables the delete_provider command"
+commands.allow = ["delete_provider"]
+
+[[permission]]
+identifier = "allow-set-active-provider"
+description = "Enables the set_active_provider command"
+commands.allow = ["set_active_provider"]
+
+[[permission]]
+identifier = "allow-test-provider"
+description = "Enables the test_provider command"
+commands.allow = ["test_provider"]
+
+[[permission]]
+identifier = "allow-set-failover"
+description = "Enables the set_failover command"
+commands.allow = ["set_failover"]
+
+[[permission]]
+identifier = "allow-set-autostart"
+description = "Enables the set_autostart command"
+commands.allow = ["set_autostart"]
+
+[[permission]]
+identifier = "allow-read-logs"
+description = "Enables the read_logs command"
+commands.allow = ["read_logs"]
+
+[[permission]]
+identifier = "allow-get-config"
+description = "Enables the get_config command"
+commands.allow = ["get_config"]
+
+[[permission]]
+identifier = "allow-open-config-dir"
+description = "Enables the open_config_dir command"
+commands.allow = ["open_config_dir"]
+
+[[permission]]
+identifier = "allow-get-clients-env-status"
+description = "Enables the get_clients_env_status command"
+commands.allow = ["get_clients_env_status"]
+
+[[permission]]
+identifier = "allow-install-clients-env"
+description = "Enables the install_clients_env command"
+commands.allow = ["install_clients_env"]
+
+[[permission]]
+identifier = "allow-uninstall-clients-env"
+description = "Enables the uninstall_clients_env command"
+commands.allow = ["uninstall_clients_env"]
+
+[[permission]]
+identifier = "allow-set-provider-enabled"
+description = "Enables the set_provider_enabled command"
+commands.allow = ["set_provider_enabled"]

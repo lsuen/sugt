@@ -1,0 +1,11 @@
+{
+  "title": "中文编码修复",
+  "milestone": "修复钉钉通知中文乱码",
+  "newFiles": ["scripts/dingtalk-notify.ps1", "scripts/dingtalk-payload.example.json"],
+  "modifiedFiles": [
+    { "path": "scripts/dingtalk-notify.ps1", "change": "改用手动 UTF-8 JSON 构建，新增 PayloadFile 模式" }
+  ],
+  "logicSummary": "强制 chcp 65001 + UTF-8 读写\n弃用 ConvertTo-Json，保留中文原文字符\n推荐通过 UTF-8 JSON 文件传参，避免命令行编码问题",
+  "testResult": "请确认本条通知中文显示正常",
+  "emoji": "🔔"
+}

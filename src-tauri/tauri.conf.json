@@ -12,13 +12,17 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "SUGT - su gateway",
-        "width": 1320,
-        "height": 860,
-        "minWidth": 1180,
-        "minHeight": 760,
+        "width": 1040,
+        "height": 680,
+        "minWidth": 960,
+        "minHeight": 640,
+        "maxWidth": 1200,
+        "maxHeight": 820,
         "resizable": true,
-        "visible": true,
+        "visible": false,
+        "backgroundColor": "#070b14",
         "skipTaskbar": true
       }
     ],

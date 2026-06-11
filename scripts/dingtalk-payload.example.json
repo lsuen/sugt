@@ -1,0 +1,11 @@
+{
+  "title": "模块名称",
+  "milestone": "完成的最小可测节点",
+  "newFiles": ["src/foo.rs", "src/bar.rs"],
+  "modifiedFiles": [
+    { "path": "src/gateway.rs", "change": "新增 /health 路由处理逻辑" }
+  ],
+  "logicSummary": "第一行业务说明\n第二行逻辑说明",
+  "testResult": "cargo test 通过",
+  "emoji": "🔔"
+}

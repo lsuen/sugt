@@ -7,13 +7,27 @@ pub fn set_enabled(enabled: bool, exe_path: &Path) -> Result<()> {
     let name = "SUGT";
     let status = if enabled {
         Command::new("reg")
-            .args(["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", name, "/t", "REG_SZ", "/d"])
+            .args([
+                "add",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v",
+                name,
+                "/t",
+                "REG_SZ",
+                "/d",
+            ])
             .arg(format!("\"{}\"", exe_path.display()))
             .args(["/f"])
             .status()?
     } else {
         Command::new("reg")
-            .args(["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", name, "/f"])
+            .args([
+                "delete",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v",
+                name,
+                "/f",
+            ])
             .status()?
     };
 
