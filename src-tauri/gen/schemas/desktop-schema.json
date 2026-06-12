@@ -459,6 +459,12 @@
           "markdownDescription": "Enables the set_autostart command"
         },
         {
+          "description": "Enables the set_autostart_gateway command",
+          "type": "string",
+          "const": "allow-set-autostart-gateway",
+          "markdownDescription": "Enables the set_autostart_gateway command"
+        },
+        {
           "description": "Enables the set_failover command",
           "type": "string",
           "const": "allow-set-failover",
@@ -469,6 +475,12 @@
           "type": "string",
           "const": "allow-set-provider-enabled",
           "markdownDescription": "Enables the set_provider_enabled command"
+        },
+        {
+          "description": "Enables the set_quit_behavior command",
+          "type": "string",
+          "const": "allow-set-quit-behavior",
+          "markdownDescription": "Enables the set_quit_behavior command"
         },
         {
           "description": "Enables the start_gateway command",
