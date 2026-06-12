@@ -1,5 +1,6 @@
-use crate::{commands, logging, tray};
-use tauri::{Manager, WindowEvent};
+use crate::commands::{self, AppRuntime};
+use crate::{logging, tray};
+use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
@@ -20,6 +21,8 @@ pub fn run() {
             commands::test_provider,
             commands::set_failover,
             commands::set_autostart,
+            commands::set_autostart_gateway,
+            commands::set_quit_behavior,
             commands::read_logs,
             commands::get_config,
             commands::open_config_dir,
@@ -30,6 +33,13 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::setup(app)?;
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(runtime) = handle.try_state::<AppRuntime>() {
+                    commands::maybe_autostart_gateway(&runtime).await;
+                    let _ = handle.emit("sugt://status-changed", ());
+                }
+            });
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(false);
                 let _ = window.show();

@@ -4,7 +4,8 @@ use crate::{
     config::{self, AppPaths},
     gateway::{self, GatewayState},
     model::{
-        AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, RuntimeStatus,
+        AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, QuitBehavior,
+        RuntimeStatus,
     },
     trial,
 };
@@ -217,6 +218,71 @@ pub async fn set_autostart(
 }
 
 #[tauri::command]
+pub async fn set_autostart_gateway(
+    runtime: State<'_, AppRuntime>,
+    enabled: bool,
+) -> Result<(), String> {
+    runtime.config.write().await.autostart_gateway = enabled;
+    runtime.persist().await.map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn set_quit_behavior(
+    runtime: State<'_, AppRuntime>,
+    behavior: QuitBehavior,
+) -> Result<(), String> {
+    runtime.config.write().await.quit_behavior = behavior;
+    runtime.persist().await.map_err(|err| err.to_string())
+}
+
+pub async fn apply_quit_behavior(runtime: &AppRuntime) -> Result<(), String> {
+    let config = runtime.config.read().await.clone();
+    match config.quit_behavior {
+        QuitBehavior::ExitOnly => {}
+        QuitBehavior::StopGateway => {
+            runtime.gateway.stop().await.map_err(|err| err.to_string())?;
+        }
+        QuitBehavior::StopAll => {
+            runtime.gateway.stop().await.map_err(|err| err.to_string())?;
+            clients::uninstall(&config).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
+    let config = runtime.config.read().await.clone();
+    if !config.autostart_gateway || runtime.gateway.is_running().await {
+        return;
+    }
+    if trial::ensure_allowed(&runtime.paths).is_err() {
+        return;
+    }
+    let _ = runtime.gateway.start().await;
+}
+
+async fn ensure_gateway_for_takeover(
+    runtime: &AppRuntime,
+    auto_start: bool,
+) -> Result<(), String> {
+    if runtime.gateway.is_running().await {
+        return Ok(());
+    }
+    if auto_start {
+        trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
+        runtime
+            .gateway
+            .start()
+            .await
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    Err(
+        "gateway_not_running:本地网关未运行，请先启动网关或点击「启动网关并接管」".to_string(),
+    )
+}
+
+#[tauri::command]
 pub async fn read_logs(
     runtime: State<'_, AppRuntime>,
     lines: usize,
@@ -245,7 +311,9 @@ pub async fn get_clients_env_status(
 #[tauri::command]
 pub async fn repair_clients_env(
     runtime: State<'_, AppRuntime>,
+    auto_start: Option<bool>,
 ) -> Result<ClientsEnvStatus, String> {
+    ensure_gateway_for_takeover(&runtime, auto_start.unwrap_or(false)).await?;
     let config = runtime.config.read().await.clone();
     clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
     clients::repair(&config).map_err(|err| err.to_string())
@@ -254,7 +322,9 @@ pub async fn repair_clients_env(
 #[tauri::command]
 pub async fn install_clients_env(
     runtime: State<'_, AppRuntime>,
+    auto_start: Option<bool>,
 ) -> Result<ClientsEnvStatus, String> {
+    ensure_gateway_for_takeover(&runtime, auto_start.unwrap_or(false)).await?;
     let config = runtime.config.read().await.clone();
     clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
     clients::install(&config).map_err(|err| err.to_string())

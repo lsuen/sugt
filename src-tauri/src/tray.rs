@@ -90,6 +90,11 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                     }
                     "install_clients" => {
                         if let Some(runtime) = app.try_state::<AppRuntime>() {
+                            if !runtime.gateway.is_running().await
+                                && trial::ensure_allowed(&runtime.paths).is_ok()
+                            {
+                                let _ = runtime.gateway.start().await;
+                            }
                             let config = runtime.config.read().await.clone();
                             let _ = clients::write_launch_scripts(&runtime.paths, &config);
                             let _ = clients::install(&config);
@@ -111,7 +116,12 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                     "refresh" => {
                         let _ = app.emit("sugt://status-changed", ());
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        if let Some(runtime) = app.try_state::<AppRuntime>() {
+                            let _ = crate::commands::apply_quit_behavior(&runtime).await;
+                        }
+                        app.exit(0);
+                    }
                     _ => {}
                 }
                 let _ = update_menu(&app).await;

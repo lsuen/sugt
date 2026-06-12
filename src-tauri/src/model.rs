@@ -62,6 +62,18 @@ impl ProviderConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QuitBehavior {
+    /// 仅退出程序，网关与接管保持不变
+    #[default]
+    ExitOnly,
+    /// 退出并停止网关，保留接管环境变量
+    StopGateway,
+    /// 退出、停止网关并关闭接管
+    StopAll,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub host: String,
@@ -70,6 +82,10 @@ pub struct AppConfig {
     pub active_provider_id: Option<String>,
     pub providers: Vec<ProviderConfig>,
     pub autostart: bool,
+    #[serde(default)]
+    pub autostart_gateway: bool,
+    #[serde(default)]
+    pub quit_behavior: QuitBehavior,
 }
 
 impl Default for AppConfig {
@@ -81,6 +97,8 @@ impl Default for AppConfig {
             active_provider_id: None,
             providers: Vec::new(),
             autostart: false,
+            autostart_gateway: false,
+            quit_behavior: QuitBehavior::default(),
         }
     }
 }

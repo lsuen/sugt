@@ -6,6 +6,7 @@ import {
   Play, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
 } from 'lucide-react';
 import './styles.css';
+import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -53,8 +54,12 @@ type AppConfig = {
   failover_enabled: boolean;
   active_provider_id?: string | null;
   autostart: boolean;
+  autostart_gateway: boolean;
+  quit_behavior: QuitBehavior;
   providers: unknown[];
 };
+
+type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
 
 type ClientEnvStatus = {
   client: string;
@@ -106,6 +111,14 @@ const MODELSCOPE_ANTHROPIC: Partial<ProviderForm> = {
   model_name: 'deepseek-ai/DeepSeek-V4-Flash',
   protocol: 'anthropic',
 };
+
+function formatInvokeError(error: unknown): string {
+  const text = String(error);
+  const marker = 'gateway_not_running:';
+  const idx = text.indexOf(marker);
+  if (idx >= 0) return text.slice(idx + marker.length);
+  return text;
+}
 
 function normalizeProtocol(value: ProviderView['protocol']): ProviderProtocol {
   return value === 'anthropic' ? 'anthropic' : 'openai';
@@ -185,7 +198,7 @@ function App() {
       setMessage(ok);
       await refresh();
     } catch (error) {
-      setMessage(String(error));
+      setMessage(formatInvokeError(error));
     } finally {
       setBusy(false);
     }
@@ -351,6 +364,21 @@ function App() {
                 <span>故障转移</span>
                 <input type="checkbox" checked={Boolean(config?.failover_enabled)} onChange={(e) => run(() => invoke('set_failover', { enabled: e.target.checked }), '已更新')} />
               </label>
+              <label className="switch-line">
+                <span>启动时自动开网关</span>
+                <input type="checkbox" checked={Boolean(config?.autostart_gateway)} onChange={(e) => run(() => invoke('set_autostart_gateway', { enabled: e.target.checked }), '已更新')} />
+              </label>
+              <label className="switch-line select-line">
+                <span>托盘退出时</span>
+                <select
+                  value={config?.quit_behavior ?? 'exit_only'}
+                  onChange={(e) => run(() => invoke('set_quit_behavior', { behavior: e.target.value as QuitBehavior }), '已更新')}
+                >
+                  <option value="exit_only">仅退出程序</option>
+                  <option value="stop_gateway">退出并停止网关</option>
+                  <option value="stop_all">退出、停网关并关接管</option>
+                </select>
+              </label>
               <div className="hint compact">
                 本地 OpenAI：<code>{status?.listen_url}/v1</code><br />
                 本地 Anthropic：<code>{status?.listen_url}</code>
@@ -418,10 +446,14 @@ function App() {
                   }}><ShieldCheck size={14} />接管检查</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
                   <button className="primary tiny-btn" disabled={busy} onClick={() => run(() => invoke('install_clients_env'), '接管完成，请新开终端')}><PlugZap size={14} />一键接管</button>
+                  <button className="ghost tiny-btn" disabled={busy || status?.running} onClick={() => run(() => invoke('install_clients_env', { autoStart: true }), '网关已启动并完成接管，请新开终端')}><Play size={14} />启动网关并接管</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
                 </div>
               </div>
               <p className="hint">写入用户环境变量，仅对新打开的终端生效。Claude 仅设置 ANTHROPIC_AUTH_TOKEN，避免与 ANTHROPIC_API_KEY 冲突。</p>
+              {!status?.running && (
+                <div className="notice compact-notice">本地网关未运行。一键接管需网关已启动，或使用「启动网关并接管」。</div>
+              )}
               {clients?.has_issues && (
                 <div className="notice error compact-notice">检测到接管冲突或旧版残留变量，请点击「修复接管」后新开终端。</div>
               )}
@@ -473,8 +505,22 @@ function App() {
             <div className="about-grid">
               <div><strong>配置目录</strong><span>{status?.config_dir}</span></div>
               <div><strong>日志文件</strong><span>{status?.log_file}</span></div>
-              <div><strong>版本类型</strong><span>{status?.trial.edition ?? 'dev'} · {status?.trial.build_id ?? 'dev'}</span></div>
+              <div><strong>版本</strong><span>v{CURRENT_VERSION} · {status?.trial.edition ?? 'dev'}</span></div>
               <div><strong>试用状态</strong><span>{status?.trial.status ?? 'valid'}</span></div>
+            </div>
+            <div className="release-notes-frame">
+              <div className="release-notes-head">
+                <strong>v{CURRENT_VERSION} 更新说明</strong>
+                <span className="hint compact">仅展示当前版本改动</span>
+              </div>
+              <ul className="release-notes-list">
+                {RELEASE_NOTES.map((note) => (
+                  <li key={note.text} className={`release-note ${note.type}`}>
+                    <span className="release-tag">{note.type}</span>
+                    {note.text}
+                  </li>
+                ))}
+              </ul>
             </div>
           </section>
         )}
