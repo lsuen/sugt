@@ -179,6 +179,30 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .release-note.feat .release-tag { background: rgba(10,255,157,.15); color: #7dffc8; }
 .release-note.fix .release-tag { background: rgba(255,180,80,.15); color: #ffd08a; }
 
+.badge-wrap { position: relative; display: inline-flex; }
+.badge.popover-trigger { cursor: help; }
+.badge-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 300px;
+  max-width: min(360px, 80vw);
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(10, 16, 28, 0.92);
+  border: 1px solid rgba(142, 232, 255, 0.2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  text-align: left;
+  pointer-events: none;
+}
+.badge-popover-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #d8e8f4; }
+.badge-popover-issues { margin: 0 0 8px; padding-left: 18px; font-size: 12px; color: #ffc4cd; }
+.badge-popover-issues li { margin-bottom: 4px; }
+.env-vars.compact { margin-top: 4px; }
+.popover-foot { margin-top: 8px; margin-bottom: 0; opacity: 0.85; }
+
 .preview-table-wrap { overflow: auto; margin: 12px 0; max-height: 280px; }
 .preview-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .preview-table th, .preview-table td { padding: 8px 10px; border-bottom: 1px solid rgba(142,232,255,.1); text-align: left; vertical-align: top; }

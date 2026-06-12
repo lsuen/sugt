@@ -21,6 +21,8 @@
     "allow-test-provider",
     "allow-set-failover",
     "allow-set-autostart",
+    "allow-set-autostart-gateway",
+    "allow-set-quit-behavior",
     "allow-read-logs",
     "allow-get-config",
     "allow-open-config-dir",

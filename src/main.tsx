@@ -81,20 +81,6 @@ type ClientsEnvStatus = {
   has_issues?: boolean;
 };
 
-type TakeoverPreviewEntry = {
-  name: string;
-  new_value: string;
-  current_value: string;
-  action: 'set' | 'clear' | 'keep' | string;
-};
-
-type TakeoverPreview = {
-  listen_url: string;
-  entries: TakeoverPreviewEntry[];
-  issues: string[];
-  recovery_hint: string;
-};
-
 type ProviderForm = {
   id?: string;
   name: string;
@@ -160,6 +146,46 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
+function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; listenUrl: string }) {
+  const [hover, setHover] = useState(false);
+
+  return (
+    <span
+      className="badge-wrap"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <span className={`badge popover-trigger ${client.configured ? 'ok' : 'stop'}`}>
+        {client.configured ? '已接管' : '未接管'}
+      </span>
+      {hover && (
+        <div className="badge-popover" role="tooltip">
+          <div className="badge-popover-title">{client.client}</div>
+          {client.issues && client.issues.length > 0 && (
+            <ul className="badge-popover-issues">
+              {client.issues.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          )}
+          {!client.configured && client.missing && client.missing.length > 0 && (
+            <p className="hint compact">待写入：{client.missing.join('、')}</p>
+          )}
+          {client.variables && (
+            <div className="env-vars compact">
+              {Object.entries(client.variables).map(([name, value]) => (
+                <div className="env-row" key={name}>
+                  <span>{name}</span>
+                  <code>{value || '（未设置）'}</code>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="hint compact popover-foot">网关 {listenUrl} · 客户端页可「关闭接管」恢复</p>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
@@ -172,8 +198,6 @@ function App() {
   const [message, setMessage] = useState('');
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
-  const [takeoverPreview, setTakeoverPreview] = useState<TakeoverPreview | null>(null);
-  const [takeoverAutoStart, setTakeoverAutoStart] = useState(false);
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
@@ -222,35 +246,6 @@ function App() {
     } finally {
       setBusy(false);
     }
-  };
-
-  const openTakeoverPreview = async (autoStart: boolean) => {
-    setBusy(true);
-    setMessage('');
-    try {
-      const preview = await invoke<TakeoverPreview>('get_takeover_preview');
-      setTakeoverAutoStart(autoStart);
-      setTakeoverPreview(preview);
-    } catch (error) {
-      setMessage(formatInvokeError(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const confirmTakeover = async () => {
-    setTakeoverPreview(null);
-    await run(
-      () => invoke('install_clients_env', { autoStart: takeoverAutoStart }),
-      '接管完成，请新开终端',
-    );
-  };
-
-  const takeoverActionLabel = (action: string) => {
-    if (action === 'set') return '写入';
-    if (action === 'clear') return '清除';
-    if (action === 'keep') return '保持不变';
-    return action;
   };
 
   const openNewProvider = () => {
@@ -508,14 +503,24 @@ function App() {
                       .finally(() => setBusy(false));
                   }}><ShieldCheck size={14} />接管检查</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
-                  <button className="primary tiny-btn" disabled={busy} onClick={() => openTakeoverPreview(false)}><PlugZap size={14} />一键接管</button>
-                  <button className="ghost tiny-btn" disabled={busy || status?.running} onClick={() => openTakeoverPreview(true)}><Play size={14} />启动网关并接管</button>
+                  <button
+                    className="primary tiny-btn"
+                    disabled={busy || !status?.running}
+                    title={!status?.running ? '请先启动网关' : undefined}
+                    onClick={() => run(() => invoke('install_clients_env'), '接管完成，请新开终端')}
+                  ><PlugZap size={14} />一键接管</button>
+                  <button
+                    className="ghost tiny-btn"
+                    disabled={busy || Boolean(status?.running)}
+                    title={status?.running ? '网关已在运行，请使用一键接管' : undefined}
+                    onClick={() => run(() => invoke('install_clients_env', { autoStart: true }), '网关已启动并完成接管，请新开终端')}
+                  ><Play size={14} />启动网关并接管</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
                 </div>
               </div>
-              <p className="hint">写入用户环境变量，仅对新打开的终端生效。Claude 仅设置 ANTHROPIC_AUTH_TOKEN，避免与 ANTHROPIC_API_KEY 冲突。</p>
+              <p className="hint">写入用户环境变量，仅对新打开的终端生效。悬停「已接管/未接管」标签可查看变量详情。</p>
               {!status?.running && (
-                <div className="notice compact-notice">本地网关未运行。一键接管需网关已启动，或使用「启动网关并接管」。</div>
+                <div className="notice compact-notice">本地网关未运行：「一键接管」不可用，请使用「启动网关并接管」或先在控制台启动网关。</div>
               )}
               {clients?.has_issues && (
                 <div className="notice error compact-notice">检测到接管冲突或旧版残留变量，请点击「修复接管」后新开终端。</div>
@@ -525,23 +530,9 @@ function App() {
                   <div className="client-card" key={client!.client}>
                     <div className="client-head">
                       <strong>{client!.client}</strong>
-                      <span className={client!.configured ? 'badge ok' : 'badge stop'}>{client!.configured ? '已接管' : '未接管'}</span>
+                      <ClientStatusBadge client={client!} listenUrl={clients?.listen_url ?? status?.listen_url ?? ''} />
                     </div>
                     <p className="hint compact">{client!.note}</p>
-                    {client!.issues && client!.issues.length > 0 && (
-                      <ul className="issue-list">
-                        {client!.issues.map((issue) => (
-                          <li key={issue}>{issue}</li>
-                        ))}
-                      </ul>
-                    )}
-                    {client!.variables && (
-                      <div className="env-vars">
-                        {Object.entries(client!.variables).map(([name, value]) => (
-                          <div className="env-row" key={name}><span>{name}</span><code>{value}</code></div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
@@ -613,42 +604,6 @@ function App() {
           <div className="modal-actions">
             <button className="ghost" onClick={() => setProviderModal(false)}>取消</button>
             <button className="primary" disabled={busy} onClick={saveProvider}><Save size={16} />保存</button>
-          </div>
-        </Modal>
-      )}
-
-      {takeoverPreview && (
-        <Modal title="确认接管变更" onClose={() => setTakeoverPreview(null)}>
-          <p className="hint">以下变更将写入用户环境变量，仅对新打开的终端生效。</p>
-          {takeoverPreview.issues.length > 0 && (
-            <div className="notice error compact-notice">
-              {takeoverPreview.issues.map((issue) => <div key={issue}>{issue}</div>)}
-            </div>
-          )}
-          <div className="preview-table-wrap">
-            <table className="preview-table">
-              <thead>
-                <tr><th>变量</th><th>当前值</th><th>操作</th><th>新值</th></tr>
-              </thead>
-              <tbody>
-                {takeoverPreview.entries.map((entry) => (
-                  <tr key={`${entry.name}-${entry.action}`}>
-                    <td><code>{entry.name}</code></td>
-                    <td>{entry.current_value}</td>
-                    <td><span className={`badge ${entry.action === 'clear' ? 'stop' : entry.action === 'keep' ? 'neutral' : 'ok'} inline`}>{takeoverActionLabel(entry.action)}</span></td>
-                    <td>{entry.action === 'clear' ? '（删除）' : entry.new_value || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="hint compact">{takeoverPreview.recovery_hint}</p>
-          {takeoverAutoStart && !status?.running && (
-            <p className="hint compact">将同时启动本地网关（{takeoverPreview.listen_url}）。</p>
-          )}
-          <div className="modal-actions">
-            <button className="ghost" onClick={() => setTakeoverPreview(null)}>取消</button>
-            <button className="primary" disabled={busy} onClick={confirmTakeover}><PlugZap size={16} />确认接管</button>
           </div>
         </Modal>
       )}

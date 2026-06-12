@@ -49,6 +49,16 @@ description = "Enables the set_autostart command"
 commands.allow = ["set_autostart"]
 
 [[permission]]
+identifier = "allow-set-autostart-gateway"
+description = "Enables the set_autostart_gateway command"
+commands.allow = ["set_autostart_gateway"]
+
+[[permission]]
+identifier = "allow-set-quit-behavior"
+description = "Enables the set_quit_behavior command"
+commands.allow = ["set_quit_behavior"]
+
+[[permission]]
 identifier = "allow-read-logs"
 description = "Enables the read_logs command"
 commands.allow = ["read_logs"]
