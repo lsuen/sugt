@@ -26,6 +26,7 @@ pub fn run() {
             commands::read_logs,
             commands::get_config,
             commands::open_config_dir,
+            commands::get_takeover_preview,
             commands::get_clients_env_status,
             commands::install_clients_env,
             commands::repair_clients_env,

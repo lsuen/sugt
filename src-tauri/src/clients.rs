@@ -26,6 +26,83 @@ pub struct ClientsEnvStatus {
     pub has_issues: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TakeoverPreviewEntry {
+    pub name: String,
+    pub new_value: String,
+    pub current_value: String,
+    /// set | clear | keep
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TakeoverPreview {
+    pub listen_url: String,
+    pub entries: Vec<TakeoverPreviewEntry>,
+    pub issues: Vec<String>,
+    pub recovery_hint: String,
+}
+
+pub fn preview_install(config: &AppConfig) -> TakeoverPreview {
+    let listen_url = listen_url(config);
+    let status = status(config);
+    let mut issues = Vec::new();
+    if !status.claude.issues.is_empty() {
+        issues.extend(status.claude.issues.clone());
+    }
+    if !status.codex.issues.is_empty() {
+        issues.extend(status.codex.issues.clone());
+    }
+
+    let mut entries = Vec::new();
+    for (name, value) in claude_vars(&listen_url)
+        .into_iter()
+        .chain(codex_vars(&listen_url))
+    {
+        let current = std::env::var(&name).unwrap_or_default();
+        let action = if current.is_empty() {
+            "set".to_string()
+        } else if current == value {
+            "keep".to_string()
+        } else {
+            "set".to_string()
+        };
+        let current_display = mask_env_for_preview(&name, &current);
+        entries.push(TakeoverPreviewEntry {
+            name,
+            new_value: value,
+            current_value: current_display,
+            action,
+        });
+    }
+
+    for name in CLAUDE_CONFLICTING_VARS {
+        let current = std::env::var(name).unwrap_or_default();
+        if !current.is_empty() {
+            entries.push(TakeoverPreviewEntry {
+                name: (*name).to_string(),
+                new_value: String::new(),
+                current_value: mask_env_for_preview(name, &current),
+                action: "clear".to_string(),
+            });
+        }
+    }
+
+    TakeoverPreview {
+        listen_url,
+        entries,
+        issues,
+        recovery_hint: "如需恢复：在客户端页点击「关闭接管」后新开终端；或手动删除/改回原环境变量".to_string(),
+    }
+}
+
+fn mask_env_for_preview(name: &str, value: &str) -> String {
+    if value.is_empty() {
+        return "（未设置）".to_string();
+    }
+    mask_env_value(name, value)
+}
+
 pub fn status(config: &AppConfig) -> ClientsEnvStatus {
     let listen_url = listen_url(config);
     let claude_expected = claude_vars(&listen_url);

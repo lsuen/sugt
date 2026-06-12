@@ -179,6 +179,12 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .release-note.feat .release-tag { background: rgba(10,255,157,.15); color: #7dffc8; }
 .release-note.fix .release-tag { background: rgba(255,180,80,.15); color: #ffd08a; }
 
+.preview-table-wrap { overflow: auto; margin: 12px 0; max-height: 280px; }
+.preview-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.preview-table th, .preview-table td { padding: 8px 10px; border-bottom: 1px solid rgba(142,232,255,.1); text-align: left; vertical-align: top; }
+.preview-table th { color: #8eb4cc; font-weight: 600; }
+.preview-table code { font-size: 11px; }
+
 /* Modal */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 100;

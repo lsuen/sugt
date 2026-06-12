@@ -234,6 +234,14 @@ Write-Host "    Output  : $outDir"
 try {
     Set-BuildMetadata -BuildId $buildId -ExpiresAt $expiresAt
 
+    if ($SkipBuild) {
+        Write-Host ""
+        Write-Host "WARNING: -SkipBuild skips recompilation. Embedded trial/self metadata in existing binaries may NOT match -Variant / -TrialExpiresAt for this run." -ForegroundColor Yellow
+        Write-Host "         Package labels (VERSION.txt, README) will reflect current script params, but exe built-in edition/expiry may differ." -ForegroundColor Yellow
+        Write-Host "         For trial/self smoke tests, run a full build without -SkipBuild unless you are certain binaries are fresh." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
     if (-not $SkipBuild) {
         Assert-CommandExists "npm"
         Assert-CommandExists "cargo"

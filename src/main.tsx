@@ -17,6 +17,10 @@ type RuntimeStatus = {
   listen_url: string;
   active_model?: string | null;
   active_provider?: string | null;
+  last_proxy_provider?: string | null;
+  last_proxy_path?: string | null;
+  last_proxy_failover?: boolean;
+  last_proxy_at?: string | null;
   config_dir: string;
   log_file: string;
   trial: TrialStatus;
@@ -75,6 +79,20 @@ type ClientsEnvStatus = {
   claude: ClientEnvStatus;
   codex: ClientEnvStatus;
   has_issues?: boolean;
+};
+
+type TakeoverPreviewEntry = {
+  name: string;
+  new_value: string;
+  current_value: string;
+  action: 'set' | 'clear' | 'keep' | string;
+};
+
+type TakeoverPreview = {
+  listen_url: string;
+  entries: TakeoverPreviewEntry[];
+  issues: string[];
+  recovery_hint: string;
 };
 
 type ProviderForm = {
@@ -154,6 +172,8 @@ function App() {
   const [message, setMessage] = useState('');
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
+  const [takeoverPreview, setTakeoverPreview] = useState<TakeoverPreview | null>(null);
+  const [takeoverAutoStart, setTakeoverAutoStart] = useState(false);
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
@@ -202,6 +222,35 @@ function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const openTakeoverPreview = async (autoStart: boolean) => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const preview = await invoke<TakeoverPreview>('get_takeover_preview');
+      setTakeoverAutoStart(autoStart);
+      setTakeoverPreview(preview);
+    } catch (error) {
+      setMessage(formatInvokeError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmTakeover = async () => {
+    setTakeoverPreview(null);
+    await run(
+      () => invoke('install_clients_env', { autoStart: takeoverAutoStart }),
+      '接管完成，请新开终端',
+    );
+  };
+
+  const takeoverActionLabel = (action: string) => {
+    if (action === 'set') return '写入';
+    if (action === 'clear') return '清除';
+    if (action === 'keep') return '保持不变';
+    return action;
   };
 
   const openNewProvider = () => {
@@ -346,7 +395,21 @@ function App() {
               <div className="metric-row">
                 <div className="metric"><span>当前服务商</span><strong title={status?.active_provider ?? ''}>{status?.active_provider ?? '未配置'}</strong></div>
                 <div className="metric"><span>当前模型</span><strong title={status?.active_model ?? ''}>{status?.active_model ?? '未配置'}</strong></div>
+                <div className="metric">
+                  <span>最近请求命中</span>
+                  <strong title={status?.last_proxy_provider ?? ''}>
+                    {status?.last_proxy_provider
+                      ? `${status.last_proxy_provider}${status.last_proxy_failover ? '（故障转移）' : ''}`
+                      : '暂无'}
+                  </strong>
+                </div>
               </div>
+              {status?.last_proxy_provider && (
+                <p className="hint compact">
+                  路径 {status.last_proxy_path ?? '-'}
+                  {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
+                </p>
+              )}
               <div className="actions">
                 <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), '服务已启动')}><Play size={17} />启动</button>
                 <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), '服务已停止')}><CircleStop size={17} />停止</button>
@@ -445,8 +508,8 @@ function App() {
                       .finally(() => setBusy(false));
                   }}><ShieldCheck size={14} />接管检查</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
-                  <button className="primary tiny-btn" disabled={busy} onClick={() => run(() => invoke('install_clients_env'), '接管完成，请新开终端')}><PlugZap size={14} />一键接管</button>
-                  <button className="ghost tiny-btn" disabled={busy || status?.running} onClick={() => run(() => invoke('install_clients_env', { autoStart: true }), '网关已启动并完成接管，请新开终端')}><Play size={14} />启动网关并接管</button>
+                  <button className="primary tiny-btn" disabled={busy} onClick={() => openTakeoverPreview(false)}><PlugZap size={14} />一键接管</button>
+                  <button className="ghost tiny-btn" disabled={busy || status?.running} onClick={() => openTakeoverPreview(true)}><Play size={14} />启动网关并接管</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
                 </div>
               </div>
@@ -550,6 +613,42 @@ function App() {
           <div className="modal-actions">
             <button className="ghost" onClick={() => setProviderModal(false)}>取消</button>
             <button className="primary" disabled={busy} onClick={saveProvider}><Save size={16} />保存</button>
+          </div>
+        </Modal>
+      )}
+
+      {takeoverPreview && (
+        <Modal title="确认接管变更" onClose={() => setTakeoverPreview(null)}>
+          <p className="hint">以下变更将写入用户环境变量，仅对新打开的终端生效。</p>
+          {takeoverPreview.issues.length > 0 && (
+            <div className="notice error compact-notice">
+              {takeoverPreview.issues.map((issue) => <div key={issue}>{issue}</div>)}
+            </div>
+          )}
+          <div className="preview-table-wrap">
+            <table className="preview-table">
+              <thead>
+                <tr><th>变量</th><th>当前值</th><th>操作</th><th>新值</th></tr>
+              </thead>
+              <tbody>
+                {takeoverPreview.entries.map((entry) => (
+                  <tr key={`${entry.name}-${entry.action}`}>
+                    <td><code>{entry.name}</code></td>
+                    <td>{entry.current_value}</td>
+                    <td><span className={`badge ${entry.action === 'clear' ? 'stop' : entry.action === 'keep' ? 'neutral' : 'ok'} inline`}>{takeoverActionLabel(entry.action)}</span></td>
+                    <td>{entry.action === 'clear' ? '（删除）' : entry.new_value || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint compact">{takeoverPreview.recovery_hint}</p>
+          {takeoverAutoStart && !status?.running && (
+            <p className="hint compact">将同时启动本地网关（{takeoverPreview.listen_url}）。</p>
+          )}
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => setTakeoverPreview(null)}>取消</button>
+            <button className="primary" disabled={busy} onClick={confirmTakeover}><PlugZap size={16} />确认接管</button>
           </div>
         </Modal>
       )}

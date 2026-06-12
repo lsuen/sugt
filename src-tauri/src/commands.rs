@@ -1,7 +1,8 @@
 use crate::{
     autostart,
-    clients::{self, ClientsEnvStatus},
+    clients::{self, ClientsEnvStatus, TakeoverPreview},
     config::{self, AppPaths},
+    error_hint,
     gateway::{self, GatewayState},
     model::{
         AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, QuitBehavior,
@@ -34,6 +35,7 @@ impl AppRuntime {
 pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus, String> {
     let config = runtime.config.read().await.clone();
     let provider = runtime.gateway.active_provider().await;
+    let last_hit = runtime.gateway.last_proxy_hit().await;
     Ok(RuntimeStatus {
         running: runtime.gateway.is_running().await,
         listen_url: format!("http://{}:{}", config.host, config.port),
@@ -41,6 +43,10 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
             .as_ref()
             .map(|provider| provider.model_name.clone()),
         active_provider: provider.map(|provider| provider.name),
+        last_proxy_provider: last_hit.as_ref().map(|hit| hit.provider_name.clone()),
+        last_proxy_path: last_hit.as_ref().map(|hit| hit.path.clone()),
+        last_proxy_failover: last_hit.as_ref().map(|hit| hit.failover).unwrap_or(false),
+        last_proxy_at: last_hit.map(|hit| hit.at),
         config_dir: runtime.paths.config_dir.display().to_string(),
         log_file: runtime.paths.log_file.display().to_string(),
         trial: trial::status(&runtime.paths),
@@ -50,7 +56,11 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
 #[tauri::command]
 pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, String> {
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
-    runtime.gateway.start().await.map_err(|err| err.to_string())
+    runtime
+        .gateway
+        .start()
+        .await
+        .map_err(|err| error_hint::format_gateway_start_error(&err))
 }
 
 #[tauri::command]
@@ -183,12 +193,15 @@ pub async fn test_provider(
         .test_provider(&id)
         .await
         .map_err(|err| err.to_string())?;
+    let gateway_config = runtime.gateway.config().await;
     let mut config = runtime.config.write().await;
-    if let Some(provider) = config
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == id)
-    {
+    if let Some(source) = gateway_config.providers.iter().find(|provider| provider.id == id) {
+        if let Some(provider) = config.providers.iter_mut().find(|provider| provider.id == id) {
+            provider.status = source.status.clone();
+            provider.last_checked_at = source.last_checked_at;
+            provider.last_error = source.last_error.clone();
+        }
+    } else if let Some(provider) = config.providers.iter_mut().find(|provider| provider.id == id) {
         provider.status = status.clone();
         provider.last_checked_at = Some(chrono::Utc::now());
     }
@@ -265,21 +278,19 @@ async fn ensure_gateway_for_takeover(
     runtime: &AppRuntime,
     auto_start: bool,
 ) -> Result<(), String> {
-    if runtime.gateway.is_running().await {
-        return Ok(());
-    }
     if auto_start {
         trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
-        runtime
-            .gateway
-            .start()
-            .await
-            .map_err(|err| err.to_string())?;
-        return Ok(());
     }
-    Err(
-        "gateway_not_running:本地网关未运行，请先启动网关或点击「启动网关并接管」".to_string(),
-    )
+    runtime
+        .gateway
+        .ensure_listening(auto_start)
+        .await
+}
+
+#[tauri::command]
+pub async fn get_takeover_preview(runtime: State<'_, AppRuntime>) -> Result<TakeoverPreview, String> {
+    let config = runtime.config.read().await.clone();
+    Ok(clients::preview_install(&config))
 }
 
 #[tauri::command]

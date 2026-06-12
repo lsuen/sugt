@@ -104,11 +104,24 @@ impl Default for AppConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ProxyHit {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub path: String,
+    pub failover: bool,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeStatus {
     pub running: bool,
     pub listen_url: String,
     pub active_model: Option<String>,
     pub active_provider: Option<String>,
+    pub last_proxy_provider: Option<String>,
+    pub last_proxy_path: Option<String>,
+    pub last_proxy_failover: bool,
+    pub last_proxy_at: Option<DateTime<Utc>>,
     pub config_dir: String,
     pub log_file: String,
     pub trial: TrialStatusView,

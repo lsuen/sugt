@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use sugt_lib::{clients, config, gateway::GatewayState, logging, model::ProviderConfig, trial};
+use std::{process::Command as ProcessCommand, time::Duration};
 use tokio::signal;
 
 #[derive(Parser)]
@@ -37,8 +38,15 @@ enum Command {
 #[derive(Subcommand)]
 enum EnvCommand {
     Status,
-    Install,
-    Repair,
+    Install {
+        /// 网关未运行时自动在后台启动 sugt-cli serve
+        #[arg(long)]
+        start_gateway: bool,
+    },
+    Repair {
+        #[arg(long)]
+        start_gateway: bool,
+    },
     Uninstall,
     Print,
 }
@@ -118,13 +126,15 @@ async fn main() -> Result<()> {
             let (paths, app_config) = config::load_or_init_config()?;
             match command {
                 EnvCommand::Status => print_env_status(&clients::status(&app_config)),
-                EnvCommand::Install => {
+                EnvCommand::Install { start_gateway } => {
+                    ensure_gateway_reachable(&paths, &app_config, start_gateway).await?;
                     clients::write_launch_scripts(&paths, &app_config)?;
                     let status = clients::install(&app_config)?;
                     print_env_status(&status);
                     println!("launch_scripts={}", paths.config_dir.display());
                 }
-                EnvCommand::Repair => {
+                EnvCommand::Repair { start_gateway } => {
+                    ensure_gateway_reachable(&paths, &app_config, start_gateway).await?;
                     clients::write_launch_scripts(&paths, &app_config)?;
                     let status = clients::repair(&app_config)?;
                     print_env_status(&status);
@@ -156,4 +166,60 @@ fn print_env_status(status: &clients::ClientsEnvStatus) {
             println!("  missing={}", client.missing.join(","));
         }
     }
+}
+
+async fn ensure_gateway_reachable(
+    paths: &config::AppPaths,
+    app_config: &sugt_lib::model::AppConfig,
+    auto_start: bool,
+) -> Result<()> {
+    let health_url = format!(
+        "http://{}:{}/health",
+        app_config.host, app_config.port
+    );
+    if gateway_health_ok(&health_url).await {
+        return Ok(());
+    }
+    if !auto_start {
+        bail!(
+            "本地网关未运行：请先执行 sugt-cli serve，或加上 --start-gateway 自动启动"
+        );
+    }
+    trial::ensure_allowed(paths)?;
+    spawn_gateway_background()?;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if gateway_health_ok(&health_url).await {
+            return Ok(());
+        }
+    }
+    bail!("已尝试后台启动网关，但健康检查仍未通过，请手动执行 sugt-cli serve")
+}
+
+async fn gateway_health_ok(url: &str) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    match client.get(url).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+fn spawn_gateway_background() -> Result<()> {
+    let exe = std::env::current_exe().context("无法定位 sugt-cli 可执行文件")?;
+    let mut cmd = ProcessCommand::new(exe);
+    cmd.arg("serve");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn().context("后台启动 sugt-cli serve 失败")?;
+    Ok(())
 }

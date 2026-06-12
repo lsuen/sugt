@@ -4,6 +4,7 @@ pub mod autostart;
 pub mod clients;
 pub mod commands;
 pub mod config;
+pub mod error_hint;
 pub mod gateway;
 pub mod logging;
 pub mod model;

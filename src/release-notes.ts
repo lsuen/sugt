@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '0.1.1';
+export const CURRENT_VERSION = '0.1.2';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -7,10 +7,10 @@ export type ReleaseNote = {
 
 /** 仅展示当前版本相对上一版的改动，完整历史见 Git 记录。 */
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '托盘退出行为可配置：仅退出 / 停网关 / 停网关并关接管' },
-  { type: 'feat', text: '控制台新增「启动时自动开网关」开关' },
-  { type: 'feat', text: '接管前检查网关状态，支持「启动网关并接管」' },
-  { type: 'feat', text: '客户端 Tab：接管检查与一键修复冲突变量' },
-  { type: 'fix', text: '托盘点击恢复窗口时取消任务栏隐藏并聚焦' },
-  { type: 'fix', text: 'Claude 接管仅写入 ANTHROPIC_AUTH_TOKEN，避免与 API Key 冲突' },
+  { type: 'feat', text: '连接测试与网关启动错误提示细化（网络/鉴权/模型/端口占用）' },
+  { type: 'feat', text: '一键接管前弹窗预览环境变量变更与冲突' },
+  { type: 'feat', text: '控制台展示最近请求实际命中的模型（含故障转移）' },
+  { type: 'feat', text: 'sugt-cli env install/repair 支持 --start-gateway' },
+  { type: 'fix', text: '打包脚本 -SkipBuild 时强警告元数据可能不一致' },
+  { type: 'fix', text: '其他的体验优化与 bug 修复' },
 ];

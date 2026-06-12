@@ -1,6 +1,6 @@
 use crate::{
-    anthropic_adapter, config,
-    model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus},
+    anthropic_adapter, config, error_hint,
+    model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit},
 };
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
@@ -30,6 +30,7 @@ use tracing::{error, info, warn};
 pub struct GatewayState {
     inner: Arc<RwLock<GatewayInner>>,
     client: Client,
+    last_hit: Arc<RwLock<Option<ProxyHit>>>,
 }
 
 struct GatewayInner {
@@ -54,7 +55,50 @@ impl GatewayState {
                 running: false,
             })),
             client,
+            last_hit: Arc::new(RwLock::new(None)),
         })
+    }
+
+    pub async fn last_proxy_hit(&self) -> Option<ProxyHit> {
+        self.last_hit.read().await.clone()
+    }
+
+    async fn record_proxy_hit(
+        &self,
+        provider: &ProviderConfig,
+        path: &str,
+        provider_index: usize,
+    ) {
+        let hit = ProxyHit {
+            provider_id: provider.id.clone(),
+            provider_name: provider.name.clone(),
+            path: path.to_string(),
+            failover: provider_index > 0,
+            at: chrono::Utc::now(),
+        };
+        info!(
+            provider = %provider.name,
+            path = %path,
+            failover = provider_index > 0,
+            "proxy request succeeded"
+        );
+        *self.last_hit.write().await = Some(hit);
+    }
+
+    pub async fn ensure_listening(&self, auto_start: bool) -> Result<(), String> {
+        if self.is_running().await {
+            return Ok(());
+        }
+        if auto_start {
+            self.start()
+                .await
+                .map_err(|err| error_hint::format_gateway_start_error(&err))?;
+            Ok(())
+        } else {
+            Err(
+                "gateway_not_running:本地网关未运行，请先启动网关或使用「启动网关并接管」".to_string(),
+            )
+        }
     }
 
     pub async fn config(&self) -> AppConfig {
@@ -86,7 +130,7 @@ impl GatewayState {
             .context("监听地址无效")?;
         let listener = TcpListener::bind(addr)
             .await
-            .with_context(|| format!("无法监听 {}", addr))?;
+            .map_err(|err| anyhow!(error_hint::format_bind_error(addr, &err)))?;
         let local_addr = listener.local_addr()?;
         let (tx, rx) = oneshot::channel();
         let app = build_router(self.clone());
@@ -143,13 +187,15 @@ impl GatewayState {
         }
         .ok_or_else(|| anyhow!("模型配置不存在"))?;
 
-        let status = match test_provider_connection(&self.client, &provider).await {
+        let test_result = test_provider_connection(&self.client, &provider).await;
+        let status = match &test_result {
             Ok(()) => ProviderStatus::Available,
             Err(err) => {
                 warn!(provider = %provider.name, error = %err, "provider test failed");
                 ProviderStatus::Unavailable
             }
         };
+        let error_message = test_result.err().map(|err| err.to_string());
 
         let mut inner = self.inner.write().await;
         if let Some(item) = inner
@@ -160,11 +206,7 @@ impl GatewayState {
         {
             item.status = status.clone();
             item.last_checked_at = Some(chrono::Utc::now());
-            item.last_error = if status == ProviderStatus::Unavailable {
-                Some("连接测试失败".to_string())
-            } else {
-                None
-            };
+            item.last_error = error_message;
         }
 
         Ok(status)
@@ -256,7 +298,7 @@ async fn proxy_anthropic_request(
     }
 
     let mut last_error = None;
-    for provider in providers {
+    for (index, provider) in providers.iter().enumerate() {
         let result = if provider.protocol == ProviderProtocol::Anthropic {
             match proxy_anthropic_native(&state, &headers, body_bytes.clone(), &provider).await {
                 Ok(response) if response.status() == StatusCode::NOT_FOUND => {
@@ -275,6 +317,9 @@ async fn proxy_anthropic_request(
 
         match result {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                state
+                    .record_proxy_hit(provider, "v1/messages", index)
+                    .await;
                 return Ok(response);
             }
             Ok(response) => {
@@ -358,7 +403,7 @@ async fn proxy_request(
     }
 
     let mut last_error = None;
-    for provider in providers {
+    for (index, provider) in providers.iter().enumerate() {
         let target = build_target_url(&provider.base_url, &path, &query);
         let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
         let mut builder = state.client.request(method.clone(), &target);
@@ -372,6 +417,7 @@ async fn proxy_request(
         );
         match builder.body(payload).send().await {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                state.record_proxy_hit(provider, &path, index).await;
                 return into_axum_response(response).await;
             }
             Ok(response) => {
@@ -551,7 +597,7 @@ pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig
 
 async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
     let chat_url = build_target_url(&provider.base_url, "v1/chat/completions", "");
-    let response = client
+    let response = match client
         .post(&chat_url)
         .bearer_auth(&provider.api_key)
         .json(&json!({
@@ -562,7 +608,11 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
         }))
         .timeout(Duration::from_secs(20))
         .send()
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => bail!(error_hint::classify_request_error(&err)),
+    };
 
     if response.status().is_success() {
         return Ok(());
@@ -581,24 +631,30 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
         .await
     {
         Ok(resp) if resp.status().is_success() => {
-            bail!("聊天接口不可用，HTTP {}；models 接口可访问", status)
+            bail!(
+                "{}；models 接口可访问",
+                error_hint::classify_http_error(status, &text)
+            )
         }
-        Ok(resp) => bail!(
-            "聊天接口不可用，HTTP {}；models 接口 HTTP {}",
-            status,
-            resp.status()
-        ),
+        Ok(resp) => {
+            let models_status = resp.status();
+            bail!(
+                "{}；models 接口 {}",
+                error_hint::classify_http_error(status, &text),
+                error_hint::classify_http_error(models_status, "")
+            )
+        }
         Err(err) => bail!(
-            "聊天接口不可用，HTTP {}；models 接口请求失败: {}",
-            status,
-            err
+            "{}；models 接口 {}",
+            error_hint::classify_http_error(status, &text),
+            error_hint::classify_request_error(&err)
         ),
     }
 }
 
 async fn test_anthropic_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
     let messages_url = build_target_url(&provider.base_url, "v1/messages", "");
-    let response = client
+    let response = match client
         .post(&messages_url)
         .header("x-api-key", &provider.api_key)
         .header("anthropic-version", "2023-06-01")
@@ -609,7 +665,11 @@ async fn test_anthropic_connection(client: &Client, provider: &ProviderConfig) -
         }))
         .timeout(Duration::from_secs(20))
         .send()
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => bail!(error_hint::classify_request_error(&err)),
+    };
 
     if response.status().is_success() {
         return Ok(());
@@ -618,14 +678,13 @@ async fn test_anthropic_connection(client: &Client, provider: &ProviderConfig) -
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
 
-    // 上游仅有 OpenAI 接口、无 /v1/messages 时常见 404
     if status == StatusCode::NOT_FOUND && test_openai_connection(client, provider).await.is_ok() {
         bail!(
             "上游无 Anthropic /v1/messages（404），但 OpenAI chat 可用。请将协议改为 OpenAI Compatible"
         );
     }
 
-    bail!("Anthropic messages 接口不可用，HTTP {}: {}", status, text)
+    bail!(error_hint::classify_http_error(status, &text))
 }
 
 pub fn save_runtime_config(paths: &config::AppPaths, config: &AppConfig) -> Result<()> {
