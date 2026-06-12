@@ -116,6 +116,10 @@ const MODELSCOPE_ANTHROPIC: Partial<ProviderForm> = {
   protocol: 'anthropic',
 };
 
+function isTauriRuntime(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
 function formatInvokeError(error: unknown): string {
   const text = String(error);
   const marker = 'gateway_not_running:';
@@ -339,6 +343,18 @@ function App() {
     logs: '网关实时日志与调试信息',
     about: '版本与项目信息',
   }[tab];
+
+  if (!isTauriRuntime()) {
+    return (
+      <main className="browser-only">
+        <h2>SUGT 需在 Tauri 窗口中运行</h2>
+        <p>当前在普通浏览器中打开，没有 Tauri IPC，因此会出现 <code>invoke</code> 报错。</p>
+        <p>请在项目根目录执行：</p>
+        <pre>npm run tauri dev</pre>
+        <p className="hint">不要单独运行 <code>npm run dev</code> 后手动打开 http://127.0.0.1:1420。</p>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">

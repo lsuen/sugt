@@ -5,6 +5,7 @@ description = "SUGT - su gateway"
 authors = ["孙文龙"]
 edition = "2021"
 rust-version = "1.78"
+default-run = "sugt"
 
 [lib]
 name = "sugt_lib"
