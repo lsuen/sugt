@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod logging;
 pub mod model;
 pub mod tray;
+pub mod product;
 pub mod trial;
 
 pub use app::run;

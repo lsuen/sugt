@@ -3,6 +3,7 @@
   "defaultTrialExpiresAt": null,
   "buildTrialByDefault": true,
   "buildSelfByDefault": true,
+  "buildStoreByDefault": false,
   "defaultTarget": "all",
   "createZipByDefault": true
 }

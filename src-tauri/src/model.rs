@@ -130,6 +130,8 @@ pub struct RuntimeStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct TrialStatusView {
     pub edition: String,
+    pub product_line: String,
+    pub product_label: String,
     pub trial_enabled: bool,
     pub valid: bool,
     pub status: String,

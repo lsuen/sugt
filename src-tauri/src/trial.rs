@@ -1,4 +1,4 @@
-use crate::{config::AppPaths, model::TrialStatusView};
+use crate::{config::AppPaths, model::TrialStatusView, product};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,8 @@ pub fn status(paths: &AppPaths) -> TrialStatusView {
         Ok(status) => TrialStatusView::from(status),
         Err(err) => TrialStatusView {
             edition: "trial".to_string(),
+            product_line: product::product_line_id().to_string(),
+            product_label: product::product_line_label().to_string(),
             trial_enabled: true,
             valid: false,
             status: "error".to_string(),
@@ -266,6 +268,8 @@ impl From<TrialStatus> for TrialStatusView {
 
         Self {
             edition: edition.to_string(),
+            product_line: product::product_line_id().to_string(),
+            product_label: product::product_line_label().to_string(),
             trial_enabled,
             valid: value.valid,
             status: value.status,

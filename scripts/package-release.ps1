@@ -7,9 +7,12 @@
   .\scripts\package-release.ps1 -Variant trial -TrialDays 30 -Zip
   .\scripts\package-release.ps1 -Variant trial -TrialExpiresAt "2026-07-10T23:59:59+08:00" -Zip
   .\scripts\package-release.ps1 -Variant self -Zip
+  .\scripts\package-release.ps1 -Product store -Variant self -Zip
   .\scripts\package-release.ps1 -SkipBuild -Variant self
 #>
 param(
+    [ValidateSet("feature", "store")]
+    [string]$Product = "feature",
     [ValidateSet("trial", "self")]
     [string]$Variant = "self",
     [ValidateSet("gui", "cli", "all")]
@@ -196,6 +199,7 @@ function Set-BuildMetadata {
     )
 
     $env:SUGT_BUILD_ID = $BuildId
+    $env:SUGT_PRODUCT = $Product
     $env:SUGT_EDITION = $Variant
     if ($Variant -eq "trial") {
         $env:SUGT_TRIAL_ENABLED = "true"
@@ -208,6 +212,7 @@ function Set-BuildMetadata {
 
 function Clear-BuildMetadata {
     Remove-Item Env:SUGT_BUILD_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:SUGT_PRODUCT -ErrorAction SilentlyContinue
     Remove-Item Env:SUGT_EDITION -ErrorAction SilentlyContinue
     Remove-Item Env:SUGT_TRIAL_ENABLED -ErrorAction SilentlyContinue
     Remove-Item Env:SUGT_TRIAL_EXPIRES_AT -ErrorAction SilentlyContinue
@@ -221,10 +226,15 @@ Write-Host "==> SUGT Release Packager" -ForegroundColor Cyan
 $version = Read-Version
 $buildId = Get-Date -Format "yyyyMMdd-HHmmss"
 $expiresAt = Resolve-TrialExpiresAt
-$packageName = "SUGT-$version-$Variant-windows-x64"
+$packageName = if ($Product -eq "store") {
+    "SUGT-$version-store-$Variant-windows-x64"
+} else {
+    "SUGT-$version-$Variant-windows-x64"
+}
 $outDir = Join-Path $ReleaseRoot $packageName
 
 Write-Host "    Version : $version"
+Write-Host "    Product : $Product"
 Write-Host "    Variant : $Variant"
 Write-Host "    Target  : $Target"
 Write-Host "    BuildId : $buildId"
@@ -236,7 +246,7 @@ try {
 
     if ($SkipBuild) {
         Write-Host ""
-        Write-Host "WARNING: -SkipBuild skips recompilation. Embedded trial/self metadata in existing binaries may NOT match -Variant / -TrialExpiresAt for this run." -ForegroundColor Yellow
+        Write-Host "WARNING: -SkipBuild skips recompilation. Embedded product/trial/self metadata in existing binaries may NOT match -Product / -Variant / -TrialExpiresAt for this run." -ForegroundColor Yellow
         Write-Host "         Package labels (VERSION.txt, README) will reflect current script params, but exe built-in edition/expiry may differ." -ForegroundColor Yellow
         Write-Host "         For trial/self smoke tests, run a full build without -SkipBuild unless you are certain binaries are fresh." -ForegroundColor Yellow
         Write-Host ""
@@ -306,6 +316,7 @@ SUGT - su gateway Portable
 ==========================
 
 Version: $version
+Product: $Product
 Variant: $Variant
 Build ID: $buildId
 $trialLine
@@ -338,6 +349,7 @@ Trial state:
 
     $versionTxt = @"
 product=SUGT
+product_line=$Product
 version=$version
 variant=$Variant
 target=$Target
@@ -354,6 +366,7 @@ trial_expires_at=$expiresAt
     $manifest = @{
         name = $packageName
         version = $version
+        product_line = $Product
         variant = $Variant
         target = $Target
         platform = "windows-x64"

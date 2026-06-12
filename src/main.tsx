@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -28,6 +28,8 @@ type RuntimeStatus = {
 
 type TrialStatus = {
   edition: string;
+  product_line: string;
+  product_label: string;
   trial_enabled: boolean;
   valid: boolean;
   status: string;
@@ -128,6 +130,122 @@ function formatInvokeError(error: unknown): string {
   return text;
 }
 
+type ParsedLogLine = {
+  key: string;
+  time?: string;
+  level: string;
+  message: string;
+  target?: string;
+};
+
+function parseLogLine(line: string, index: number): ParsedLogLine {
+  try {
+    const data = JSON.parse(line) as {
+      timestamp?: string;
+      level?: string;
+      message?: string;
+      target?: string;
+      fields?: { message?: string };
+    };
+    const message = data.fields?.message ?? data.message ?? line;
+    let time: string | undefined;
+    if (data.timestamp) {
+      const date = new Date(data.timestamp);
+      if (!Number.isNaN(date.getTime())) {
+        time = date.toLocaleTimeString('zh-CN', { hour12: false });
+      }
+    }
+    return {
+      key: `${index}-${data.timestamp ?? line.slice(0, 24)}`,
+      time,
+      level: (data.level ?? 'INFO').toUpperCase(),
+      message: String(message),
+      target: data.target,
+    };
+  } catch {
+    return { key: `${index}-raw`, level: 'LOG', message: line };
+  }
+}
+
+function LogViewer({ lines }: { lines: string[] }) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  const entries = useMemo(() => lines.map((line, index) => parseLogLine(line, index)), [lines]);
+
+  useEffect(() => {
+    if (!autoScroll) return;
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [entries, autoScroll]);
+
+  const onScroll = () => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    setAutoScroll(atBottom);
+  };
+
+  if (!lines.length) {
+    return <div className="log-empty">暂无日志，启动网关后这里会显示运行记录</div>;
+  }
+
+  return (
+    <>
+      <div className="log-toolbar">
+        <span className="hint compact">共 {lines.length} 行 · 最新在底部</span>
+        <button
+          type="button"
+          className={`ghost tiny-btn${autoScroll ? ' active' : ''}`}
+          onClick={() => {
+            setAutoScroll(true);
+            endRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }}
+        >
+          {autoScroll ? '跟随最新' : '滚到底部'}
+        </button>
+      </div>
+      <div className="log-viewport" ref={viewportRef} onScroll={onScroll}>
+        {entries.map((entry) => (
+          <div className={`log-line level-${entry.level.toLowerCase()}`} key={entry.key}>
+            {entry.time && <span className="log-time">{entry.time}</span>}
+            <span className={`log-level lv-${entry.level.toLowerCase()}`}>{entry.level}</span>
+            <span className="log-msg" title={entry.target}>{entry.message}</span>
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+    </>
+  );
+}
+
+function isErrorLike(text: string): boolean {
+  const lower = text.toLowerCase();
+  return lower.includes('error') || text.includes('失败') || lower.includes('invalid') || text.includes('不可用');
+}
+
+type ToastKind = 'ok' | 'error' | 'info';
+
+type ToastItem = {
+  id: number;
+  text: string;
+  kind: ToastKind;
+};
+
+function ToastHost({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: number) => void }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-host" aria-live="polite">
+      {toasts.map((toast) => (
+        <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
+          <span className="toast-text">{toast.text}</span>
+          <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label="关闭">×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function normalizeProtocol(value: ProviderView['protocol']): ProviderProtocol {
   return value === 'anthropic' ? 'anthropic' : 'openai';
 }
@@ -199,11 +317,34 @@ function App() {
   const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastSeq = useRef(0);
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
+
+  const pushToast = useCallback((text: string, kind?: ToastKind) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const resolved = kind ?? (isErrorLike(trimmed) ? 'error' : 'ok');
+    const id = ++toastSeq.current;
+    setToasts((prev) => [...prev.slice(-2), { id, text: trimmed, kind: resolved }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 4200);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const clientsHint = useMemo(() => {
+    const parts = ['写入用户环境变量，仅对新打开的终端生效。悬停「已接管/未接管」标签可查看变量详情。'];
+    if (!status?.running) parts.push('网关未运行时请用「启动网关并接管」。');
+    if (clients?.has_issues) parts.push('检测到冲突，请点击「修复接管」。');
+    return parts.join(' ');
+  }, [status?.running, clients?.has_issues]);
 
   const refreshCore = useCallback(async () => {
     const [nextStatus, nextProviders, nextConfig, nextClients] = await Promise.all([
@@ -229,7 +370,7 @@ function App() {
   }, [refreshCore, refreshLogs, tab]);
 
   useEffect(() => {
-    refreshCore().catch((error) => setMessage(String(error)));
+    refreshCore().catch((error) => pushToast(formatInvokeError(error), 'error'));
     const timer = window.setInterval(() => refresh().catch(() => undefined), 3000);
     return () => window.clearInterval(timer);
   }, [refresh, refreshCore]);
@@ -238,15 +379,20 @@ function App() {
     if (tab === 'logs') refreshLogs().catch(() => undefined);
   }, [tab, refreshLogs]);
 
+  useEffect(() => {
+    if (tab !== 'logs') return undefined;
+    const timer = window.setInterval(() => refreshLogs().catch(() => undefined), 2000);
+    return () => window.clearInterval(timer);
+  }, [tab, refreshLogs]);
+
   const run = async (action: () => Promise<unknown>, ok: string) => {
     setBusy(true);
-    setMessage('');
     try {
       await action();
-      setMessage(ok);
+      pushToast(ok, 'ok');
       await refresh();
     } catch (error) {
-      setMessage(formatInvokeError(error));
+      pushToast(formatInvokeError(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -277,15 +423,14 @@ function App() {
 
   const saveProvider = async () => {
     setBusy(true);
-    setMessage('');
     try {
       await invoke('save_provider', { input: form });
-      setMessage(form.id ? '模型配置已更新' : '模型配置已添加');
+      pushToast(form.id ? '模型配置已更新' : '模型配置已添加', 'ok');
       setProviderModal(false);
       setForm(emptyForm);
       await refresh();
     } catch (error) {
-      setMessage(String(error));
+      pushToast(String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -304,7 +449,6 @@ function App() {
 
   const testAllProviders = async () => {
     setBusy(true);
-    setMessage('');
     let available = 0;
     let unavailable = 0;
 
@@ -314,10 +458,10 @@ function App() {
         if (result === 'Available') available += 1;
         if (result === 'Unavailable') unavailable += 1;
       }
-      setMessage(`一键测试完成：${available} 个可用，${unavailable} 个不可用`);
+      pushToast(`一键测试完成：${available} 个可用，${unavailable} 个不可用`, unavailable > 0 ? 'info' : 'ok');
       await refresh();
     } catch (error) {
-      setMessage(String(error));
+      pushToast(String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -385,12 +529,6 @@ function App() {
           </div>
           <button className="ghost" disabled={busy} onClick={() => refresh()}><RefreshCw size={16} />刷新</button>
         </header>
-
-        {message && (
-          <div className={message.includes('error') || message.includes('失败') || message.includes('invalid') ? 'notice error' : 'notice'}>
-            {message}
-          </div>
-        )}
 
         {tab === 'dashboard' && (
           <section className="page-grid">
@@ -509,13 +647,15 @@ function App() {
                 <div className="title-actions">
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => {
                     setBusy(true);
-                    setMessage('');
                     invoke<ClientsEnvStatus>('get_clients_env_status')
                       .then((next) => {
                         setClients(next);
-                        setMessage(next.has_issues ? '检测到接管问题，可点击「修复接管」' : '接管状态正常');
+                        pushToast(
+                          next.has_issues ? '检测到接管问题，可点击「修复接管」' : '接管状态正常',
+                          next.has_issues ? 'info' : 'ok',
+                        );
                       })
-                      .catch((error) => setMessage(String(error)))
+                      .catch((error) => pushToast(formatInvokeError(error), 'error'))
                       .finally(() => setBusy(false));
                   }}><ShieldCheck size={14} />接管检查</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
@@ -534,13 +674,7 @@ function App() {
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
                 </div>
               </div>
-              <p className="hint">写入用户环境变量，仅对新打开的终端生效。悬停「已接管/未接管」标签可查看变量详情。</p>
-              {!status?.running && (
-                <div className="notice compact-notice">本地网关未运行：「一键接管」不可用，请使用「启动网关并接管」或先在控制台启动网关。</div>
-              )}
-              {clients?.has_issues && (
-                <div className="notice error compact-notice">检测到接管冲突或旧版残留变量，请点击「修复接管」后新开终端。</div>
-              )}
+              <p className="hint">{clientsHint}</p>
               <div className="client-grid">
                 {[clients?.claude, clients?.codex].filter(Boolean).map((client) => (
                   <div className="client-card" key={client!.client}>
@@ -560,9 +694,9 @@ function App() {
           <section className="card log-card-full">
             <div className="section-title">
               <h3>运行日志</h3>
-              <button className="ghost tiny-btn" onClick={() => refreshLogs()}><RefreshCw size={14} />刷新日志</button>
+              <button className="ghost tiny-btn" disabled={busy} onClick={() => refreshLogs()}><RefreshCw size={14} />刷新</button>
             </div>
-            <pre>{logs.length ? logs.join('\n') : '暂无日志'}</pre>
+            <LogViewer lines={logs} />
           </section>
         )}
 
@@ -575,7 +709,7 @@ function App() {
             <div className="about-grid">
               <div><strong>配置目录</strong><span>{status?.config_dir}</span></div>
               <div><strong>日志文件</strong><span>{status?.log_file}</span></div>
-              <div><strong>版本</strong><span>v{CURRENT_VERSION} · {status?.trial.edition ?? 'dev'}</span></div>
+              <div><strong>版本</strong><span>v{CURRENT_VERSION} · {status?.trial.product_label ?? '功能版'} · {status?.trial.edition ?? 'dev'}</span></div>
               <div><strong>试用状态</strong><span>{status?.trial.status ?? 'valid'}</span></div>
             </div>
             <div className="release-notes-frame">
@@ -633,6 +767,8 @@ function App() {
           </div>
         </Modal>
       )}
+
+      <ToastHost toasts={toasts} onDismiss={dismissToast} />
     </main>
   );
 }
