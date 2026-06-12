@@ -243,6 +243,15 @@ pub async fn get_clients_env_status(
 }
 
 #[tauri::command]
+pub async fn repair_clients_env(
+    runtime: State<'_, AppRuntime>,
+) -> Result<ClientsEnvStatus, String> {
+    let config = runtime.config.read().await.clone();
+    clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
+    clients::repair(&config).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub async fn install_clients_env(
     runtime: State<'_, AppRuntime>,
 ) -> Result<ClientsEnvStatus, String> {

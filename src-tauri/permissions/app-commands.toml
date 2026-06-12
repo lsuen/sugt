@@ -74,6 +74,11 @@ description = "Enables the install_clients_env command"
 commands.allow = ["install_clients_env"]
 
 [[permission]]
+identifier = "allow-repair-clients-env"
+description = "Enables the repair_clients_env command"
+commands.allow = ["repair_clients_env"]
+
+[[permission]]
 identifier = "allow-uninstall-clients-env"
 description = "Enables the uninstall_clients_env command"
 commands.allow = ["uninstall_clients_env"]

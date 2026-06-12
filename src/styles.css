@@ -114,6 +114,12 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .section-title h3 { margin: 0; font-size: 16px; }
 .title-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.compact-notice { margin-top: 0; }
+.issue-list { margin: 8px 0 0; padding-left: 18px; color: #ff95a7; font-size: 12px; line-height: 1.5; }
+.env-vars { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.env-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.env-row span { color: #94a9bd; flex-shrink: 0; }
+.env-row code { text-align: right; word-break: break-all; }
 
 .provider-list-scroll { max-height: calc(100vh - 180px); overflow-y: auto; padding-right: 4px; }
 .provider {

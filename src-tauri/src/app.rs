@@ -1,6 +1,5 @@
 use crate::{commands, logging, tray};
 use tauri::{Manager, WindowEvent};
-use tracing::error;
 
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
@@ -26,11 +25,13 @@ pub fn run() {
             commands::open_config_dir,
             commands::get_clients_env_status,
             commands::install_clients_env,
+            commands::repair_clients_env,
             commands::uninstall_clients_env,
         ])
         .setup(|app| {
             tray::setup(app)?;
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_skip_taskbar(false);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -39,9 +40,7 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                if let Err(err) = window.hide() {
-                    error!(error = %err, "failed to hide window");
-                }
+                tray::hide_main_window(window.app_handle());
             }
             WindowEvent::Resized(_) => {}
             _ => {}

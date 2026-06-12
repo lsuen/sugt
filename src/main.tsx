@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Trash2, Users, X, XCircle,
+  Play, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
 } from 'lucide-react';
 import './styles.css';
 
@@ -59,6 +59,9 @@ type AppConfig = {
 type ClientEnvStatus = {
   client: string;
   configured: boolean;
+  variables?: Record<string, string>;
+  missing?: string[];
+  issues?: string[];
   note: string;
 };
 
@@ -66,6 +69,7 @@ type ClientsEnvStatus = {
   listen_url: string;
   claude: ClientEnvStatus;
   codex: ClientEnvStatus;
+  has_issues?: boolean;
 };
 
 type ProviderForm = {
@@ -401,11 +405,26 @@ function App() {
               <div className="section-title">
                 <h3>Claude / Codex 接管</h3>
                 <div className="title-actions">
+                  <button className="ghost tiny-btn" disabled={busy} onClick={() => {
+                    setBusy(true);
+                    setMessage('');
+                    invoke<ClientsEnvStatus>('get_clients_env_status')
+                      .then((next) => {
+                        setClients(next);
+                        setMessage(next.has_issues ? '检测到接管问题，可点击「修复接管」' : '接管状态正常');
+                      })
+                      .catch((error) => setMessage(String(error)))
+                      .finally(() => setBusy(false));
+                  }}><ShieldCheck size={14} />接管检查</button>
+                  <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
                   <button className="primary tiny-btn" disabled={busy} onClick={() => run(() => invoke('install_clients_env'), '接管完成，请新开终端')}><PlugZap size={14} />一键接管</button>
                   <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
                 </div>
               </div>
-              <p className="hint">写入用户环境变量，仅对新打开的终端生效。请先启动 SUGT 服务。</p>
+              <p className="hint">写入用户环境变量，仅对新打开的终端生效。Claude 仅设置 ANTHROPIC_AUTH_TOKEN，避免与 ANTHROPIC_API_KEY 冲突。</p>
+              {clients?.has_issues && (
+                <div className="notice error compact-notice">检测到接管冲突或旧版残留变量，请点击「修复接管」后新开终端。</div>
+              )}
               <div className="client-grid">
                 {[clients?.claude, clients?.codex].filter(Boolean).map((client) => (
                   <div className="client-card" key={client!.client}>
@@ -414,6 +433,20 @@ function App() {
                       <span className={client!.configured ? 'badge ok' : 'badge stop'}>{client!.configured ? '已接管' : '未接管'}</span>
                     </div>
                     <p className="hint compact">{client!.note}</p>
+                    {client!.issues && client!.issues.length > 0 && (
+                      <ul className="issue-list">
+                        {client!.issues.map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {client!.variables && (
+                      <div className="env-vars">
+                        {Object.entries(client!.variables).map(([name, value]) => (
+                          <div className="env-row" key={name}><span>{name}</span><code>{value}</code></div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

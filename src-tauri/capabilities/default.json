@@ -26,6 +26,7 @@
     "allow-open-config-dir",
     "allow-get-clients-env-status",
     "allow-install-clients-env",
+    "allow-repair-clients-env",
     "allow-uninstall-clients-env"
   ]
 }

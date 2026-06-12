@@ -38,6 +38,7 @@ enum Command {
 enum EnvCommand {
     Status,
     Install,
+    Repair,
     Uninstall,
     Print,
 }
@@ -123,6 +124,12 @@ async fn main() -> Result<()> {
                     print_env_status(&status);
                     println!("launch_scripts={}", paths.config_dir.display());
                 }
+                EnvCommand::Repair => {
+                    clients::write_launch_scripts(&paths, &app_config)?;
+                    let status = clients::repair(&app_config)?;
+                    print_env_status(&status);
+                    println!("launch_scripts={}", paths.config_dir.display());
+                }
                 EnvCommand::Uninstall => {
                     let status = clients::uninstall(&app_config)?;
                     print_env_status(&status);
@@ -141,6 +148,9 @@ fn print_env_status(status: &clients::ClientsEnvStatus) {
         println!("{} configured={}", client.client, client.configured);
         for (name, value) in &client.variables {
             println!("  {}={}", name, value);
+        }
+        if !client.issues.is_empty() {
+            println!("  issues={}", client.issues.join(" | "));
         }
         if !client.missing.is_empty() {
             println!("  missing={}", client.missing.join(","));

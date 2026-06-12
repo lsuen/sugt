@@ -435,6 +435,12 @@
           "markdownDescription": "Enables the read_logs command"
         },
         {
+          "description": "Enables the repair_clients_env command",
+          "type": "string",
+          "const": "allow-repair-clients-env",
+          "markdownDescription": "Enables the repair_clients_env command"
+        },
+        {
           "description": "Enables the save_provider command",
           "type": "string",
           "const": "allow-save-provider",
