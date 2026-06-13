@@ -1,6 +1,7 @@
+use crate::store::paths::StorePaths;
+use crate::store::process::hidden_command;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use crate::store::paths::StorePaths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreSettings {
@@ -39,17 +40,17 @@ pub fn open_with_editor(editor_command: &str, path: &std::path::Path) -> Result<
     if editor_command.trim().is_empty() {
         #[cfg(windows)]
         {
-            std::process::Command::new("explorer").arg(path).spawn()?;
+            hidden_command("explorer").arg(path).spawn()?;
             return Ok(());
         }
         #[cfg(target_os = "macos")]
         {
-            std::process::Command::new("open").arg(path).spawn()?;
+            hidden_command("open").arg(path).spawn()?;
             return Ok(());
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            std::process::Command::new("xdg-open").arg(path).spawn()?;
+            hidden_command("xdg-open").arg(path).spawn()?;
             return Ok(());
         }
     }
@@ -59,7 +60,7 @@ pub fn open_with_editor(editor_command: &str, path: &std::path::Path) -> Result<
         .next()
         .ok_or_else(|| anyhow::anyhow!("编辑器命令无效"))?;
     let args: Vec<&str> = parts.collect();
-    let mut command = std::process::Command::new(program);
+    let mut command = hidden_command(program);
     for arg in args {
         command.arg(arg);
     }

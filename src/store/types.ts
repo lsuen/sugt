@@ -7,6 +7,8 @@ export type SkillCatalogItem = {
   relative_path: string;
   staged: boolean;
   mounted: boolean;
+  mounted_claude: boolean;
+  mounted_codex: boolean;
 };
 
 export type SkillRepoView = {
@@ -28,10 +30,38 @@ export type PluginItemView = {
   source?: string | null;
 };
 
+export type PluginInstallGuide = {
+  client: string;
+  title: string;
+  summary: string;
+  commands: string[];
+  docs_url?: string | null;
+  skills_path: string;
+  plugins_path?: string | null;
+};
+
+export type PluginPanelView = {
+  items: PluginItemView[];
+  guide: PluginInstallGuide;
+};
+
 export type StoreSettings = {
   editor_command: string;
+};
+
+export type StoreClientPaths = {
+  staging_dir: string;
+  claude_skills: string;
+  codex_skills: string;
+  claude_plugins: string;
 };
 
 export type StoreSubview = 'main' | 'discover' | 'repos';
 
 export type StoreClientTab = 'claude' | 'codex';
+
+export type StoreContentTab = 'env' | 'skills' | 'plugins';
+
+export type DiscoverFilter = 'all' | 'available' | 'staged' | 'mounted';
+
+export type MountTarget = 'claude' | 'codex' | 'both';

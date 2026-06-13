@@ -41,19 +41,25 @@ impl StorePaths {
     }
 
     pub fn claude_skills_dir() -> anyhow::Result<PathBuf> {
-        let home = directories::BaseDirs::new()
-            .map(|dirs| dirs.home_dir().to_path_buf())
-            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-            .ok_or_else(|| anyhow::anyhow!("无法解析用户主目录"))?;
+        let home = Self::user_home()?;
         Ok(home.join(".claude").join("skills"))
     }
 
+    pub fn codex_skills_dir() -> anyhow::Result<PathBuf> {
+        let home = Self::user_home()?;
+        Ok(home.join(".agents").join("skills"))
+    }
+
     pub fn claude_plugins_dir() -> anyhow::Result<PathBuf> {
-        let home = directories::BaseDirs::new()
+        let home = Self::user_home()?;
+        Ok(home.join(".claude").join("plugins"))
+    }
+
+    fn user_home() -> anyhow::Result<PathBuf> {
+        directories::BaseDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
             .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-            .ok_or_else(|| anyhow::anyhow!("无法解析用户主目录"))?;
-        Ok(home.join(".claude").join("plugins"))
+            .ok_or_else(|| anyhow::anyhow!("无法解析用户主目录"))
     }
 }
 

@@ -2,10 +2,10 @@ use crate::commands::AppRuntime;
 use crate::product;
 use crate::store::catalog::{build_catalog, SkillCatalogItem};
 use crate::store::install::{
-    install_skill, mount_skill, resolve_skill_path, uninstall_skill, unmount_skill,
+    install_skill, mount_skill, MountTarget, resolve_skill_path, uninstall_skill, unmount_skill,
 };
 use crate::store::paths::StorePaths;
-use crate::store::plugins::{list_plugins, PluginItemView};
+use crate::store::plugins::{plugin_panel, PluginPanelView};
 use crate::store::repos::{
     add_repo, load_repos, refresh_all_repos, refresh_repo_by_id, remove_repo, SkillRepo,
 };
@@ -186,26 +186,60 @@ pub async fn store_uninstall_skill(
 pub async fn store_mount_skill(
     runtime: State<'_, AppRuntime>,
     skill_id: String,
+    target: Option<String>,
 ) -> Result<SkillCatalogItem, String> {
     ensure_store_edition()?;
     let store_paths = store_paths(&runtime);
-    mount_skill(&store_paths, &skill_id).map_err(|e| e.to_string())
+    let target = MountTarget::parse(target.as_deref());
+    mount_skill(&store_paths, &skill_id, target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn store_unmount_skill(
     runtime: State<'_, AppRuntime>,
     skill_id: String,
+    target: Option<String>,
 ) -> Result<(), String> {
     ensure_store_edition()?;
     let store_paths = store_paths(&runtime);
-    unmount_skill(&store_paths, &skill_id).map_err(|e| e.to_string())
+    let target = MountTarget::parse(target.as_deref());
+    unmount_skill(&store_paths, &skill_id, target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn store_list_plugins(_runtime: State<'_, AppRuntime>) -> Result<Vec<PluginItemView>, String> {
+pub async fn store_get_plugin_panel(
+    _runtime: State<'_, AppRuntime>,
+    client: String,
+) -> Result<PluginPanelView, String> {
     ensure_store_edition()?;
-    list_plugins().map_err(|e| e.to_string())
+    plugin_panel(&client).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreClientPathsView {
+    pub staging_dir: String,
+    pub claude_skills: String,
+    pub codex_skills: String,
+    pub claude_plugins: String,
+}
+
+#[tauri::command]
+pub async fn store_get_client_paths(runtime: State<'_, AppRuntime>) -> Result<StoreClientPathsView, String> {
+    ensure_store_edition()?;
+    let store_paths = store_paths(&runtime);
+    store_paths.ensure_dirs().map_err(|e| e.to_string())?;
+    Ok(StoreClientPathsView {
+        staging_dir: store_paths.skills_dir.display().to_string(),
+        claude_skills: StorePaths::claude_skills_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        codex_skills: StorePaths::codex_skills_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        claude_plugins: StorePaths::claude_plugins_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    })
 }
 
 #[tauri::command]
@@ -231,12 +265,18 @@ pub async fn store_open_skill(
     runtime: State<'_, AppRuntime>,
     skill_id: String,
     staged: Option<bool>,
+    client: Option<String>,
 ) -> Result<(), String> {
     ensure_store_edition()?;
     let store_paths = store_paths(&runtime);
     let settings = load_settings(&store_paths).map_err(|e| e.to_string())?;
-    let path = resolve_skill_path(&store_paths, &skill_id, staged.unwrap_or(true))
-        .map_err(|e| e.to_string())?;
+    let path = resolve_skill_path(
+        &store_paths,
+        &skill_id,
+        staged.unwrap_or(true),
+        client.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
     open_with_editor(&settings.editor_command, &path).map_err(|e| e.to_string())
 }
 

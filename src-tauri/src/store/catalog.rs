@@ -14,7 +14,10 @@ pub struct SkillCatalogItem {
     pub repo_label: String,
     pub relative_path: String,
     pub staged: bool,
+    /// 任一客户端已挂载
     pub mounted: bool,
+    pub mounted_claude: bool,
+    pub mounted_codex: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -37,8 +40,37 @@ pub(crate) struct MountedMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MountedSkillRecord {
-    pub folder_name: String,
-    pub mounted_at: String,
+    #[serde(default)]
+    pub claude_folder: Option<String>,
+    #[serde(default)]
+    pub codex_folder: Option<String>,
+    /// v0.2.0 兼容字段，等同 claude_folder
+    #[serde(default)]
+    pub folder_name: Option<String>,
+    #[serde(default)]
+    pub mounted_at: Option<String>,
+}
+
+pub(crate) fn mount_flags(
+    mounted: &MountedMeta,
+    skill_id: &str,
+) -> (bool, bool, bool) {
+    let record = mounted.skills.get(skill_id);
+    let claude = record.map(|r| r.is_mounted_claude()).unwrap_or(false);
+    let codex = record.map(|r| r.codex_folder.is_some()).unwrap_or(false);
+    (claude, codex, claude || codex)
+}
+
+impl MountedSkillRecord {
+    pub fn is_mounted_claude(&self) -> bool {
+        self.claude_folder.is_some() || self.folder_name.is_some()
+    }
+
+    pub fn claude_folder_name(&self) -> Option<&str> {
+        self.claude_folder
+            .as_deref()
+            .or(self.folder_name.as_deref())
+    }
 }
 
 pub fn build_catalog(store_paths: &StorePaths) -> Result<Vec<SkillCatalogItem>> {
@@ -98,7 +130,7 @@ fn scan_repo_skills(
                 )
             });
             let staged_flag = staged.skills.contains_key(&skill_id);
-            let mounted_flag = mounted.skills.contains_key(&skill_id);
+            let (mounted_claude, mounted_codex, mounted_any) = mount_flags(mounted, &skill_id);
             out.push(SkillCatalogItem {
                 id: skill_id,
                 name: parsed_name,
@@ -107,7 +139,9 @@ fn scan_repo_skills(
                 repo_label: repo.label(),
                 relative_path: relative,
                 staged: staged_flag,
-                mounted: mounted_flag,
+                mounted: mounted_any,
+                mounted_claude,
+                mounted_codex,
             });
         } else {
             scan_repo_skills(root, &path, repo, staged, mounted, out);
@@ -181,7 +215,7 @@ pub fn parse_skill_md(path: &Path) -> Result<(String, Option<String>)> {
     Ok((name.unwrap_or(fallback), description))
 }
 
-pub fn load_staged_meta(store_paths: &StorePaths) -> Result<StagedMeta> {
+pub(crate) fn load_staged_meta(store_paths: &StorePaths) -> Result<StagedMeta> {
     if !store_paths.staged_meta.exists() {
         return Ok(StagedMeta::default());
     }
@@ -189,14 +223,14 @@ pub fn load_staged_meta(store_paths: &StorePaths) -> Result<StagedMeta> {
     Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
-pub fn save_staged_meta(store_paths: &StorePaths, meta: &StagedMeta) -> Result<()> {
+pub(crate) fn save_staged_meta(store_paths: &StorePaths, meta: &StagedMeta) -> Result<()> {
     store_paths.ensure_dirs()?;
     let raw = serde_json::to_string_pretty(meta)?;
     std::fs::write(&store_paths.staged_meta, raw)?;
     Ok(())
 }
 
-pub fn load_mounted_meta(store_paths: &StorePaths) -> Result<MountedMeta> {
+pub(crate) fn load_mounted_meta(store_paths: &StorePaths) -> Result<MountedMeta> {
     if !store_paths.mounted_meta.exists() {
         return Ok(MountedMeta::default());
     }
@@ -204,7 +238,7 @@ pub fn load_mounted_meta(store_paths: &StorePaths) -> Result<MountedMeta> {
     Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
-pub fn save_mounted_meta(store_paths: &StorePaths, meta: &MountedMeta) -> Result<()> {
+pub(crate) fn save_mounted_meta(store_paths: &StorePaths, meta: &MountedMeta) -> Result<()> {
     store_paths.ensure_dirs()?;
     let raw = serde_json::to_string_pretty(meta)?;
     std::fs::write(&store_paths.mounted_meta, raw)?;
@@ -216,7 +250,7 @@ pub fn list_staged_skills(store_paths: &StorePaths) -> Result<Vec<SkillCatalogIt
     let mounted = load_mounted_meta(store_paths)?;
     let mut items = Vec::new();
     for (id, record) in meta.skills {
-        let mounted_flag = mounted.skills.contains_key(&id);
+        let (mounted_claude, mounted_codex, mounted_any) = mount_flags(&mounted, &id);
         items.push(SkillCatalogItem {
             id,
             name: record.name,
@@ -225,7 +259,9 @@ pub fn list_staged_skills(store_paths: &StorePaths) -> Result<Vec<SkillCatalogIt
             repo_label: record.repo_id,
             relative_path: record.relative_path,
             staged: true,
-            mounted: mounted_flag,
+            mounted: mounted_any,
+            mounted_claude,
+            mounted_codex,
         });
     }
     items.sort_by(|a, b| a.name.cmp(&b.name));

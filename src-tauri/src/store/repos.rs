@@ -1,7 +1,7 @@
 use crate::store::paths::{remove_dir_if_exists, StorePaths};
+use crate::store::process::{hidden_command, run_hidden};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,9 +82,7 @@ pub fn save_repos(store_paths: &StorePaths, repos: &[SkillRepo]) -> Result<()> {
 }
 
 pub fn git_available() -> bool {
-    Command::new("git")
-        .arg("--version")
-        .output()
+    run_hidden("git", &["--version"])
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
@@ -95,7 +93,8 @@ pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()
     }
     let dest = store_paths.repo_cache_dir(&repo.id);
     remove_dir_if_exists(&dest)?;
-    let status = Command::new("git")
+    let dest_str = dest.to_str().unwrap_or_default();
+    let output = hidden_command("git")
         .args([
             "clone",
             "--depth",
@@ -103,15 +102,27 @@ pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()
             "--branch",
             &repo.branch,
             &repo.clone_url(),
-            dest.to_str().unwrap_or_default(),
+            dest_str,
         ])
-        .status()
+        .output()
         .context("无法执行 git clone")?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
         return Err(anyhow!(
-            "git clone 失败：{} ({})",
+            "git clone 失败：{} ({}){}",
             repo.label(),
-            repo.branch
+            repo.branch,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", detail)
+            }
         ));
     }
     repo.last_error = None;

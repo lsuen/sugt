@@ -349,7 +349,80 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   background: rgba(255,255,255,.06);
 }
 
-.store-card { display: flex; flex-direction: column; gap: 12px; }
+.store-card { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.store-card-fill { height: calc(100vh - 120px); max-height: calc(100vh - 120px); }
+.store-content-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.store-scroll-panel {
+  flex: 1;
+  min-height: 120px;
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+.store-scroll-short { max-height: min(36vh, 320px); }
+.store-scroll-panel::-webkit-scrollbar { width: 8px; }
+.store-scroll-panel::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 4px;
+}
+.store-scroll-panel::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); }
+.store-status-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  color: #7dd3fc;
+  font-size: 13px;
+}
+.store-spin { animation: store-spin 1s linear infinite; }
+@keyframes store-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.store-filter-tabs, .store-content-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.store-content-tab {
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  color: #94a9bd;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.store-content-tab.active {
+  background: rgba(255,255,255,.08);
+  border-color: rgba(255,255,255,.15);
+  color: #e2e8f0;
+  font-weight: 600;
+}
+.store-guide-card {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.store-guide-commands {
+  margin: 8px 0;
+  padding-left: 0;
+  list-style: none;
+}
+.store-guide-commands li { margin: 6px 0; }
+.store-guide-commands code {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0,0,0,.25);
+  font-size: 12px;
+  word-break: break-all;
+}
+.store-path-code {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0,0,0,.2);
+}
 .store-client-tabs { display: flex; gap: 8px; }
 .store-tab {
   border: 1px solid rgba(255,255,255,.08);
