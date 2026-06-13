@@ -114,6 +114,8 @@ commands.allow = [
   "store_unmount_skill",
   "store_get_plugin_panel",
   "store_get_client_paths",
+  "store_test_github_proxy",
+  "store_launch_client",
   "store_get_settings",
   "store_set_settings",
   "store_open_skill",

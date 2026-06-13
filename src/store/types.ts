@@ -47,6 +47,7 @@ export type PluginPanelView = {
 
 export type StoreSettings = {
   editor_command: string;
+  github_proxy_prefix: string;
 };
 
 export type StoreClientPaths = {

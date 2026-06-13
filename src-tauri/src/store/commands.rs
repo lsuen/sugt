@@ -1,4 +1,5 @@
 use crate::commands::AppRuntime;
+use crate::clients;
 use crate::product;
 use crate::store::catalog::{build_catalog, SkillCatalogItem};
 use crate::store::install::{
@@ -9,7 +10,7 @@ use crate::store::plugins::{plugin_panel, PluginPanelView};
 use crate::store::repos::{
     add_repo, load_repos, refresh_all_repos, refresh_repo_by_id, remove_repo, SkillRepo,
 };
-use crate::store::settings::{load_settings, open_with_editor, save_settings, StoreSettings};
+use crate::store::settings::{load_settings, open_with_editor, save_settings, test_github_proxy, StoreSettings};
 use serde::Serialize;
 use tauri::State;
 
@@ -258,6 +259,71 @@ pub async fn store_set_settings(
     let store_paths = store_paths(&runtime);
     save_settings(&store_paths, &settings).map_err(|e| e.to_string())?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub async fn store_test_github_proxy(
+    _runtime: State<'_, AppRuntime>,
+    prefix: String,
+) -> Result<String, String> {
+    ensure_store_edition()?;
+    test_github_proxy(&prefix).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn store_launch_client(
+    runtime: State<'_, AppRuntime>,
+    client: String,
+    work_dir: Option<String>,
+) -> Result<(), String> {
+    ensure_store_edition()?;
+    let config = runtime.config.read().await.clone();
+    clients::write_launch_scripts(&runtime.paths, &config).map_err(|e| e.to_string())?;
+
+    let script_name = if client.trim().eq_ignore_ascii_case("codex") {
+        "codex-sugt.cmd"
+    } else {
+        "claude-sugt.cmd"
+    };
+    let script = runtime.paths.config_dir.join(script_name);
+    if !script.exists() {
+        return Err(format!("启动脚本不存在：{}", script.display()));
+    }
+
+    let work_dir = work_dir
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()))
+        .unwrap_or_else(|| runtime.paths.config_dir.clone());
+
+    if !work_dir.is_dir() {
+        return Err(format!("工作目录无效：{}", work_dir.display()));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "start",
+                "",
+                "/D",
+                work_dir.as_os_str().to_string_lossy().as_ref(),
+                script.as_os_str().to_string_lossy().as_ref(),
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("当前平台暂不支持从新终端启动客户端".to_string())
+    }
 }
 
 #[tauri::command]

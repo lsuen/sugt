@@ -41,6 +41,8 @@ pub fn run() {
             store::commands::store_unmount_skill,
             store::commands::store_get_plugin_panel,
             store::commands::store_get_client_paths,
+            store::commands::store_test_github_proxy,
+            store::commands::store_launch_client,
             store::commands::store_get_settings,
             store::commands::store_set_settings,
             store::commands::store_open_skill,

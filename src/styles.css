@@ -422,7 +422,58 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(0,0,0,.2);
+  word-break: break-all;
 }
+.store-ok-hint { color: #86efac; }
+.store-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+.store-takeover-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.store-takeover-head .title-actions {
+  flex-wrap: wrap;
+}
+.store-skill-row {
+  flex-wrap: wrap;
+}
+.store-skill-actions {
+  flex-shrink: 0;
+  max-width: 100%;
+}
+.store-env-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.store-env-stat {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.store-env-stat strong {
+  display: block;
+  font-size: 12px;
+  color: #94a9bd;
+  margin-bottom: 4px;
+}
+.store-env-stat span {
+  font-size: 13px;
+}
+.store-env-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.modal-wide { max-width: 520px; width: min(520px, 92vw); }
 .store-client-tabs { display: flex; gap: 8px; }
 .store-tab {
   border: 1px solid rgba(255,255,255,.08);

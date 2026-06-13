@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  ArrowLeft, BookOpen, FolderOpen, Package, PlugZap, Play, RefreshCw,
-  Search, ShieldCheck, Sparkles, Wrench,
+  ArrowLeft, BookOpen, FolderOpen, Globe, Package, PlugZap, Play, RefreshCw,
+  Search, ShieldCheck, Sparkles, Terminal, Wrench,
 } from 'lucide-react';
+import { GithubProxyModal } from './GithubProxyModal';
+import { LaunchClientModal } from './LaunchClientModal';
 import { SkillRow } from './SkillRow';
 import type {
   DiscoverFilter,
@@ -110,11 +112,13 @@ export function StoreClientsPanel({
   const [repos, setRepos] = useState<SkillRepoView[]>([]);
   const [pluginPanel, setPluginPanel] = useState<PluginPanelView | null>(null);
   const [paths, setPaths] = useState<StoreClientPaths | null>(null);
-  const [settings, setSettings] = useState<StoreSettings>({ editor_command: '' });
+  const [settings, setSettings] = useState<StoreSettings>({ editor_command: '', github_proxy_prefix: '' });
   const [search, setSearch] = useState('');
   const [repoFilter, setRepoFilter] = useState('');
   const [newRepo, setNewRepo] = useState({ owner: '', repo: '', branch: 'main' });
   const [statusText, setStatusText] = useState<string | null>(null);
+  const [proxyModalOpen, setProxyModalOpen] = useState(false);
+  const [launchModalOpen, setLaunchModalOpen] = useState(false);
 
   const loadCatalog = useCallback(async () => {
     const items = await invoke<SkillCatalogItem[]>('store_list_catalog', { query: null });
@@ -236,6 +240,39 @@ export function StoreClientsPanel({
 
   const activeClient = clientTab === 'claude' ? clients?.claude : clients?.codex;
   const skillsPath = clientTab === 'claude' ? paths?.claude_skills : paths?.codex_skills;
+  const proxyActive = Boolean(settings.github_proxy_prefix?.trim());
+  const clientLabel = clientTab === 'claude' ? 'Claude Code' : 'Codex';
+
+  const copyGatewayUrl = () => {
+    const url = clients?.listen_url ?? status?.listen_url;
+    if (!url) {
+      pushToast('网关地址未知', 'info');
+      return;
+    }
+    navigator.clipboard.writeText(url).then(
+      () => pushToast('已复制网关地址', 'ok'),
+      () => pushToast('复制失败', 'error'),
+    );
+  };
+
+  const proxyModal = proxyModalOpen ? (
+    <GithubProxyModal
+      prefix={settings.github_proxy_prefix}
+      onClose={() => setProxyModalOpen(false)}
+      onSaved={(prefix) => setSettings((s) => ({ ...s, github_proxy_prefix: prefix }))}
+      pushToast={pushToast}
+      formatError={formatInvokeError}
+    />
+  ) : null;
+
+  const launchModal = launchModalOpen ? (
+    <LaunchClientModal
+      clientTab={clientTab}
+      onClose={() => setLaunchModalOpen(false)}
+      pushToast={pushToast}
+      formatError={formatInvokeError}
+    />
+  ) : null;
 
   const skillList = (items: SkillCatalogItem[]) => (
     <div className="store-scroll-panel">
@@ -275,7 +312,10 @@ export function StoreClientsPanel({
               </button>
               <h3>发现技能</h3>
             </div>
-            <div className="title-actions">
+            <div className="title-actions store-action-bar">
+              <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setProxyModalOpen(true)}>
+                <Globe size={14} />GitHub 代理{proxyActive ? ' · 已启用' : ''}
+              </button>
               <button
                 type="button"
                 className="ghost tiny-btn"
@@ -291,6 +331,9 @@ export function StoreClientsPanel({
             </div>
           </div>
           {statusText && <StatusBanner text={statusText} />}
+          {proxyActive && (
+            <p className="hint compact">GitHub 代理：<code className="store-path-code">{settings.github_proxy_prefix.trim().replace(/\/+$/, '')}</code></p>
+          )}
           <div className="store-filter-tabs">
             {DISCOVER_FILTERS.map((tab) => (
               <button
@@ -321,6 +364,7 @@ export function StoreClientsPanel({
           </p>
           {skillList(filteredCatalog)}
         </div>
+        {proxyModal}
       </section>
     );
   }
@@ -395,6 +439,17 @@ export function StoreClientsPanel({
             </div>
           </div>
           <div className="store-settings-block">
+            <h4>GitHub 克隆代理</h4>
+            <p className="hint compact">
+              {proxyActive
+                ? `已启用：${settings.github_proxy_prefix.trim()}`
+                : '未配置，刷新仓库将直连 GitHub'}
+            </p>
+            <button type="button" className="tiny" disabled={busy} onClick={() => setProxyModalOpen(true)}>
+              <Globe size={14} />配置代理
+            </button>
+          </div>
+          <div className="store-settings-block">
             <h4>编辑器命令</h4>
             <p className="hint compact">留空则用文件管理器打开目录；可填 code、cursor 等（后台启动，不弹控制台）。</p>
             <div className="store-repo-form">
@@ -411,6 +466,7 @@ export function StoreClientsPanel({
             </div>
           </div>
         </div>
+        {proxyModal}
       </section>
     );
   }
@@ -420,7 +476,7 @@ export function StoreClientsPanel({
       <div className="card store-card store-card-fill">
         <div className="section-title">
           <h3>客户端 · 商店版</h3>
-          <div className="title-actions">
+          <div className="title-actions store-action-bar">
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('discover')}>
               <Sparkles size={14} />发现技能
             </button>
@@ -455,9 +511,27 @@ export function StoreClientsPanel({
 
         {contentTab === 'env' && (
           <div className="store-content-body">
+            <div className="store-env-grid">
+              <div className="store-env-stat">
+                <strong>网关</strong>
+                <span className={status?.running ? 'badge ok' : 'badge stop'}>
+                  {status?.running ? '运行中' : '未启动'}
+                </span>
+              </div>
+              <div className="store-env-stat">
+                <strong>{clientLabel} 接管</strong>
+                <span className={activeClient?.configured ? 'badge ok' : 'badge stop'}>
+                  {activeClient?.configured ? '已接管' : '未接管'}
+                </span>
+              </div>
+              <div className="store-env-stat">
+                <strong>GitHub 代理</strong>
+                <span className={proxyActive ? 'badge ok' : 'badge'}>{proxyActive ? '已启用' : '直连'}</span>
+              </div>
+            </div>
             <div className="section-title store-takeover-head">
-              <span className="hint">网关接管</span>
-              <div className="title-actions">
+              <span className="hint">接管操作</span>
+              <div className="title-actions store-action-bar">
                 <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
                   const next = await invoke<ClientsEnvStatus>('get_clients_env_status');
                   onClientsChange(next);
@@ -482,6 +556,17 @@ export function StoreClientsPanel({
               </div>
             </div>
             <p className="hint">{clientsHint}</p>
+            <div className="store-env-actions">
+              <button type="button" className="tiny" disabled={busy} onClick={() => setLaunchModalOpen(true)}>
+                <Terminal size={14} />新终端启动 {clientLabel}
+              </button>
+              <button type="button" className="tiny" disabled={busy} onClick={() => copyGatewayUrl()}>
+                复制网关地址
+              </button>
+              <button type="button" className="tiny" disabled={busy} onClick={() => run(() => invoke('store_open_staging_dir'))}>
+                <FolderOpen size={14} />打开暂存目录
+              </button>
+            </div>
             {activeClient && (
               <div className="client-card store-client-panel">
                 <div className="client-head">
@@ -489,6 +574,19 @@ export function StoreClientsPanel({
                   <ClientStatusBadge client={activeClient} listenUrl={clients?.listen_url ?? status?.listen_url ?? ''} />
                 </div>
                 <p className="hint compact">{activeClient.note}</p>
+                {activeClient.variables && (
+                  <div className="env-vars compact store-env-vars">
+                    {Object.entries(activeClient.variables).map(([name, value]) => (
+                      <div className="env-row" key={name}>
+                        <span>{name}</span>
+                        <code>{value}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {activeClient.missing && activeClient.missing.length > 0 && (
+                  <p className="hint compact store-error">待写入：{activeClient.missing.join('、')}</p>
+                )}
               </div>
             )}
           </div>
@@ -563,6 +661,8 @@ export function StoreClientsPanel({
           </div>
         )}
       </div>
+      {proxyModal}
+      {launchModal}
     </section>
   );
 }

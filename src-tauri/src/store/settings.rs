@@ -6,13 +6,64 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreSettings {
     pub editor_command: String,
+    /// GitHub 克隆代理前缀，如 https://ghfast.top/ ，拼接在 https://github.com/... 之前
+    #[serde(default)]
+    pub github_proxy_prefix: String,
 }
 
 impl Default for StoreSettings {
     fn default() -> Self {
         Self {
             editor_command: String::new(),
+            github_proxy_prefix: String::new(),
         }
+    }
+}
+
+pub const GITHUB_TEST_REPO_URL: &str = "https://github.com/lsuen/testconnect";
+
+/// 将代理前缀拼到 GitHub HTTPS URL 前。前缀为空则原样返回。
+pub fn apply_github_proxy(prefix: &str, github_url: &str) -> String {
+    let prefix = prefix.trim();
+    let url = github_url.trim();
+    if prefix.is_empty() {
+        return url.to_string();
+    }
+    let normalized = prefix.trim_end_matches('/');
+    if url.starts_with(normalized) {
+        return url.to_string();
+    }
+    format!("{}/{}", normalized, url.trim_start_matches('/'))
+}
+
+pub fn test_github_proxy(prefix: &str) -> Result<String> {
+    if !crate::store::repos::git_available() {
+        return Err(anyhow::anyhow!("未检测到 git，请先安装 Git for Windows"));
+    }
+    let url = apply_github_proxy(prefix, GITHUB_TEST_REPO_URL);
+    let output = hidden_command("git")
+        .args(["ls-remote", "--heads", &url])
+        .output()
+        .context("无法执行 git ls-remote")?;
+    if output.status.success() {
+        Ok(format!("连接成功（{}）", url))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+        Err(anyhow::anyhow!(
+            "无法访问测试仓库{}{}",
+            url,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", detail)
+            }
+        ))
     }
 }
 
@@ -67,4 +118,21 @@ pub fn open_with_editor(editor_command: &str, path: &std::path::Path) -> Result<
     command.arg(path);
     command.spawn().context("无法启动编辑器")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_proxy_prefix_joins_url() {
+        assert_eq!(
+            apply_github_proxy("https://ghfast.top/", "https://github.com/lsuen/testconnect"),
+            "https://ghfast.top/https://github.com/lsuen/testconnect"
+        );
+        assert_eq!(
+            apply_github_proxy("", "https://github.com/foo/bar"),
+            "https://github.com/foo/bar"
+        );
+    }
 }

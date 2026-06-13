@@ -1,5 +1,6 @@
 use crate::store::paths::{remove_dir_if_exists, StorePaths};
 use crate::store::process::{hidden_command, run_hidden};
+use crate::store::settings::{apply_github_proxy, load_settings};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
@@ -94,6 +95,8 @@ pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()
     let dest = store_paths.repo_cache_dir(&repo.id);
     remove_dir_if_exists(&dest)?;
     let dest_str = dest.to_str().unwrap_or_default();
+    let settings = load_settings(store_paths)?;
+    let clone_url = apply_github_proxy(&settings.github_proxy_prefix, &repo.clone_url());
     let output = hidden_command("git")
         .args([
             "clone",
@@ -101,7 +104,7 @@ pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()
             "1",
             "--branch",
             &repo.branch,
-            &repo.clone_url(),
+            &clone_url,
             dest_str,
         ])
         .output()
