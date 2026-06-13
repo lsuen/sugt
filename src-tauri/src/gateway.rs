@@ -61,6 +61,20 @@ impl GatewayState {
         })
     }
 
+    pub async fn list_provider_models(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        protocol: ProviderProtocol,
+    ) -> Result<Vec<String>> {
+        match protocol {
+            ProviderProtocol::OpenAi => list_openai_models(&self.client, base_url, api_key).await,
+            ProviderProtocol::Anthropic => bail!(
+                "Anthropic 协议暂无标准模型列表接口，请手动填写 Model Name，或切换为 OpenAI 兼容协议后获取"
+            ),
+        }
+    }
+
     pub async fn traffic_stats(&self) -> crate::gateway_stats::TrafficStatsView {
         self.stats.snapshot().await
     }
@@ -443,7 +457,7 @@ async fn proxy_anthropic_native(
     );
 
     let response = builder.body(payload).send().await?;
-    into_axum_response(response).await
+    into_axum_response(response, Some(state.stats.clone())).await
 }
 
 async fn proxy_anthropic_via_openai(
@@ -513,7 +527,7 @@ async fn proxy_request(
                         &headers,
                     )
                     .await;
-                return into_axum_response(response).await;
+                return into_axum_response(response, Some(state.stats.clone())).await;
             }
             Ok(response) => {
                 let status = response.status();
@@ -635,12 +649,24 @@ fn copy_forward_headers(
     Ok(builder)
 }
 
-async fn into_axum_response(response: reqwest::Response) -> Result<Response<Body>> {
+async fn into_axum_response(
+    response: reqwest::Response,
+    stats: Option<GatewayStatsCollector>,
+) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
-    let stream = response
-        .bytes_stream()
-        .map(|item| item.map_err(std::io::Error::other));
+    let stream = response.bytes_stream();
+    let mapped = stream.map(move |item| {
+        let bytes = item.map_err(std::io::Error::other)?;
+        if let Some((input, output)) = parse_usage_from_bytes(&bytes) {
+            if let Some(collector) = stats.clone() {
+                tokio::spawn(async move {
+                    collector.record_tokens(input, output).await;
+                });
+            }
+        }
+        Ok::<Bytes, std::io::Error>(bytes)
+    });
     let mut builder = Response::builder().status(status);
 
     for (name, value) in headers.iter() {
@@ -650,7 +676,100 @@ async fn into_axum_response(response: reqwest::Response) -> Result<Response<Body
         builder = builder.header(name, value);
     }
 
-    Ok(builder.body(Body::from_stream(stream))?)
+    Ok(builder.body(Body::from_stream(mapped))?)
+}
+
+pub async fn list_openai_models(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>> {
+    let models_url = build_target_url(base_url, "v1/models", "");
+    let response = match client
+        .get(&models_url)
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(err) => bail!(error_hint::classify_request_error(&err)),
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!(error_hint::classify_http_error(status, &text));
+    }
+
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|err| anyhow!("解析模型列表失败: {}", err))?;
+
+    let mut models = payload
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        bail!("接口未返回可用模型，请手动填写 Model Name");
+    }
+
+    models.sort();
+    Ok(models)
+}
+
+fn parse_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64)> {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if let Some(usage) = extract_usage_from_json(&value) {
+            return Some(usage);
+        }
+    }
+
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines() {
+        let payload = line
+            .trim()
+            .strip_prefix("data:")
+            .map(|part| part.trim())
+            .filter(|part| !part.is_empty() && *part != "[DONE]");
+        if let Some(payload) = payload {
+            if let Ok(value) = serde_json::from_str::<Value>(payload) {
+                if let Some(usage) = extract_usage_from_json(&value) {
+                    return Some(usage);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_usage_from_json(value: &Value) -> Option<(u64, u64)> {
+    let usage = value.get("usage")?;
+    let input = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if input == 0 && output == 0 {
+        None
+    } else {
+        Some((input, output))
+    }
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response<Body> {

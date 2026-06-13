@@ -3,13 +3,14 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
+  Play, PlugZap, Plus, RefreshCw, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
 } from 'lucide-react';
 import './styles.css';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 import { StoreClientsPanel } from './store/StoreClientsPanel';
 import { TrafficPanel } from './TrafficPanel';
-import { PROVIDER_PRESETS, type ProviderForm } from './providerPresets';
+import { ProviderModal } from './ProviderModal';
+import type { ProviderForm } from './providerPresets';
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -89,7 +90,7 @@ type ClientsEnvStatus = {
 
 const emptyForm: ProviderForm = {
   name: '',
-  provider: 'ModelScope',
+  provider: '',
   base_url: '',
   api_key: '',
   model_name: '',
@@ -394,10 +395,6 @@ function App() {
       enabled: provider.enabled,
     });
     setProviderModal(true);
-  };
-
-  const applyPreset = (preset: Partial<ProviderForm>) => {
-    setForm((prev) => ({ ...prev, ...preset }));
   };
 
   const saveProvider = async () => {
@@ -725,44 +722,15 @@ function App() {
       </section>
 
       {providerModal && (
-        <Modal title={form.id ? '编辑模型' : '添加模型'} onClose={() => setProviderModal(false)}>
-          <div className="preset-row">
-            <label className="preset-select-label">
-              快速预设
-              <select
-                defaultValue=""
-                onChange={(e) => {
-                  const preset = PROVIDER_PRESETS.find((item) => item.id === e.target.value);
-                  if (preset) applyPreset(preset.form);
-                  e.target.value = '';
-                }}
-              >
-                <option value="">选择国内服务商预设…</option>
-                {PROVIDER_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>{preset.label}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <label>配置名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：魔搭 DeepSeek" /></label>
-          <label>服务商<input value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} /></label>
-          <label>协议类型
-            <select value={form.protocol} onChange={(e) => setForm({ ...form, protocol: e.target.value as ProviderProtocol })}>
-              <option value="openai">OpenAI 兼容（Claude 自动转换，推荐魔搭）</option>
-              <option value="anthropic">Anthropic 原生（base 不带 /v1）</option>
-            </select>
-          </label>
-          <label>Base URL
-            <input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} placeholder={form.protocol === 'openai' ? 'https://api-inference.modelscope.cn/v1' : 'https://api-inference.modelscope.cn'} />
-          </label>
-          <label>API Key<input type="password" value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder={form.id ? '留空则不修改' : 'ms-...'} /></label>
-          <label>Model Name<input value={form.model_name} onChange={(e) => setForm({ ...form, model_name: e.target.value })} placeholder="deepseek-ai/DeepSeek-V4-Flash" /></label>
-          <label className="switch-line"><span>启用</span><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /></label>
-          <div className="modal-actions">
-            <button className="ghost" onClick={() => setProviderModal(false)}>取消</button>
-            <button className="primary" disabled={busy} onClick={saveProvider}><Save size={16} />保存</button>
-          </div>
-        </Modal>
+        <ProviderModal
+          form={form}
+          busy={busy}
+          isEdit={Boolean(form.id)}
+          onChange={setForm}
+          onClose={() => setProviderModal(false)}
+          onSave={saveProvider}
+          onError={(msg) => pushToast(msg, 'error')}
+        />
       )}
 
       {deleteTarget && (

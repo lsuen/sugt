@@ -5,12 +5,13 @@ use crate::{
     error_hint,
     gateway::{self, GatewayState},
     model::{
-        AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView, QuitBehavior,
-        RuntimeStatus,
+        AppConfig, ProviderConfig, ProviderInput, ProviderProtocol, ProviderStatus, ProviderView,
+        QuitBehavior, RuntimeStatus,
     },
     trial,
 };
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::RwLock;
@@ -210,6 +211,35 @@ pub async fn test_provider(
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
     Ok(status)
+}
+
+#[derive(Deserialize)]
+pub struct ListModelsInput {
+    pub base_url: String,
+    pub api_key: String,
+    pub protocol: ProviderProtocol,
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    runtime: State<'_, AppRuntime>,
+    input: ListModelsInput,
+) -> Result<Vec<String>, String> {
+    if input.api_key.trim().is_empty() {
+        return Err("请先填写 API Key".to_string());
+    }
+    if input.base_url.trim().is_empty() {
+        return Err("请先填写 Base URL".to_string());
+    }
+  runtime
+        .gateway
+        .list_provider_models(
+            input.base_url.trim(),
+            input.api_key.trim(),
+            input.protocol,
+        )
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

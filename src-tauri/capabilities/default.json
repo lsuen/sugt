@@ -19,6 +19,7 @@
     "allow-set-active-provider",
     "allow-set-provider-enabled",
     "allow-test-provider",
+    "allow-list-provider-models",
     "allow-set-failover",
     "allow-set-autostart",
     "allow-set-autostart-gateway",

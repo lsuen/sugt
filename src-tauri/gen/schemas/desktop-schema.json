@@ -417,6 +417,12 @@
           "markdownDescription": "Enables the install_clients_env command"
         },
         {
+          "description": "Enables the list_provider_models command",
+          "type": "string",
+          "const": "allow-list-provider-models",
+          "markdownDescription": "Enables the list_provider_models command"
+        },
+        {
           "description": "Enables the list_providers command",
           "type": "string",
           "const": "allow-list-providers",
