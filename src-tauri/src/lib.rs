@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod error_hint;
 pub mod gateway;
+pub mod gateway_stats;
 pub mod logging;
 pub mod model;
 pub mod tray;

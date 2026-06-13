@@ -1,5 +1,5 @@
 use crate::{
-    anthropic_adapter, config, error_hint,
+    anthropic_adapter, config, error_hint, gateway_stats::{GatewayStatsCollector, RequestRecord},
     model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit},
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -31,6 +31,7 @@ pub struct GatewayState {
     inner: Arc<RwLock<GatewayInner>>,
     client: Client,
     last_hit: Arc<RwLock<Option<ProxyHit>>>,
+    stats: GatewayStatsCollector,
 }
 
 struct GatewayInner {
@@ -56,7 +57,62 @@ impl GatewayState {
             })),
             client,
             last_hit: Arc::new(RwLock::new(None)),
+            stats: GatewayStatsCollector::new(),
         })
+    }
+
+    pub async fn traffic_stats(&self) -> crate::gateway_stats::TrafficStatsView {
+        self.stats.snapshot().await
+    }
+
+    async fn record_request_stats(
+        &self,
+        success: bool,
+        latency_ms: u64,
+        headers: &HeaderMap,
+        provider: &ProviderConfig,
+        path: &str,
+    ) {
+        let user_agent = headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        self.stats.record(RequestRecord {
+            success,
+            latency_ms,
+            user_agent,
+            provider_name: provider.name.clone(),
+            model_name: provider.model_name.clone(),
+            path: path.to_string(),
+        })
+        .await;
+    }
+
+    async fn record_failure_stats(
+        &self,
+        latency_ms: u64,
+        headers: &HeaderMap,
+        path: &str,
+        provider: Option<&ProviderConfig>,
+    ) {
+        let user_agent = headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let (provider_name, model_name) = provider
+            .map(|p| (p.name.clone(), p.model_name.clone()))
+            .unwrap_or_else(|| ("网关".to_string(), "-".to_string()));
+        self.stats.record(RequestRecord {
+            success: false,
+            latency_ms,
+            user_agent,
+            provider_name,
+            model_name,
+            path: path.to_string(),
+        })
+        .await;
     }
 
     pub async fn last_proxy_hit(&self) -> Option<ProxyHit> {
@@ -68,6 +124,8 @@ impl GatewayState {
         provider: &ProviderConfig,
         path: &str,
         provider_index: usize,
+        latency_ms: u64,
+        headers: &HeaderMap,
     ) {
         let hit = ProxyHit {
             provider_id: provider.id.clone(),
@@ -80,9 +138,11 @@ impl GatewayState {
             provider = %provider.name,
             path = %path,
             failover = provider_index > 0,
+            latency_ms,
             "proxy request succeeded"
         );
         *self.last_hit.write().await = Some(hit);
+        self.record_request_stats(true, latency_ms, headers, provider, path).await;
     }
 
     pub async fn ensure_listening(&self, auto_start: bool) -> Result<(), String> {
@@ -262,10 +322,20 @@ async fn proxy_openai(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
-    match proxy_request(state, headers, request).await {
+    let path = request.uri().path().trim_start_matches('/').to_string();
+    let started = std::time::Instant::now();
+    match proxy_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,
         Err(err) => {
             error!(error = %err, "proxy request failed");
+            state
+                .record_failure_stats(
+                    started.elapsed().as_millis() as u64,
+                    &headers,
+                    &path,
+                    None,
+                )
+                .await;
             json_error(StatusCode::BAD_GATEWAY, &err.to_string())
         }
     }
@@ -276,10 +346,19 @@ async fn proxy_anthropic_messages(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
-    match proxy_anthropic_request(state, headers, request).await {
+    let started = std::time::Instant::now();
+    match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,
         Err(err) => {
             error!(error = %err, "anthropic proxy request failed");
+            state
+                .record_failure_stats(
+                    started.elapsed().as_millis() as u64,
+                    &headers,
+                    "v1/messages",
+                    None,
+                )
+                .await;
             anthropic_error(StatusCode::BAD_GATEWAY, &err.to_string())
         }
     }
@@ -298,6 +377,7 @@ async fn proxy_anthropic_request(
     }
 
     let mut last_error = None;
+    let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
         let result = if provider.protocol == ProviderProtocol::Anthropic {
             match proxy_anthropic_native(&state, &headers, body_bytes.clone(), &provider).await {
@@ -318,7 +398,13 @@ async fn proxy_anthropic_request(
         match result {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
                 state
-                    .record_proxy_hit(provider, "v1/messages", index)
+                    .record_proxy_hit(
+                        provider,
+                        "v1/messages",
+                        index,
+                        started.elapsed().as_millis() as u64,
+                        &headers,
+                    )
                     .await;
                 return Ok(response);
             }
@@ -403,6 +489,7 @@ async fn proxy_request(
     }
 
     let mut last_error = None;
+    let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
         let target = build_target_url(&provider.base_url, &path, &query);
         let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
@@ -417,7 +504,15 @@ async fn proxy_request(
         );
         match builder.body(payload).send().await {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
-                state.record_proxy_hit(provider, &path, index).await;
+                state
+                    .record_proxy_hit(
+                        provider,
+                        &path,
+                        index,
+                        started.elapsed().as_millis() as u64,
+                        &headers,
+                    )
+                    .await;
                 return into_axum_response(response).await;
             }
             Ok(response) => {

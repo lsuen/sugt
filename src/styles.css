@@ -326,7 +326,81 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .modal-body input:focus, .modal-body select:focus { border-color: #16f1ff; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .preset-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.preset-select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #b8c8d8;
+  flex: 1;
+}
+.preset-select-label select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.1);
+  color: inherit;
+}
 .icon-btn { background: transparent; padding: 4px; color: #94a9bd; }
+
+.dashboard-grid { grid-template-columns: 1fr 1fr; }
+.dashboard-grid .traffic-card { grid-column: 1 / -1; }
+.topbar-meta { opacity: 0.75; white-space: nowrap; font-size: 12px; }
+.traffic-card { min-height: 0; }
+.traffic-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.traffic-metric {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.traffic-metric span {
+  display: block;
+  font-size: 11px;
+  color: #94a9bd;
+  margin-bottom: 4px;
+}
+.traffic-metric strong { font-size: 15px; }
+.traffic-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 72px;
+  padding: 8px 4px 0;
+  border-radius: 10px;
+  background: rgba(0,0,0,.15);
+}
+.traffic-bar-col {
+  flex: 1;
+  min-width: 2px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+.traffic-bar-stack {
+  width: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  min-height: 4px;
+}
+.traffic-bar.success { background: rgba(74, 222, 128, 0.85); min-height: 2px; }
+.traffic-bar.fail { background: rgba(248, 113, 113, 0.9); min-height: 2px; }
+.traffic-bar.empty { background: rgba(255,255,255,.08); height: 4px; }
+.traffic-chart-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #94a9bd;
+  margin-top: 6px;
+}
+.traffic-clients { margin-top: 10px; }
+.traffic-client-list { max-height: 200px; overflow-y: auto; margin-top: 8px; }
+.store-error { color: #f87171; }
 
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 64px 1fr; }

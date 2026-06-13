@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::gateway_stats::TrafficStatsView;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderProtocol {
@@ -125,6 +127,7 @@ pub struct RuntimeStatus {
     pub config_dir: String,
     pub log_file: String,
     pub trial: TrialStatusView,
+    pub traffic: TrafficStatsView,
 }
 
 #[derive(Debug, Clone, Serialize)]
