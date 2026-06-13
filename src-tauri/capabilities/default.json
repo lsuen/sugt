@@ -29,6 +29,7 @@
     "allow-get-clients-env-status",
     "allow-install-clients-env",
     "allow-repair-clients-env",
-    "allow-uninstall-clients-env"
+    "allow-uninstall-clients-env",
+    "allow-store-commands"
   ]
 }

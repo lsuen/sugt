@@ -1,5 +1,4 @@
-use crate::commands::{self, AppRuntime};
-use crate::{logging, tray};
+use crate::{commands::{self, AppRuntime}, logging, store, tray};
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
@@ -30,6 +29,21 @@ pub fn run() {
             commands::install_clients_env,
             commands::repair_clients_env,
             commands::uninstall_clients_env,
+            store::commands::store_list_repos,
+            store::commands::store_add_repo,
+            store::commands::store_remove_repo,
+            store::commands::store_refresh_repo,
+            store::commands::store_refresh_all_repos,
+            store::commands::store_list_catalog,
+            store::commands::store_install_skill,
+            store::commands::store_uninstall_skill,
+            store::commands::store_mount_skill,
+            store::commands::store_unmount_skill,
+            store::commands::store_list_plugins,
+            store::commands::store_get_settings,
+            store::commands::store_set_settings,
+            store::commands::store_open_skill,
+            store::commands::store_open_staging_dir,
         ])
         .setup(|app| {
             tray::setup(app)?;

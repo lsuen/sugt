@@ -97,3 +97,24 @@ commands.allow = ["uninstall_clients_env"]
 identifier = "allow-set-provider-enabled"
 description = "Enables the set_provider_enabled command"
 commands.allow = ["set_provider_enabled"]
+
+[[permission]]
+identifier = "allow-store-commands"
+description = "Enables store edition commands"
+commands.allow = [
+  "store_list_repos",
+  "store_add_repo",
+  "store_remove_repo",
+  "store_refresh_repo",
+  "store_refresh_all_repos",
+  "store_list_catalog",
+  "store_install_skill",
+  "store_uninstall_skill",
+  "store_mount_skill",
+  "store_unmount_skill",
+  "store_list_plugins",
+  "store_get_settings",
+  "store_set_settings",
+  "store_open_skill",
+  "store_open_staging_dir"
+]

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
+import { StoreClientsPanel } from './store/StoreClientsPanel';
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -640,6 +641,18 @@ function App() {
         )}
 
         {tab === 'clients' && (
+          status?.trial.product_line === 'store' ? (
+            <StoreClientsPanel
+              busy={busy}
+              setBusy={setBusy}
+              status={status}
+              clients={clients}
+              onClientsChange={setClients}
+              pushToast={pushToast}
+              clientsHint={clientsHint}
+              formatInvokeError={formatInvokeError}
+            />
+          ) : (
           <section className="page-grid single">
             <div className="card">
               <div className="section-title">
@@ -688,6 +701,7 @@ function App() {
               </div>
             </div>
           </section>
+          )
         )}
 
         {tab === 'logs' && (

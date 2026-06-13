@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '0.1.2';
+export const CURRENT_VERSION = '0.2.0';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -7,7 +7,7 @@ export type ReleaseNote = {
 
 /** 仅展示当前版本相对上一版的业务向改动（2～3 条），完整历史见 Git 记录。 */
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '连接测试与网关启动失败时，提示更易懂，方便排查 Key、模型或端口问题' },
-  { type: 'feat', text: '悬停接管状态可查看环境变量；控制台可看到请求实际使用的模型' },
-  { type: 'fix', text: '其他的体验优化与 bug 修复' },
+  { type: 'feat', text: '商店版：发现技能在线安装到暂存区，并一键挂到 Claude ~/.claude/skills' },
+  { type: 'feat', text: '内置 4 个默认技能仓库，支持自定义 GitHub 源与 shallow 刷新' },
+  { type: 'feat', text: 'Claude 插件只读展示；Codex 技能商店规划中' },
 ];

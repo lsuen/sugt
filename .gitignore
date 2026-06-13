@@ -18,3 +18,5 @@
 *.p12
 .DS_Store
 Thumbs.db
+/docs/dev/
+/baks/
