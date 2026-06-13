@@ -81,6 +81,7 @@ sugt-cli env install --start-gateway
 
 - 客户端页：Claude / Codex 大标签；其下 **环境 / 技能 / 插件** 平级 Tab
 - **发现技能**：全部 / 可安装 / 已暂存 / 已挂载；安装到 `Documents\.sugt\store\skills\`
+- **GitHub 代理**：可选加速前缀（如 `https://ghfast.top`），刷新仓库时用于 git clone
 - 挂载目录：Claude `~\.claude\skills`；Codex `~\.agents\skills`（与官方 SKILL.md 规范一致）
 - 插件：只读列表 + 官方安装命令说明（不提供在线安装）
 - 分支策略见 `docs/BRANCHING.md`；商店 PRD 见 `docs/PRD-store-v0.2.md`
