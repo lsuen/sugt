@@ -42,6 +42,10 @@ pub struct TrafficStatsView {
     pub avg_latency_ms: u64,
     pub fail_rate_percent: f32,
     pub active_clients: u32,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub today_input_tokens: u64,
+    pub today_output_tokens: u64,
     pub hourly_buckets: Vec<HourlyBucketView>,
     pub recent_clients: Vec<ClientActivityView>,
 }
@@ -55,6 +59,10 @@ struct StatsInner {
     today_count: u64,
     latency_sum_ms: u64,
     latency_count: u64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    today_input_tokens: u64,
+    today_output_tokens: u64,
     minute_buckets: HashMap<i64, (u32, u32)>,
     clients: HashMap<String, ClientEntry>,
 }
@@ -84,12 +92,32 @@ impl GatewayStatsCollector {
         }
     }
 
+    pub async fn record_tokens(&self, input_tokens: u64, output_tokens: u64) {
+        if input_tokens == 0 && output_tokens == 0 {
+            return;
+        }
+        let mut inner = self.inner.write().await;
+        let today = today_key();
+        if inner.today_date != today {
+            inner.today_date = today;
+            inner.today_count = 0;
+            inner.today_input_tokens = 0;
+            inner.today_output_tokens = 0;
+        }
+        inner.total_input_tokens += input_tokens;
+        inner.total_output_tokens += output_tokens;
+        inner.today_input_tokens += input_tokens;
+        inner.today_output_tokens += output_tokens;
+    }
+
     pub async fn record(&self, record: RequestRecord) {
         let mut inner = self.inner.write().await;
         let today = today_key();
         if inner.today_date != today {
             inner.today_date = today;
             inner.today_count = 0;
+            inner.today_input_tokens = 0;
+            inner.today_output_tokens = 0;
         }
         inner.total += 1;
         inner.today_count += 1;
@@ -184,6 +212,10 @@ impl GatewayStatsCollector {
             avg_latency_ms: avg_latency,
             fail_rate_percent: fail_rate,
             active_clients: inner.clients.len() as u32,
+            total_input_tokens: inner.total_input_tokens,
+            total_output_tokens: inner.total_output_tokens,
+            today_input_tokens: inner.today_input_tokens,
+            today_output_tokens: inner.today_output_tokens,
             hourly_buckets,
             recent_clients: recent,
         }

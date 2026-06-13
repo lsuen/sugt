@@ -39,6 +39,11 @@ description = "Enables the test_provider command"
 commands.allow = ["test_provider"]
 
 [[permission]]
+identifier = "allow-list-provider-models"
+description = "Enables the list_provider_models command"
+commands.allow = ["list_provider_models"]
+
+[[permission]]
 identifier = "allow-set-failover"
 description = "Enables the set_failover command"
 commands.allow = ["set_failover"]

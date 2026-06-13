@@ -19,6 +19,7 @@ pub fn run() {
             commands::set_active_provider,
             commands::set_provider_enabled,
             commands::test_provider,
+            commands::list_provider_models,
             commands::set_failover,
             commands::set_autostart,
             commands::set_autostart_gateway,

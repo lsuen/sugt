@@ -36,8 +36,47 @@ function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) 
   );
 }
 
+function ClientsDetailModal({
+  clients,
+  onClose,
+}: {
+  clients: TrafficStats['recent_clients'];
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-compact traffic-clients-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>调用来源（{clients.length}）</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        <div className="modal-body traffic-clients-modal-body">
+          <div className="store-mini-list traffic-client-list-scroll">
+            {clients.map((client) => (
+              <div className="store-mini-row" key={`${client.label}-${client.last_at}`}>
+                <div>
+                  <strong>{client.label}</strong>
+                  <span className="hint compact">
+                    {client.provider_name} · {client.model_name} · {client.request_count} 次
+                  </span>
+                </div>
+                <span className="hint compact traffic-client-meta">
+                  {client.last_path}
+                  <br />
+                  {new Date(client.last_at).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TrafficPanel({ traffic, running }: { traffic?: TrafficStats; running?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+  const [clientsOpen, setClientsOpen] = useState(false);
+
   if (!traffic) {
     return (
       <div className="card traffic-card">
@@ -48,6 +87,7 @@ export function TrafficPanel({ traffic, running }: { traffic?: TrafficStats; run
   }
 
   const failText = traffic.fail_rate_percent.toFixed(1);
+  const hasTokens = traffic.today_input_tokens > 0 || traffic.today_output_tokens > 0;
 
   return (
     <div className="card traffic-card">
@@ -76,39 +116,36 @@ export function TrafficPanel({ traffic, running }: { traffic?: TrafficStats; run
           <span>活跃来源</span>
           <strong>{traffic.active_clients}</strong>
         </div>
+        {hasTokens && (
+          <div className="traffic-metric">
+            <span>今日 Token</span>
+            <strong>
+              {traffic.today_input_tokens.toLocaleString()} / {traffic.today_output_tokens.toLocaleString()}
+            </strong>
+            <span className="hint compact traffic-token-hint">入 / 出</span>
+          </div>
+        )}
       </div>
       <TrafficChart buckets={traffic.hourly_buckets} />
-      <p className="hint compact">近 60 分钟 · 绿=成功 红=失败</p>
+      <p className="hint compact">近 60 分钟 · 绿=成功 红=失败{hasTokens ? ' · Token 来自响应 usage 字段' : ''}</p>
 
       {traffic.recent_clients.length > 0 && (
         <div className="traffic-clients">
           <button
             type="button"
             className="ghost tiny-btn traffic-clients-toggle"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => setClientsOpen(true)}
           >
-            {expanded ? '收起调用来源' : `查看调用来源（${traffic.recent_clients.length}）`}
+            查看调用来源（{traffic.recent_clients.length}）
           </button>
-          {expanded && (
-            <div className="store-mini-list traffic-client-list">
-              {traffic.recent_clients.map((client) => (
-                <div className="store-mini-row" key={`${client.label}-${client.last_at}`}>
-                  <div>
-                    <strong>{client.label}</strong>
-                    <span className="hint compact">
-                      {client.provider_name} · {client.model_name} · {client.request_count} 次
-                    </span>
-                  </div>
-                  <span className="hint compact">
-                    {client.last_path}
-                    <br />
-                    {new Date(client.last_at).toLocaleString()}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
+      )}
+
+      {clientsOpen && (
+        <ClientsDetailModal
+          clients={traffic.recent_clients}
+          onClose={() => setClientsOpen(false)}
+        />
       )}
     </div>
   );
