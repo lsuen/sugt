@@ -8,6 +8,8 @@ import {
 import './styles.css';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 import { StoreClientsPanel } from './store/StoreClientsPanel';
+import { TrafficPanel } from './TrafficPanel';
+import { PROVIDER_PRESETS, type ProviderForm } from './providerPresets';
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -25,6 +27,7 @@ type RuntimeStatus = {
   config_dir: string;
   log_file: string;
   trial: TrialStatus;
+  traffic: import('./providerPresets').TrafficStats;
 };
 
 type TrialStatus = {
@@ -84,17 +87,6 @@ type ClientsEnvStatus = {
   has_issues?: boolean;
 };
 
-type ProviderForm = {
-  id?: string;
-  name: string;
-  provider: string;
-  base_url: string;
-  api_key: string;
-  model_name: string;
-  protocol: ProviderProtocol;
-  enabled: boolean;
-};
-
 const emptyForm: ProviderForm = {
   name: '',
   provider: 'ModelScope',
@@ -103,20 +95,6 @@ const emptyForm: ProviderForm = {
   model_name: '',
   protocol: 'openai',
   enabled: true,
-};
-
-const MODELSCOPE_OPENAI: Partial<ProviderForm> = {
-  provider: 'ModelScope',
-  base_url: 'https://api-inference.modelscope.cn/v1',
-  model_name: 'deepseek-ai/DeepSeek-V4-Flash',
-  protocol: 'openai',
-};
-
-const MODELSCOPE_ANTHROPIC: Partial<ProviderForm> = {
-  provider: 'ModelScope',
-  base_url: 'https://api-inference.modelscope.cn',
-  model_name: 'deepseek-ai/DeepSeek-V4-Flash',
-  protocol: 'anthropic',
 };
 
 function isTauriRuntime(): boolean {
@@ -528,11 +506,11 @@ function App() {
             <h2>{tabTitle}</h2>
             <p>{tabDesc}</p>
           </div>
-          <button className="ghost" disabled={busy} onClick={() => refresh()}><RefreshCw size={16} />刷新</button>
+          <span className="hint compact topbar-meta">每 3 秒自动刷新状态</span>
         </header>
 
         {tab === 'dashboard' && (
-          <section className="page-grid">
+          <section className="page-grid dashboard-grid">
             <div className="card hero-card">
               <div className="hero-title">
                 <Cpu size={28} />
@@ -597,6 +575,8 @@ function App() {
                 本地 Anthropic：<code>{status?.listen_url}</code>
               </div>
             </div>
+
+            <TrafficPanel traffic={status?.traffic} running={status?.running} />
           </section>
         )}
 
@@ -609,7 +589,7 @@ function App() {
                 <button className="primary tiny-btn" disabled={busy} onClick={openNewProvider}><Plus size={14} />添加模型</button>
               </div>
             </div>
-            {providers.length === 0 && <p className="hint">暂无配置。点击「添加模型」或使用魔搭预设。</p>}
+            {providers.length === 0 && <p className="hint">暂无配置。点击「添加模型」并从下拉选择服务商预设。</p>}
             <div className="provider-list-scroll">
               {providers.map((provider) => {
                 const isActive = provider.id === activeProviderId;
@@ -747,9 +727,22 @@ function App() {
       {providerModal && (
         <Modal title={form.id ? '编辑模型' : '添加模型'} onClose={() => setProviderModal(false)}>
           <div className="preset-row">
-            <span className="hint">快速预设：</span>
-            <button className="tiny" type="button" onClick={() => applyPreset(MODELSCOPE_OPENAI)}>魔搭 OpenAI</button>
-            <button className="tiny" type="button" onClick={() => applyPreset(MODELSCOPE_ANTHROPIC)}>魔搭 Anthropic</button>
+            <label className="preset-select-label">
+              快速预设
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  const preset = PROVIDER_PRESETS.find((item) => item.id === e.target.value);
+                  if (preset) applyPreset(preset.form);
+                  e.target.value = '';
+                }}
+              >
+                <option value="">选择国内服务商预设…</option>
+                {PROVIDER_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.label}</option>
+                ))}
+              </select>
+            </label>
           </div>
           <label>配置名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：魔搭 DeepSeek" /></label>
           <label>服务商<input value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} /></label>

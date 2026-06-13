@@ -36,6 +36,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
     let config = runtime.config.read().await.clone();
     let provider = runtime.gateway.active_provider().await;
     let last_hit = runtime.gateway.last_proxy_hit().await;
+    let traffic = runtime.gateway.traffic_stats().await;
     Ok(RuntimeStatus {
         running: runtime.gateway.is_running().await,
         listen_url: format!("http://{}:{}", config.host, config.port),
@@ -50,6 +51,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         config_dir: runtime.paths.config_dir.display().to_string(),
         log_file: runtime.paths.log_file.display().to_string(),
         trial: trial::status(&runtime.paths),
+        traffic,
     })
 }
 
