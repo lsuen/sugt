@@ -218,6 +218,7 @@ pub struct ListModelsInput {
     pub base_url: String,
     pub api_key: String,
     pub protocol: ProviderProtocol,
+    pub vendor_id: Option<String>,
 }
 
 #[tauri::command]
@@ -231,12 +232,12 @@ pub async fn list_provider_models(
     if input.base_url.trim().is_empty() {
         return Err("请先填写 Base URL".to_string());
     }
-  runtime
+    runtime
         .gateway
         .list_provider_models(
             input.base_url.trim(),
             input.api_key.trim(),
-            input.protocol,
+            input.vendor_id.as_deref(),
         )
         .await
         .map_err(|err| err.to_string())

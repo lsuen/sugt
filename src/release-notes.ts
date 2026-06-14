@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '0.1.4';
+export const CURRENT_VERSION = '0.1.5';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,8 +6,7 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'fix', text: '统一深色主题下拉样式，修复白底灰字；调用来源改为弹窗展示不撑破布局' },
-  { type: 'feat', text: '服务商预设合并为单条（魔搭等），切换协议自动匹配官方 Base URL' },
-  { type: 'feat', text: 'Model Name 支持手动填写与「获取模型」拉取列表；新增火山、硅基、MiniMax 等预设' },
-  { type: 'feat', text: '控制台统计今日 Token（入/出），来自响应 usage 字段累计' },
+  { type: 'fix', text: '按官方文档校正各服务商 OpenAI/Anthropic Base URL，火山等支持 Anthropic 不再禁用' },
+  { type: 'feat', text: '新增 docs/provider-vendors.md 与后端 provider_catalog，模型列表适配 /v3、/v4 等路径' },
+  { type: 'fix', text: 'Anthropic 协议可选且未知时不锁死；无列表接口的厂商提示手填 Model Name' },
 ];

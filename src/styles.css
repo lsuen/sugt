@@ -381,7 +381,9 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   padding: 12px 16px;
 }
 .traffic-client-meta { text-align: right; flex-shrink: 0; max-width: 45%; }
+.vendor-note { margin: -4px 0 8px; color: #8ee8ff; font-size: 12px; }
 .traffic-token-hint { display: block; margin-top: 2px; }
+.vendor-note { margin: -4px 0 8px; color: #8ee8ff; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .preset-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .preset-select-label {

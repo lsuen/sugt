@@ -119,6 +119,8 @@ Documents\.sugt\trial-state.json
 
 ## 开发命令
 
+国内 LLM 服务商 Base URL / 模型列表约定见 [docs/provider-vendors.md](docs/provider-vendors.md)。
+
 ```cmd
 set "PATH=C:\Users\swl\.cargo\bin;%PATH%"
 call "C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
