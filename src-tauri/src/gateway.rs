@@ -1,6 +1,7 @@
 use crate::{
     anthropic_adapter, config, error_hint, gateway_stats::{GatewayStatsCollector, RequestRecord},
     model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit},
+    provider_catalog,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
@@ -65,14 +66,21 @@ impl GatewayState {
         &self,
         base_url: &str,
         api_key: &str,
-        protocol: ProviderProtocol,
+        vendor_id: Option<&str>,
     ) -> Result<Vec<String>> {
-        match protocol {
-            ProviderProtocol::OpenAi => list_openai_models(&self.client, base_url, api_key).await,
-            ProviderProtocol::Anthropic => bail!(
-                "Anthropic 协议暂无标准模型列表接口，请手动填写 Model Name，或切换为 OpenAI 兼容协议后获取"
-            ),
+        if let Some(id) = vendor_id {
+            if let Some(entry) = provider_catalog::vendor_by_id(id) {
+                match provider_catalog::models_list_base_for_vendor(entry) {
+                    Some(list_base) => {
+                        return list_openai_models(&self.client, list_base, api_key).await;
+                    }
+                    None => {
+                        bail!("该服务商需手动填写 Model Name，暂无公开模型列表接口");
+                    }
+                }
+            }
         }
+        list_openai_models(&self.client, base_url, api_key).await
     }
 
     pub async fn traffic_stats(&self) -> crate::gateway_stats::TrafficStatsView {
@@ -684,7 +692,7 @@ pub async fn list_openai_models(
     base_url: &str,
     api_key: &str,
 ) -> Result<Vec<String>> {
-    let models_url = build_target_url(base_url, "v1/models", "");
+    let models_url = provider_catalog::resolve_models_list_url(base_url);
     let response = match client
         .get(&models_url)
         .bearer_auth(api_key)

@@ -67,7 +67,65 @@ release/SUGT-0.2.1-store-self-windows-x64/
 └── manifest.json
 ```
 
-试用天数与截止日期在 `scripts/release-settings.json` 配置；机器绑定状态写入 `Documents\.sugt\trial-state.json`。
+
+详细说明见 `scripts/RELEASE.md`。
+
+## 内部试用版有效期配置
+
+有效期配置集中放在：
+
+```text
+scripts/release-settings.json
+```
+
+默认字段：
+
+```json
+{
+  "defaultTrialDays": 30,
+  "defaultTrialExpiresAt": null,
+  "buildTrialByDefault": true,
+  "buildSelfByDefault": true,
+  "defaultTarget": "all",
+  "createZipByDefault": true
+}
+```
+
+修改默认试用天数：
+
+- 文件：`scripts/release-settings.json`
+- 字段：`defaultTrialDays`
+
+指定固定截止日期：
+
+- 文件：`scripts/release-settings.json`
+- 字段：`defaultTrialExpiresAt`
+- 示例：`"2026-07-10T23:59:59+08:00"`
+
+临时指定截止日期：
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialExpiresAt "2026-07-10T23:59:59+08:00" -Zip
+```
+
+有效期信息会在打包编译时写入 exe。程序运行后不会在 exe 所在目录生成运行时文件；机器绑定状态写入：
+
+```text
+Documents\.sugt\trial-state.json
+```
+
+关于页只显示一行低调说明：`内部试用版本，有效期至 yyyy-MM-dd` 或 `内部自用版本，无有效期限制`。
+
+## 开发命令
+
+国内 LLM 服务商 Base URL / 模型列表约定见 [docs/provider-vendors.md](docs/provider-vendors.md)。
+
+```cmd
+set "PATH=C:\Users\swl\.cargo\bin;%PATH%"
+call "C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+npm install
+npm run tauri:build
+```
 
 ## CLI
 

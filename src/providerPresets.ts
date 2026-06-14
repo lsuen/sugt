@@ -34,16 +34,20 @@ export type TrafficStats = {
   }[];
 };
 
-/** 国内服务商定义：协议切换时自动匹配官方 Base URL */
+export type ModelsListMode = 'openai_compatible' | 'manual';
+
+/** 国内服务商定义（详见 docs/provider-vendors.md） */
 export type VendorDefinition = {
   id: string;
   label: string;
   provider: string;
   openaiBaseUrl: string;
-  anthropicBaseUrl: string;
-  /** 统一调度/默认模型（留空则需用户填写或拉取列表） */
+  /** 无官方文档时不填；切换 Anthropic 时不会自动覆盖已有手填 URL */
+  anthropicBaseUrl?: string;
   defaultModel?: string;
-  anthropicSupported: boolean;
+  modelsListMode: ModelsListMode;
+  docUrl: string;
+  notes?: string;
 };
 
 export const VENDOR_DEFINITIONS: VendorDefinition[] = [
@@ -53,112 +57,124 @@ export const VENDOR_DEFINITIONS: VendorDefinition[] = [
     provider: 'ModelScope',
     openaiBaseUrl: 'https://api-inference.modelscope.cn/v1',
     anthropicBaseUrl: 'https://api-inference.modelscope.cn',
-    defaultModel: '',
-    anthropicSupported: true,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://modelscope.cn/docs/model-service/API-Inference/intro',
   },
   {
     id: 'deepseek',
     label: 'DeepSeek 官方',
     provider: 'DeepSeek',
     openaiBaseUrl: 'https://api.deepseek.com/v1',
-    anthropicBaseUrl: 'https://api.deepseek.com',
+    anthropicBaseUrl: 'https://api.deepseek.com/anthropic',
     defaultModel: 'deepseek-chat',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://api-docs.deepseek.com/guides/anthropic_api',
   },
   {
     id: 'dashscope',
     label: '通义千问 · 阿里云 DashScope',
     provider: 'Alibaba',
     openaiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    anthropicBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    anthropicBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
     defaultModel: 'qwen-plus',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://help.aliyun.com/zh/model-studio/anthropic-api-messages',
+    notes: 'Coding Plan 等套餐可能有专属域名，请以控制台为准',
   },
   {
     id: 'moonshot',
     label: 'Moonshot · Kimi',
     provider: 'Moonshot',
     openaiBaseUrl: 'https://api.moonshot.cn/v1',
-    anthropicBaseUrl: 'https://api.moonshot.cn/v1',
+    anthropicBaseUrl: 'https://api.moonshot.cn/anthropic',
     defaultModel: 'moonshot-v1-8k',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://platform.moonshot.cn/docs',
   },
   {
     id: 'zhipu',
     label: '智谱 AI · GLM',
     provider: 'Zhipu',
     openaiBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    anthropicBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    anthropicBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
     defaultModel: 'glm-4-flash',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://docs.bigmodel.cn/cn/guide/develop/claude/introduction',
   },
   {
     id: 'volcengine',
     label: '火山引擎 · 方舟',
     provider: 'Volcengine',
     openaiBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    anthropicBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    defaultModel: '',
-    anthropicSupported: false,
+    anthropicBaseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://www.volcengine.com/docs/82379',
+    notes: 'Anthropic 兼容；模型多为接入点 ID，Coding Plan OpenAI 用 /api/coding/v3',
   },
   {
     id: 'siliconflow',
     label: '硅基流动 SiliconFlow',
     provider: 'SiliconFlow',
     openaiBaseUrl: 'https://api.siliconflow.cn/v1',
-    anthropicBaseUrl: 'https://api.siliconflow.cn/v1',
-    defaultModel: '',
-    anthropicSupported: false,
+    anthropicBaseUrl: 'https://api.siliconflow.cn',
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://docs.siliconflow.cn/',
   },
   {
     id: 'minimax',
     label: 'MiniMax',
     provider: 'MiniMax',
-    openaiBaseUrl: 'https://api.minimax.chat/v1',
-    anthropicBaseUrl: 'https://api.minimax.chat/v1',
-    defaultModel: 'abab6.5s-chat',
-    anthropicSupported: false,
+    openaiBaseUrl: 'https://api.minimaxi.com/v1',
+    anthropicBaseUrl: 'https://api.minimaxi.com/anthropic',
+    defaultModel: 'MiniMax-M2.5',
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://platform.minimaxi.com/docs',
   },
   {
     id: 'baichuan',
     label: '百川智能',
     provider: 'Baichuan',
     openaiBaseUrl: 'https://api.baichuan-ai.com/v1',
-    anthropicBaseUrl: 'https://api.baichuan-ai.com/v1',
     defaultModel: 'Baichuan4-Turbo',
-    anthropicSupported: false,
+    modelsListMode: 'manual',
+    docUrl: 'https://platform.baichuan-ai.com/docs',
+    notes: '暂无公开模型列表接口，请手填 Model Name',
   },
   {
     id: 'stepfun',
     label: '阶跃星辰 StepFun',
     provider: 'StepFun',
     openaiBaseUrl: 'https://api.stepfun.com/v1',
-    anthropicBaseUrl: 'https://api.stepfun.com/v1',
     defaultModel: 'step-1-8k',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://platform.stepfun.com/docs',
   },
   {
     id: 'lingyi',
     label: '零一万物 Yi',
     provider: '01.AI',
     openaiBaseUrl: 'https://api.lingyiwanwu.com/v1',
-    anthropicBaseUrl: 'https://api.lingyiwanwu.com/v1',
     defaultModel: 'yi-lightning',
-    anthropicSupported: false,
+    modelsListMode: 'openai_compatible',
+    docUrl: 'https://platform.lingyiwanwu.com/docs',
   },
   {
     id: 'tencent',
     label: '腾讯混元',
     provider: 'Tencent',
     openaiBaseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
-    anthropicBaseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
-    defaultModel: 'hunyuan-lite',
-    anthropicSupported: false,
+    defaultModel: 'hunyuan-turbos-latest',
+    modelsListMode: 'manual',
+    docUrl: 'https://cloud.tencent.com/document/product/1729/111007',
+    notes: '暂无模型列表接口，请手填如 hunyuan-turbos-latest',
   },
 ];
 
-export function vendorBaseUrl(vendor: VendorDefinition, protocol: ProviderProtocol): string {
-  if (protocol === 'anthropic' && vendor.anthropicSupported) {
+export function vendorBaseUrl(
+  vendor: VendorDefinition,
+  protocol: ProviderProtocol,
+): string | undefined {
+  if (protocol === 'anthropic') {
     return vendor.anthropicBaseUrl;
   }
   return vendor.openaiBaseUrl;
@@ -169,8 +185,12 @@ export function applyVendorToForm(
   protocol: ProviderProtocol,
   prev: ProviderForm,
 ): ProviderForm {
-  const base_url = vendorBaseUrl(vendor, protocol);
-  const model_name = vendor.defaultModel ?? prev.model_name;
+  const suggested = vendorBaseUrl(vendor, protocol);
+  const base_url = suggested ?? prev.base_url;
+  const model_name =
+    vendor.defaultModel !== undefined && vendor.defaultModel !== ''
+      ? vendor.defaultModel
+      : prev.model_name;
   return {
     ...prev,
     name: prev.name || vendor.label,
@@ -187,11 +207,19 @@ export function findVendorById(id: string): VendorDefinition | undefined {
 
 export function guessVendorFromForm(form: ProviderForm): string {
   const base = form.base_url.trim().toLowerCase();
-  const hit = VENDOR_DEFINITIONS.find(
-    (v) =>
-      base.includes(v.openaiBaseUrl.toLowerCase().replace(/\/v1$/, '')) ||
-      base === v.openaiBaseUrl.toLowerCase() ||
-      base === v.anthropicBaseUrl.toLowerCase(),
-  );
+  const hit = VENDOR_DEFINITIONS.find((v) => {
+    const openai = v.openaiBaseUrl.toLowerCase();
+    const anthropic = v.anthropicBaseUrl?.toLowerCase();
+    return (
+      base === openai ||
+      base === openai.replace(/\/v1$/, '') ||
+      (anthropic && (base === anthropic || base.startsWith(anthropic))) ||
+      base.includes(openai.replace(/\/v1$/, '').replace('https://', ''))
+    );
+  });
   return hit?.id ?? '';
+}
+
+export function vendorSupportsModelList(vendor: VendorDefinition): boolean {
+  return vendor.modelsListMode === 'openai_compatible';
 }
