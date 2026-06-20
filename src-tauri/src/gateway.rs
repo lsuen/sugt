@@ -196,36 +196,34 @@ impl GatewayState {
     }
 
     pub async fn start(&self) -> Result<String> {
-        let (host, port) = {
-            let inner = self.inner.write().await;
+        let ports = {
+            let inner = self.inner.read().await;
             if inner.running {
-                return Ok(format!(
-                    "http://{}:{}",
-                    inner.config.host, inner.config.port
-                ));
+                return Ok(inner.config.listen_url());
             }
-            (inner.config.host.clone(), inner.config.port)
+            inner.config.port_candidates()
         };
 
-        let addr: SocketAddr = format!("{}:{}", host, port)
-            .parse()
-            .context("监听地址无效")?;
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|err| anyhow!(error_hint::format_bind_error(addr, &err)))?;
-        let local_addr = listener.local_addr()?;
+        let config_snapshot = self.config().await;
+        let (listener, bound_addr) =
+        crate::gateway_listen::bind_with_fallback(&config_snapshot).await?;
+        let bound_port = bound_addr.port();
+
         let (tx, rx) = oneshot::channel();
         let app = build_router(self.clone());
 
         {
             let mut inner = self.inner.write().await;
+            if bound_port != inner.config.port {
+                inner.config.port = bound_port;
+            }
             inner.shutdown = Some(tx);
             inner.running = true;
         }
 
         let state = self.clone();
         tokio::spawn(async move {
-            info!(%local_addr, "SUGT gateway started");
+            info!(%bound_addr, "SUGT gateway started");
             let result = axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     let _ = rx.await;
@@ -240,7 +238,8 @@ impl GatewayState {
             info!("SUGT gateway stopped");
         });
 
-        Ok(format!("http://{}", local_addr))
+        let url = self.config().await.listen_url();
+        Ok(url)
     }
 
     pub async fn stop(&self) -> Result<()> {

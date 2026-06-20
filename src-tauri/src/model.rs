@@ -88,6 +88,67 @@ pub struct AppConfig {
     pub autostart_gateway: bool,
     #[serde(default)]
     pub quit_behavior: QuitBehavior,
+    /// 端口被占用时自动尝试备选端口
+    #[serde(default = "default_port_fallback_enabled")]
+    pub port_fallback_enabled: bool,
+    #[serde(default = "default_port_fallback_ports")]
+    pub port_fallback_ports: Vec<u16>,
+    /// 后台循环检测网关并在不可达时自动拉起
+    #[serde(default = "default_gateway_watchdog_enabled")]
+    pub gateway_watchdog_enabled: bool,
+    /// 允许局域网其它设备连接（绑定 0.0.0.0）
+    #[serde(default)]
+    pub allow_lan_access: bool,
+}
+
+fn default_port_fallback_enabled() -> bool {
+    true
+}
+
+fn default_port_fallback_ports() -> Vec<u16> {
+    vec![9878, 18887, 28887]
+}
+
+fn default_gateway_watchdog_enabled() -> bool {
+    true
+}
+
+impl AppConfig {
+    /// 实际 bind 地址
+    pub fn bind_host(&self) -> String {
+        if self.allow_lan_access {
+            "0.0.0.0".to_string()
+        } else if self.host.is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            self.host.clone()
+        }
+    }
+
+    /// 写入客户端环境变量 / 健康检查用的主机名
+    pub fn client_host(&self) -> String {
+        if self.host == "0.0.0.0" || self.allow_lan_access {
+            "127.0.0.1".to_string()
+        } else {
+            self.host.clone()
+        }
+    }
+
+    pub fn listen_url(&self) -> String {
+        format!("http://{}:{}", self.client_host(), self.port)
+    }
+
+    pub fn port_candidates(&self) -> Vec<u16> {
+        let mut ports = vec![self.port];
+        if self.port_fallback_enabled {
+            for port in &self.port_fallback_ports {
+                if !ports.contains(port) {
+                    ports.push(*port);
+                }
+            }
+        }
+        ports
+    }
 }
 
 impl Default for AppConfig {
@@ -101,6 +162,10 @@ impl Default for AppConfig {
             autostart: false,
             autostart_gateway: false,
             quit_behavior: QuitBehavior::default(),
+            port_fallback_enabled: default_port_fallback_enabled(),
+            port_fallback_ports: default_port_fallback_ports(),
+            gateway_watchdog_enabled: default_gateway_watchdog_enabled(),
+            allow_lan_access: false,
         }
     }
 }

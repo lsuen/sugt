@@ -173,7 +173,7 @@ async fn ensure_gateway_reachable(
     app_config: &sugt_lib::model::AppConfig,
     auto_start: bool,
 ) -> Result<()> {
-    let health_url = gateway_daemon::health_url(&app_config.host, app_config.port);
+    let health_url = gateway_daemon::health_url(&app_config.client_host(), app_config.port);
     if gateway_daemon::is_health_url_ok(&health_url).await {
         return Ok(());
     }

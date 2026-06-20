@@ -197,7 +197,7 @@ pub fn write_launch_scripts(paths: &AppPaths, config: &AppConfig) -> Result<()> 
 }
 
 fn listen_url(config: &AppConfig) -> String {
-    format!("http://{}:{}", config.host, config.port)
+    config.listen_url()
 }
 
 fn claude_vars(listen_url: &str) -> BTreeMap<String, String> {

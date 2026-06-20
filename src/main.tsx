@@ -67,6 +67,10 @@ type AppConfig = {
   autostart: boolean;
   autostart_gateway: boolean;
   quit_behavior: QuitBehavior;
+  port_fallback_enabled?: boolean;
+  gateway_watchdog_enabled?: boolean;
+  allow_lan_access?: boolean;
+  port_fallback_ports?: number[];
   providers: unknown[];
 };
 
@@ -561,6 +565,18 @@ function App() {
               <label className="switch-line">
                 <span>启动时自动开网关</span>
                 <input type="checkbox" checked={Boolean(config?.autostart_gateway)} onChange={(e) => run(() => invoke('set_autostart_gateway', { enabled: e.target.checked }), '已更新')} />
+              </label>
+              <label className="switch-line">
+                <span>端口占用时自动换端口</span>
+                <input type="checkbox" checked={Boolean(config?.port_fallback_enabled ?? true)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { portFallbackEnabled: e.target.checked } }), '已更新')} />
+              </label>
+              <label className="switch-line">
+                <span>网关守护循环（不可达自动拉起）</span>
+                <input type="checkbox" checked={Boolean(config?.gateway_watchdog_enabled ?? true)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { gatewayWatchdogEnabled: e.target.checked } }), '已更新')} />
+              </label>
+              <label className="switch-line">
+                <span>允许局域网连接</span>
+                <input type="checkbox" checked={Boolean(config?.allow_lan_access)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { allowLanAccess: e.target.checked } }), '已更新')} />
               </label>
               <label className="switch-line select-line">
                 <span>托盘退出时</span>

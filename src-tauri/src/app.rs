@@ -1,4 +1,4 @@
-use crate::{commands::{self, AppRuntime}, logging, store, tray};
+use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, store, tray};
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
@@ -20,6 +20,7 @@ pub fn run() {
             commands::test_provider,
             commands::list_provider_models,
             commands::set_failover,
+            commands::update_gateway_settings,
             commands::set_autostart,
             commands::set_autostart_gateway,
             commands::set_quit_behavior,
@@ -54,6 +55,8 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
+                    let watchdog_runtime = runtime.inner().clone();
+                    gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
                     commands::maybe_autostart_gateway(&runtime).await;
                     let _ = handle.emit("sugt://status-changed", ());
                 }

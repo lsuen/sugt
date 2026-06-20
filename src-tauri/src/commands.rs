@@ -11,10 +11,15 @@ use crate::{
     },
     trial,
 };
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::RwLock;
 use tracing::warn;
 
 async fn gateway_is_reachable(config: &AppConfig) -> bool {
-    gateway_daemon::is_reachable(&config.host, config.port).await
+    gateway_daemon::is_reachable(&config.client_host(), config.port).await
 }
 
 async fn clients_env_with_reachability(config: &AppConfig) -> ClientsEnvStatus {
@@ -43,14 +48,15 @@ async fn ensure_gateway_listening(
             warn!(error = %err, "embedded gateway start failed, trying detached serve");
         }
     }
-    if gateway_daemon::wait_reachable(&config.host, config.port, 8).await {
+    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
         return Ok(());
     }
 
     if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
         warn!(error = %err, "detached gateway spawn failed");
     }
-    if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
+        sync_gateway_port_if_changed(runtime).await?;
         return Ok(());
     }
 
@@ -59,11 +65,20 @@ async fn ensure_gateway_listening(
             .to_string(),
     )
 }
-use anyhow::{anyhow, Result};
-use serde::Deserialize;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
-use tokio::sync::RwLock;
+
+async fn sync_gateway_port_if_changed(runtime: &AppRuntime) -> Result<(), String> {
+    let gw_config = runtime.gateway.config().await;
+    let mut cfg = runtime.config.write().await;
+    if cfg.port == gw_config.port {
+        return Ok(());
+    }
+    cfg.port = gw_config.port;
+    let updated = cfg.clone();
+    runtime.persist().await.map_err(|e| e.to_string())?;
+    clients::write_launch_scripts(&runtime.paths, &updated).map_err(|e| e.to_string())?;
+    clients::repair(&updated).map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -90,7 +105,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
     let gateway_reachable = gateway_is_reachable(&config).await;
     Ok(RuntimeStatus {
         running: gateway_reachable,
-        listen_url: format!("http://{}:{}", config.host, config.port),
+        listen_url: config.listen_url(),
         active_model: provider
             .as_ref()
             .map(|provider| provider.model_name.clone()),
@@ -111,21 +126,26 @@ pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, Str
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
     let config = runtime.config.read().await.clone();
     if gateway_is_reachable(&config).await {
-        return Ok(format!("http://{}:{}", config.host, config.port));
+        return Ok(config.listen_url());
     }
     runtime
         .gateway
         .start()
         .await
         .map_err(|err| error_hint::format_gateway_start_error(&err))?;
-    if gateway_daemon::wait_reachable(&config.host, config.port, 8).await {
-        return Ok(format!("http://{}:{}", config.host, config.port));
+    sync_gateway_port_if_changed(&runtime).await?;
+    let config = runtime.config.read().await.clone();
+    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
+        sync_gateway_port_if_changed(&runtime).await?;
+        return Ok(runtime.config.read().await.listen_url());
     }
-  if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
+
+    if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
         return Err(err.to_string());
     }
-    if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
-        Ok(format!("http://{}:{}", config.host, config.port))
+    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
+        sync_gateway_port_if_changed(&runtime).await?;
+        Ok(runtime.config.read().await.listen_url())
     } else {
         Err("启动网关失败：健康检查未通过，请查看日志或更换监听端口".to_string())
     }
@@ -316,6 +336,42 @@ pub async fn set_failover(runtime: State<'_, AppRuntime>, enabled: bool) -> Resu
     runtime.persist().await.map_err(|err| err.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySettingsInput {
+    pub port_fallback_enabled: Option<bool>,
+    pub gateway_watchdog_enabled: Option<bool>,
+    pub allow_lan_access: Option<bool>,
+    pub port: Option<u16>,
+}
+
+#[tauri::command]
+pub async fn update_gateway_settings(
+    runtime: State<'_, AppRuntime>,
+    input: GatewaySettingsInput,
+) -> Result<AppConfig, String> {
+    let mut config = runtime.config.write().await;
+    if let Some(enabled) = input.port_fallback_enabled {
+        config.port_fallback_enabled = enabled;
+    }
+    if let Some(enabled) = input.gateway_watchdog_enabled {
+        config.gateway_watchdog_enabled = enabled;
+    }
+    if let Some(enabled) = input.allow_lan_access {
+        config.allow_lan_access = enabled;
+    }
+    if let Some(port) = input.port {
+        if port == 0 {
+            return Err("端口不能为 0".to_string());
+        }
+        config.port = port;
+    }
+    let snapshot = config.clone();
+    drop(config);
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub async fn set_autostart(
     app: AppHandle,
@@ -359,7 +415,7 @@ pub async fn apply_quit_behavior(runtime: &AppRuntime) -> Result<(), String> {
             if takeover_active && embedded {
                 if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
                     warn!(error = %err, "failed to spawn detached gateway on quit");
-                } else if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+                } else if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
                     let _ = runtime.gateway.stop().await;
                 }
             }
@@ -398,7 +454,7 @@ pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
             warn!(error = %err, "gateway autostart detached failed");
         }
     }
-    if !gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+    if !gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
         warn!("gateway autostart: health check still failing after retries");
     }
 }
