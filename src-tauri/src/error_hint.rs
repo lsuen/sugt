@@ -9,6 +9,16 @@ pub fn format_bind_error(addr: std::net::SocketAddr, err: &std::io::Error) -> St
     {
         return format!("端口 {} 已被占用：请停止占用该端口的程序，或在配置中更换监听端口", addr.port());
     }
+    if text.contains("10013")
+        || text.contains("access denied")
+        || text.contains("拒绝访问")
+        || text.contains("permission denied")
+    {
+        return format!(
+            "端口 {} 无法监听（系统拒绝访问）：Windows 可能保留了该端口段，请在配置中将 port 改为 9878 等未占用端口，并点击「修复接管」",
+            addr.port()
+        );
+    }
     format!("无法监听 {}：{}", addr, err)
 }
 

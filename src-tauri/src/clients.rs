@@ -21,6 +21,7 @@ pub struct ClientEnvStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientsEnvStatus {
     pub listen_url: String,
+    pub gateway_reachable: bool,
     pub claude: ClientEnvStatus,
     pub codex: ClientEnvStatus,
     pub has_issues: bool,
@@ -125,6 +126,7 @@ pub fn status(config: &AppConfig) -> ClientsEnvStatus {
 
     ClientsEnvStatus {
         listen_url,
+        gateway_reachable: false,
         has_issues: !claude.issues.is_empty() || !codex.issues.is_empty(),
         claude,
         codex,

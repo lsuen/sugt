@@ -31,6 +31,7 @@ type ClientEnvStatus = {
 
 type ClientsEnvStatus = {
   listen_url: string;
+  gateway_reachable?: boolean;
   claude: ClientEnvStatus;
   codex: ClientEnvStatus;
   has_issues?: boolean;

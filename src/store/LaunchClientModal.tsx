@@ -18,6 +18,7 @@ export function LaunchClientModal({ clientTab, onClose, pushToast, formatError }
   const launch = async () => {
     setLaunching(true);
     try {
+      await invoke('start_gateway');
       await invoke('store_launch_client', {
         client: clientTab,
         workDir: workDir.trim() || null,

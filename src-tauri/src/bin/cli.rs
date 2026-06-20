@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use sugt_lib::{clients, config, gateway::GatewayState, logging, model::ProviderConfig, trial};
-use std::{process::Command as ProcessCommand, time::Duration};
+use sugt_lib::{clients, config, gateway::GatewayState, gateway_daemon, logging, model::ProviderConfig, trial};
+use std::time::Duration;
 use tokio::signal;
 
 #[derive(Parser)]
@@ -173,11 +173,8 @@ async fn ensure_gateway_reachable(
     app_config: &sugt_lib::model::AppConfig,
     auto_start: bool,
 ) -> Result<()> {
-    let health_url = format!(
-        "http://{}:{}/health",
-        app_config.host, app_config.port
-    );
-    if gateway_health_ok(&health_url).await {
+    let health_url = gateway_daemon::health_url(&app_config.host, app_config.port);
+    if gateway_daemon::is_health_url_ok(&health_url).await {
         return Ok(());
     }
     if !auto_start {
@@ -186,40 +183,12 @@ async fn ensure_gateway_reachable(
         );
     }
     trial::ensure_allowed(paths)?;
-    spawn_gateway_background()?;
+    gateway_daemon::spawn_detached(&paths.config_dir)?;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if gateway_health_ok(&health_url).await {
+        if gateway_daemon::is_health_url_ok(&health_url).await {
             return Ok(());
         }
     }
     bail!("已尝试后台启动网关，但健康检查仍未通过，请手动执行 sugt-cli serve")
-}
-
-async fn gateway_health_ok(url: &str) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-    match client.get(url).send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
-    }
-}
-
-fn spawn_gateway_background() -> Result<()> {
-    let exe = std::env::current_exe().context("无法定位 sugt-cli 可执行文件")?;
-    let mut cmd = ProcessCommand::new(exe);
-    cmd.arg("serve");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd.spawn().context("后台启动 sugt-cli serve 失败")?;
-    Ok(())
 }

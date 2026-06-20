@@ -4,12 +4,61 @@ use crate::{
     config::{self, AppPaths},
     error_hint,
     gateway::{self, GatewayState},
+    gateway_daemon,
     model::{
         AppConfig, ProviderConfig, ProviderInput, ProviderProtocol, ProviderStatus, ProviderView,
         QuitBehavior, RuntimeStatus,
     },
     trial,
 };
+use tracing::warn;
+
+async fn gateway_is_reachable(config: &AppConfig) -> bool {
+    gateway_daemon::is_reachable(&config.host, config.port).await
+}
+
+async fn clients_env_with_reachability(config: &AppConfig) -> ClientsEnvStatus {
+    let mut status = clients::status(config);
+    status.gateway_reachable = gateway_is_reachable(config).await;
+    status
+}
+
+async fn ensure_gateway_listening(
+    runtime: &AppRuntime,
+    auto_start: bool,
+) -> Result<(), String> {
+    let config = runtime.config.read().await.clone();
+    if gateway_is_reachable(&config).await {
+        return Ok(());
+    }
+    if !auto_start {
+        return Err(
+            "gateway_not_running:本地网关未运行，请先启动网关或使用「启动网关并接管」".to_string(),
+        );
+    }
+    trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
+
+    if !runtime.gateway.is_running().await {
+        if let Err(err) = runtime.gateway.start().await {
+            warn!(error = %err, "embedded gateway start failed, trying detached serve");
+        }
+    }
+    if gateway_daemon::wait_reachable(&config.host, config.port, 8).await {
+        return Ok(());
+    }
+
+    if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
+        warn!(error = %err, "detached gateway spawn failed");
+    }
+    if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+        return Ok(());
+    }
+
+    Err(
+        "启动网关失败：端口可能被占用或系统拒绝监听。请检查配置端口、关闭占用程序，或改用 9878 等端口后点击「修复接管」"
+            .to_string(),
+    )
+}
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -38,8 +87,9 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
     let provider = runtime.gateway.active_provider().await;
     let last_hit = runtime.gateway.last_proxy_hit().await;
     let traffic = runtime.gateway.traffic_stats().await;
+    let gateway_reachable = gateway_is_reachable(&config).await;
     Ok(RuntimeStatus {
-        running: runtime.gateway.is_running().await,
+        running: gateway_reachable,
         listen_url: format!("http://{}:{}", config.host, config.port),
         active_model: provider
             .as_ref()
@@ -59,16 +109,33 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
 #[tauri::command]
 pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, String> {
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
+    let config = runtime.config.read().await.clone();
+    if gateway_is_reachable(&config).await {
+        return Ok(format!("http://{}:{}", config.host, config.port));
+    }
     runtime
         .gateway
         .start()
         .await
-        .map_err(|err| error_hint::format_gateway_start_error(&err))
+        .map_err(|err| error_hint::format_gateway_start_error(&err))?;
+    if gateway_daemon::wait_reachable(&config.host, config.port, 8).await {
+        return Ok(format!("http://{}:{}", config.host, config.port));
+    }
+  if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
+        return Err(err.to_string());
+    }
+    if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+        Ok(format!("http://{}:{}", config.host, config.port))
+    } else {
+        Err("启动网关失败：健康检查未通过，请查看日志或更换监听端口".to_string())
+    }
 }
 
 #[tauri::command]
 pub async fn stop_gateway(runtime: State<'_, AppRuntime>) -> Result<(), String> {
-    runtime.gateway.stop().await.map_err(|err| err.to_string())
+    runtime.gateway.stop().await.map_err(|err| err.to_string())?;
+    gateway_daemon::stop_detached(&runtime.paths.config_dir).map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -284,12 +351,28 @@ pub async fn set_quit_behavior(
 pub async fn apply_quit_behavior(runtime: &AppRuntime) -> Result<(), String> {
     let config = runtime.config.read().await.clone();
     match config.quit_behavior {
-        QuitBehavior::ExitOnly => {}
+        QuitBehavior::ExitOnly => {
+            let clients_status = clients::status(&config);
+            let takeover_active =
+                clients_status.claude.configured || clients_status.codex.configured;
+            let embedded = runtime.gateway.is_running().await;
+            if takeover_active && embedded {
+                if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
+                    warn!(error = %err, "failed to spawn detached gateway on quit");
+                } else if gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+                    let _ = runtime.gateway.stop().await;
+                }
+            }
+        }
         QuitBehavior::StopGateway => {
             runtime.gateway.stop().await.map_err(|err| err.to_string())?;
+            gateway_daemon::stop_detached(&runtime.paths.config_dir)
+                .map_err(|err| err.to_string())?;
         }
         QuitBehavior::StopAll => {
             runtime.gateway.stop().await.map_err(|err| err.to_string())?;
+            gateway_daemon::stop_detached(&runtime.paths.config_dir)
+                .map_err(|err| err.to_string())?;
             clients::uninstall(&config).map_err(|err| err.to_string())?;
         }
     }
@@ -298,26 +381,33 @@ pub async fn apply_quit_behavior(runtime: &AppRuntime) -> Result<(), String> {
 
 pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
     let config = runtime.config.read().await.clone();
-    if !config.autostart_gateway || runtime.gateway.is_running().await {
+    if !config.autostart_gateway {
+        return;
+    }
+    if gateway_is_reachable(&config).await || runtime.gateway.is_running().await {
         return;
     }
     if trial::ensure_allowed(&runtime.paths).is_err() {
         return;
     }
-    let _ = runtime.gateway.start().await;
+    if let Err(err) = runtime.gateway.start().await {
+        warn!(error = %err, "gateway autostart embedded failed");
+    }
+    if !gateway_is_reachable(&config).await {
+        if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
+            warn!(error = %err, "gateway autostart detached failed");
+        }
+    }
+    if !gateway_daemon::wait_reachable(&config.host, config.port, 20).await {
+        warn!("gateway autostart: health check still failing after retries");
+    }
 }
 
 async fn ensure_gateway_for_takeover(
     runtime: &AppRuntime,
     auto_start: bool,
 ) -> Result<(), String> {
-    if auto_start {
-        trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
-    }
-    runtime
-        .gateway
-        .ensure_listening(auto_start)
-        .await
+    ensure_gateway_listening(runtime, auto_start).await
 }
 
 #[tauri::command]
@@ -343,7 +433,7 @@ pub async fn get_clients_env_status(
     runtime: State<'_, AppRuntime>,
 ) -> Result<ClientsEnvStatus, String> {
     let config = runtime.config.read().await.clone();
-    Ok(clients::status(&config))
+    Ok(clients_env_with_reachability(&config).await)
 }
 
 #[tauri::command]
@@ -352,7 +442,8 @@ pub async fn repair_clients_env(
 ) -> Result<ClientsEnvStatus, String> {
     let config = runtime.config.read().await.clone();
     clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
-    clients::repair(&config).map_err(|err| err.to_string())
+    clients::repair(&config).map_err(|err| err.to_string())?;
+    Ok(clients_env_with_reachability(&config).await)
 }
 
 #[tauri::command]
@@ -363,7 +454,8 @@ pub async fn install_clients_env(
     ensure_gateway_for_takeover(&runtime, auto_start.unwrap_or(false)).await?;
     let config = runtime.config.read().await.clone();
     clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
-    clients::install(&config).map_err(|err| err.to_string())
+    clients::install(&config).map_err(|err| err.to_string())?;
+    Ok(clients_env_with_reachability(&config).await)
 }
 
 #[tauri::command]
@@ -371,7 +463,8 @@ pub async fn uninstall_clients_env(
     runtime: State<'_, AppRuntime>,
 ) -> Result<ClientsEnvStatus, String> {
     let config = runtime.config.read().await.clone();
-    clients::uninstall(&config).map_err(|err| err.to_string())
+    clients::uninstall(&config).map_err(|err| err.to_string())?;
+    Ok(clients_env_with_reachability(&config).await)
 }
 
 fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {

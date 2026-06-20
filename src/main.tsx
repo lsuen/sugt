@@ -83,6 +83,7 @@ type ClientEnvStatus = {
 
 type ClientsEnvStatus = {
   listen_url: string;
+  gateway_reachable?: boolean;
   claude: ClientEnvStatus;
   codex: ClientEnvStatus;
   has_issues?: boolean;
@@ -320,11 +321,16 @@ function App() {
   }, []);
 
   const clientsHint = useMemo(() => {
-    const parts = ['写入用户环境变量，仅对新打开的终端生效。悬停「已接管/未接管」标签可查看变量详情。'];
-    if (!status?.running) parts.push('网关未运行时请用「启动网关并接管」。');
+    const parts = ['写入用户环境变量，仅对新打开的终端生效；从 Cursor/VS Code 内启动的客户端需完全重启 IDE。悬停标签可查看变量详情。'];
+    if (!status?.running) {
+      parts.push('网关未运行：请点「启动网关并接管」，或保持 SUGT 托盘运行。');
+    }
+    if (clients?.gateway_reachable === false && (clients?.claude?.configured || clients?.codex?.configured)) {
+      parts.push('环境已接管但网关不可达，Claude/Codex 会一直重连——请先启动网关。');
+    }
     if (clients?.has_issues) parts.push('检测到冲突，请点击「修复接管」。');
     return parts.join(' ');
-  }, [status?.running, clients?.has_issues]);
+  }, [status?.running, clients?.has_issues, clients?.gateway_reachable, clients?.claude?.configured, clients?.codex?.configured]);
 
   const refreshCore = useCallback(async () => {
     const [nextStatus, nextProviders, nextConfig, nextClients] = await Promise.all([
