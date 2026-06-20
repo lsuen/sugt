@@ -5,6 +5,15 @@ use std::collections::BTreeMap;
 
 const DUMMY_KEY: &str = "sugt-local-key";
 
+fn client_api_key(config: &AppConfig) -> String {
+    let key = config.gateway_client_api_key.trim();
+    if key.is_empty() {
+        DUMMY_KEY.to_string()
+    } else {
+        key.to_string()
+    }
+}
+
 /// Claude Code 与 AUTH_TOKEN 冲突的变量（旧版 SUGT 会误设，需清理）
 const CLAUDE_CONFLICTING_VARS: &[&str] = &["ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"];
 
@@ -56,9 +65,9 @@ pub fn preview_install(config: &AppConfig) -> TakeoverPreview {
     }
 
     let mut entries = Vec::new();
-    for (name, value) in claude_vars(&listen_url)
+    for (name, value) in claude_vars(&listen_url, &client_api_key(config))
         .into_iter()
-        .chain(codex_vars(&listen_url))
+        .chain(codex_vars(&listen_url, &client_api_key(config)))
     {
         let current = std::env::var(&name).unwrap_or_default();
         let action = if current.is_empty() {
@@ -106,8 +115,8 @@ fn mask_env_for_preview(name: &str, value: &str) -> String {
 
 pub fn status(config: &AppConfig) -> ClientsEnvStatus {
     let listen_url = listen_url(config);
-    let claude_expected = claude_vars(&listen_url);
-    let codex_expected = codex_vars(&listen_url);
+    let claude_expected = claude_vars(&listen_url, &client_api_key(config));
+    let codex_expected = codex_vars(&listen_url, &client_api_key(config));
 
     let claude = client_status(
         "Claude Code",
@@ -136,9 +145,9 @@ pub fn status(config: &AppConfig) -> ClientsEnvStatus {
 pub fn install(config: &AppConfig) -> Result<ClientsEnvStatus> {
     clear_claude_conflicts()?;
     let listen_url = listen_url(config);
-    for (name, value) in claude_vars(&listen_url)
+    for (name, value) in claude_vars(&listen_url, &client_api_key(config))
         .into_iter()
-        .chain(codex_vars(&listen_url))
+        .chain(codex_vars(&listen_url, &client_api_key(config)))
     {
         set_user_env(&name, &value)?;
     }
@@ -151,22 +160,23 @@ pub fn repair(config: &AppConfig) -> Result<ClientsEnvStatus> {
 
 pub fn uninstall(config: &AppConfig) -> Result<ClientsEnvStatus> {
     let listen_url = listen_url(config);
-    let mut names: Vec<String> = claude_vars(&listen_url)
+    let key = client_api_key(config);
+    let mut names: Vec<String> = claude_vars(&listen_url, &key)
         .into_keys()
-        .chain(codex_vars(&listen_url).into_keys())
+        .chain(codex_vars(&listen_url, &key).into_keys())
         .chain(CLAUDE_CONFLICTING_VARS.iter().map(|s| s.to_string()))
         .collect();
     names.sort_unstable();
     names.dedup();
 
     for name in names {
-        let expected = claude_vars(&listen_url)
+        let expected = claude_vars(&listen_url, &key)
             .get(&name)
             .cloned()
-            .or_else(|| codex_vars(&listen_url).get(&name).cloned())
+            .or_else(|| codex_vars(&listen_url, &key).get(&name).cloned())
             .unwrap_or_default();
         let actual = std::env::var(&name).unwrap_or_default();
-        if expected.is_empty() || actual == expected || actual == DUMMY_KEY {
+        if expected.is_empty() || actual == expected || actual == DUMMY_KEY || actual == key {
             let _ = unset_user_env(&name);
         }
     }
@@ -175,21 +185,23 @@ pub fn uninstall(config: &AppConfig) -> Result<ClientsEnvStatus> {
 
 pub fn print_launch_script(config: &AppConfig) -> String {
     let listen_url = listen_url(config);
+    let key = client_api_key(config);
     format!(
         "set ANTHROPIC_BASE_URL={}\r\nset ANTHROPIC_AUTH_TOKEN={}\r\nset OPENAI_BASE_URL={}/v1\r\nset OPENAI_API_BASE={}/v1\r\nset OPENAI_API_KEY={}\r\n",
-        listen_url, DUMMY_KEY, listen_url, listen_url, DUMMY_KEY
+        listen_url, key, listen_url, listen_url, key
     )
 }
 
 pub fn write_launch_scripts(paths: &AppPaths, config: &AppConfig) -> Result<()> {
     let listen_url = listen_url(config);
+    let key = client_api_key(config);
     let claude = format!(
         "@echo off\r\nset ANTHROPIC_BASE_URL={}\r\nset ANTHROPIC_AUTH_TOKEN={}\r\nset ANTHROPIC_API_KEY=\r\nset CLAUDE_CODE_API_KEY=\r\nclaude %*\r\n",
-        listen_url, DUMMY_KEY
+        listen_url, key
     );
     let codex = format!(
         "@echo off\r\nset OPENAI_BASE_URL={}/v1\r\nset OPENAI_API_BASE={}/v1\r\nset OPENAI_API_KEY={}\r\ncodex %*\r\n",
-        listen_url, listen_url, DUMMY_KEY
+        listen_url, listen_url, key
     );
     std::fs::write(paths.config_dir.join("claude-sugt.cmd"), claude)?;
     std::fs::write(paths.config_dir.join("codex-sugt.cmd"), codex)?;
@@ -200,18 +212,18 @@ fn listen_url(config: &AppConfig) -> String {
     config.listen_url()
 }
 
-fn claude_vars(listen_url: &str) -> BTreeMap<String, String> {
+fn claude_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("ANTHROPIC_BASE_URL".to_string(), listen_url.to_string()),
-        ("ANTHROPIC_AUTH_TOKEN".to_string(), DUMMY_KEY.to_string()),
+        ("ANTHROPIC_AUTH_TOKEN".to_string(), client_key.to_string()),
     ])
 }
 
-fn codex_vars(listen_url: &str) -> BTreeMap<String, String> {
+fn codex_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("OPENAI_BASE_URL".to_string(), format!("{}/v1", listen_url)),
         ("OPENAI_API_BASE".to_string(), format!("{}/v1", listen_url)),
-        ("OPENAI_API_KEY".to_string(), DUMMY_KEY.to_string()),
+        ("OPENAI_API_KEY".to_string(), client_key.to_string()),
     ])
 }
 
@@ -372,7 +384,7 @@ mod tests {
 
     #[test]
     fn claude_vars_only_use_auth_token() {
-        let vars = claude_vars("http://127.0.0.1:8787");
+        let vars = claude_vars("http://127.0.0.1:8787", "sugt-local-key");
         assert!(vars.contains_key("ANTHROPIC_AUTH_TOKEN"));
         assert!(!vars.contains_key("ANTHROPIC_API_KEY"));
         assert!(!vars.contains_key("CLAUDE_CODE_API_KEY"));

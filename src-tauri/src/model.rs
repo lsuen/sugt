@@ -34,6 +34,8 @@ pub struct ProviderConfig {
     pub status: ProviderStatus,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub model_alias: Option<String>,
 }
 
 impl ProviderConfig {
@@ -56,11 +58,20 @@ impl ProviderConfig {
             status: ProviderStatus::Unknown,
             last_checked_at: None,
             last_error: None,
+            model_alias: None,
         }
     }
 
     pub fn masked_key(&self) -> String {
         mask_secret(&self.api_key)
+    }
+
+    pub fn public_model_id(&self) -> String {
+        self.model_alias
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| self.model_name.clone())
     }
 }
 
@@ -99,6 +110,13 @@ pub struct AppConfig {
     /// 允许局域网其它设备连接（绑定 0.0.0.0）
     #[serde(default)]
     pub allow_lan_access: bool,
+    /// 客户端连接本地网关时使用的 API Key（可自定义防蹭网）
+    #[serde(default = "default_gateway_client_api_key")]
+    pub gateway_client_api_key: String,
+}
+
+fn default_gateway_client_api_key() -> String {
+    "sugt-local-key".to_string()
 }
 
 fn default_port_fallback_enabled() -> bool {
@@ -166,6 +184,7 @@ impl Default for AppConfig {
             port_fallback_ports: default_port_fallback_ports(),
             gateway_watchdog_enabled: default_gateway_watchdog_enabled(),
             allow_lan_access: false,
+            gateway_client_api_key: default_gateway_client_api_key(),
         }
     }
 }
@@ -183,6 +202,11 @@ pub struct ProxyHit {
 pub struct RuntimeStatus {
     pub running: bool,
     pub listen_url: String,
+    pub openai_base_url: String,
+    pub anthropic_base_url: String,
+    pub gateway_client_api_key_masked: String,
+    pub public_model_id: Option<String>,
+    pub allow_lan_access: bool,
     pub active_model: Option<String>,
     pub active_provider: Option<String>,
     pub last_proxy_provider: Option<String>,
@@ -219,6 +243,8 @@ pub struct ProviderInput {
     pub api_key: String,
     pub model_name: String,
     #[serde(default)]
+    pub model_alias: Option<String>,
+    #[serde(default)]
     pub protocol: ProviderProtocol,
     pub enabled: bool,
 }
@@ -231,6 +257,8 @@ pub struct ProviderView {
     pub base_url: String,
     pub api_key_masked: String,
     pub model_name: String,
+    pub model_alias: Option<String>,
+    pub public_model_id: String,
     pub protocol: ProviderProtocol,
     pub enabled: bool,
     pub status: ProviderStatus,
@@ -247,6 +275,8 @@ impl From<&ProviderConfig> for ProviderView {
             base_url: value.base_url.clone(),
             api_key_masked: value.masked_key(),
             model_name: value.model_name.clone(),
+            model_alias: value.model_alias.clone(),
+            public_model_id: value.public_model_id(),
             protocol: value.protocol.clone(),
             enabled: value.enabled,
             status: value.status.clone(),

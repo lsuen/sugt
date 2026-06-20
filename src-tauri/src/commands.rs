@@ -103,9 +103,15 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
     let last_hit = runtime.gateway.last_proxy_hit().await;
     let traffic = runtime.gateway.traffic_stats().await;
     let gateway_reachable = gateway_is_reachable(&config).await;
+    let public_model_id = provider.as_ref().map(|p| p.public_model_id());
     Ok(RuntimeStatus {
         running: gateway_reachable,
         listen_url: config.listen_url(),
+        openai_base_url: format!("{}/v1", config.listen_url()),
+        anthropic_base_url: config.listen_url(),
+        gateway_client_api_key_masked: crate::model::mask_secret(&config.gateway_client_api_key),
+        public_model_id,
+        allow_lan_access: config.allow_lan_access,
         active_model: provider
             .as_ref()
             .map(|provider| provider.model_name.clone()),
@@ -186,6 +192,10 @@ pub async fn save_provider(
             provider.api_key = input.api_key;
         }
         provider.model_name = input.model_name;
+        provider.model_alias = input
+            .model_alias
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         provider.protocol = input.protocol.clone();
         provider.enabled = input.enabled;
     } else {
@@ -199,6 +209,10 @@ pub async fn save_provider(
         provider.protocol = input.protocol.clone();
         provider.base_url =
             crate::model::normalize_base_url_for_protocol(input.base_url, &input.protocol);
+        provider.model_alias = input
+            .model_alias
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         if config.active_provider_id.is_none() {
             config.active_provider_id = Some(provider.id.clone());
         }
@@ -343,6 +357,7 @@ pub struct GatewaySettingsInput {
     pub gateway_watchdog_enabled: Option<bool>,
     pub allow_lan_access: Option<bool>,
     pub port: Option<u16>,
+    pub gateway_client_api_key: Option<String>,
 }
 
 #[tauri::command]
@@ -365,6 +380,13 @@ pub async fn update_gateway_settings(
             return Err("端口不能为 0".to_string());
         }
         config.port = port;
+    }
+    if let Some(key) = input.gateway_client_api_key {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            return Err("网关 API Key 不能为空".to_string());
+        }
+        config.gateway_client_api_key = trimmed.to_string();
     }
     let snapshot = config.clone();
     drop(config);

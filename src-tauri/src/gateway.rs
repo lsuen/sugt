@@ -196,13 +196,12 @@ impl GatewayState {
     }
 
     pub async fn start(&self) -> Result<String> {
-        let ports = {
+        {
             let inner = self.inner.read().await;
             if inner.running {
                 return Ok(inner.config.listen_url());
             }
-            inner.config.port_candidates()
-        };
+        }
 
         let config_snapshot = self.config().await;
         let (listener, bound_addr) =
@@ -327,7 +326,7 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
         .filter(|provider| provider.enabled)
         .map(|provider| {
             json!({
-                "id": provider.model_name,
+                "id": provider.public_model_id(),
                 "object": "model",
                 "created": 0,
                 "owned_by": provider.provider,
@@ -343,6 +342,10 @@ async fn proxy_openai(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
+    let config = state.config().await;
+    if !crate::gateway_auth::validate_client_request(&headers, &config) {
+        return json_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
+    }
     let path = request.uri().path().trim_start_matches('/').to_string();
     let started = std::time::Instant::now();
     match proxy_request(state.clone(), headers.clone(), request).await {
@@ -367,6 +370,10 @@ async fn proxy_anthropic_messages(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
+    let config = state.config().await;
+    if !crate::gateway_auth::validate_client_request(&headers, &config) {
+        return anthropic_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
+    }
     let started = std::time::Instant::now();
     match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,

@@ -6,6 +6,7 @@ import {
   Play, PlugZap, Plus, RefreshCw, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
 } from 'lucide-react';
 import './styles.css';
+import { GatewayAccessBanner } from './GatewayAccessBanner';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 import { StoreClientsPanel } from './store/StoreClientsPanel';
 import { TrafficPanel } from './TrafficPanel';
@@ -19,6 +20,11 @@ type ProviderProtocol = 'openai' | 'anthropic';
 type RuntimeStatus = {
   running: boolean;
   listen_url: string;
+  openai_base_url?: string;
+  anthropic_base_url?: string;
+  gateway_client_api_key_masked?: string;
+  public_model_id?: string | null;
+  allow_lan_access?: boolean;
   active_model?: string | null;
   active_provider?: string | null;
   last_proxy_provider?: string | null;
@@ -545,6 +551,7 @@ function App() {
                   {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
                 </p>
               )}
+              <GatewayAccessBanner status={status} busy={busy} onRefresh={() => refresh().catch(() => undefined)} pushToast={pushToast} />
               <div className="actions">
                 <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), '服务已启动')}><Play size={17} />启动</button>
                 <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), '服务已停止')}><CircleStop size={17} />停止</button>

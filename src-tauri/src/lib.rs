@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod error_hint;
 pub mod gateway;
+pub mod gateway_auth;
 pub mod gateway_daemon;
 pub mod gateway_listen;
 pub mod gateway_stats;
