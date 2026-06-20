@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use sugt_lib::{clients, config, gateway::GatewayState, gateway_daemon, logging, model::ProviderConfig, trial};
+use sugt_lib::{clients, config, gateway::GatewayState, gateway_daemon, logging, model::ProviderConfig, takeover_profiles, trial};
 use std::time::Duration;
 use tokio::signal;
 
@@ -49,6 +49,12 @@ enum EnvCommand {
     },
     Uninstall,
     Print,
+    Profiles,
+    Apply {
+        profile: String,
+        #[arg(long)]
+        start_gateway: bool,
+    },
 }
 
 #[tokio::main]
@@ -145,6 +151,37 @@ async fn main() -> Result<()> {
                     print_env_status(&status);
                 }
                 EnvCommand::Print => print!("{}", clients::print_launch_script(&app_config)),
+                EnvCommand::Profiles => {
+                    let views =
+                        takeover_profiles::list_profile_views(&paths.config_dir, &app_config);
+                    for view in views {
+                        println!(
+                            "{} [{}] {} configured={} settings={} skills={}",
+                            view.id,
+                            view.protocol,
+                            view.name,
+                            view.configured,
+                            view.settings_detected,
+                            view.skills_detected
+                        );
+                    }
+                }
+                EnvCommand::Apply {
+                    profile,
+                    start_gateway,
+                } => {
+                    ensure_gateway_reachable(&paths, &app_config, start_gateway).await?;
+                    clients::write_launch_scripts(&paths, &app_config)?;
+                    let view = takeover_profiles::apply_profile(
+                        &paths.config_dir,
+                        &app_config,
+                        &profile,
+                    )?;
+                    println!(
+                        "applied profile={} configured={}",
+                        view.name, view.configured
+                    );
+                }
             }
         }
     }

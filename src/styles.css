@@ -737,6 +737,23 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .key-edit { display: flex; gap: 6px; flex: 1; align-items: center; }
 .key-edit input { flex: 1; min-width: 160px; }
+
+.takeover-profiles { margin-top: 12px; }
+.takeover-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.takeover-profile-card {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+}
+.takeover-profile-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.takeover-parse-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.takeover-parse-row input { flex: 1; min-width: 200px; }
 .store-settings-block { margin-top: 16px; }
 .store-error { color: #f87171; }
 .store-client-panel { margin-bottom: 8px; }

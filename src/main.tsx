@@ -259,6 +259,91 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
+type TakeoverProfileView = {
+  id: string;
+  name: string;
+  vendor: string;
+  description: string;
+  protocol: string;
+  configured: boolean;
+  settings_detected: boolean;
+  skills_detected: boolean;
+  builtin: boolean;
+};
+
+function TakeoverProfilesSection({
+  busy,
+  run,
+  pushToast,
+}: {
+  busy: boolean;
+  run: (fn: () => Promise<void>, ok?: string) => void;
+  pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void;
+}) {
+  const [profiles, setProfiles] = useState<TakeoverProfileView[]>([]);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [parsePath, setParsePath] = useState('');
+
+  useEffect(() => {
+    invoke<TakeoverProfileView[]>('list_takeover_profiles').then(setProfiles).catch(() => undefined);
+    invoke<boolean>('can_ai_parse_takeover').then(setAiEnabled).catch(() => undefined);
+  }, []);
+
+  const apply = (id: string) =>
+    run(async () => {
+      await invoke('apply_takeover_profile', { profileId: id, autoStart: true });
+      const next = await invoke<TakeoverProfileView[]>('list_takeover_profiles');
+      setProfiles(next);
+    }, `已接管 ${id}`);
+
+  const parseFile = () =>
+    run(async () => {
+      if (!parsePath.trim()) {
+        pushToast('请输入配置文件路径', 'error');
+        return;
+      }
+      await invoke('parse_takeover_config_path', { path: parsePath.trim(), save: true });
+      const next = await invoke<TakeoverProfileView[]>('list_takeover_profiles');
+      setProfiles(next);
+    }, '已解析并保存自定义模板');
+
+  return (
+    <div className="takeover-profiles">
+      <div className="section-title">
+        <h4>Agent 接管模板</h4>
+        <span className="hint">Claude / Codex / OpenCode / Aider 等</span>
+      </div>
+      <div className="takeover-profile-grid">
+        {profiles.map((p) => (
+          <div className="takeover-profile-card" key={p.id}>
+            <div className="takeover-profile-head">
+              <strong>{p.name}</strong>
+              <span className={p.configured ? 'badge ok' : 'badge'}>{p.configured ? '已接管' : '未接管'}</span>
+            </div>
+            <p className="hint compact">{p.vendor} · {p.protocol}</p>
+            <p className="hint compact">{p.description}</p>
+            <div className="hint compact">
+              {p.settings_detected ? '✓ 配置目录' : '○ 配置目录'}
+              {' · '}
+              {p.skills_detected ? '✓ Skill 目录' : '○ Skill 目录'}
+            </div>
+            <button type="button" className="tiny primary" disabled={busy} onClick={() => apply(p.id)}>接管</button>
+          </div>
+        ))}
+      </div>
+      <div className="takeover-parse-row">
+        <input
+          placeholder={aiEnabled ? '配置文件路径（可 AI 增强解析）' : '配置文件路径（需先配大模型服务才可 AI 解析）'}
+          value={parsePath}
+          onChange={(e) => setParsePath(e.target.value)}
+          disabled={!aiEnabled}
+        />
+        <button type="button" className="tiny" disabled={busy || !aiEnabled} onClick={() => parseFile()}>解析为模板</button>
+      </div>
+    </div>
+  );
+}
+
 function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; listenUrl: string }) {
   const [hover, setHover] = useState(false);
 
@@ -381,11 +466,11 @@ function App() {
     return () => window.clearInterval(timer);
   }, [tab, refreshLogs]);
 
-  const run = async (action: () => Promise<unknown>, ok: string) => {
+  const run = async (action: () => Promise<unknown>, ok?: string) => {
     setBusy(true);
     try {
       await action();
-      pushToast(ok, 'ok');
+      if (ok) pushToast(ok, 'ok');
       await refresh();
     } catch (error) {
       pushToast(formatInvokeError(error), 'error');
@@ -694,6 +779,7 @@ function App() {
                 </div>
               </div>
               <p className="hint">{clientsHint}</p>
+              <TakeoverProfilesSection busy={busy} run={run} pushToast={pushToast} />
               <div className="client-grid">
                 {[clients?.claude, clients?.codex].filter(Boolean).map((client) => (
                   <div className="client-card" key={client!.client}>

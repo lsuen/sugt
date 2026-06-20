@@ -378,6 +378,26 @@ fn unset_user_env(_name: &str) -> Result<()> {
     Err(anyhow!("当前平台暂不支持自动删除用户环境变量"))
 }
 
+#[cfg(windows)]
+pub fn set_user_env_public(name: &str, value: &str) -> Result<()> {
+    set_user_env(name, value)
+}
+
+#[cfg(windows)]
+pub fn unset_user_env_public(name: &str) -> Result<()> {
+    unset_user_env(name)
+}
+
+#[cfg(not(windows))]
+pub fn set_user_env_public(name: &str, value: &str) -> Result<()> {
+    set_user_env(name, value)
+}
+
+#[cfg(not(windows))]
+pub fn unset_user_env_public(name: &str) -> Result<()> {
+    unset_user_env(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

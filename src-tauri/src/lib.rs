@@ -17,6 +17,7 @@ pub mod tray;
 pub mod product;
 pub mod provider_catalog;
 pub mod store;
+pub mod takeover_profiles;
 pub mod trial;
 
 pub use app::run;

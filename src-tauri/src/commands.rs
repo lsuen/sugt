@@ -10,6 +10,7 @@ use crate::{
         QuitBehavior, RuntimeStatus,
     },
     trial,
+    takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
 };
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -494,6 +495,56 @@ pub async fn read_logs(
     lines: usize,
 ) -> Result<Vec<String>, String> {
     crate::logging::tail(&runtime.paths.log_file, lines.min(500)).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn list_takeover_profiles(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<TakeoverProfileView>, String> {
+    let config = runtime.config.read().await.clone();
+    Ok(takeover_profiles::list_profile_views(&runtime.paths.config_dir, &config))
+}
+
+#[tauri::command]
+pub async fn apply_takeover_profile(
+    runtime: State<'_, AppRuntime>,
+    profile_id: String,
+    auto_start: Option<bool>,
+) -> Result<TakeoverProfileView, String> {
+    ensure_gateway_for_takeover(&runtime, auto_start.unwrap_or(true)).await?;
+    let config = runtime.config.read().await.clone();
+    clients::write_launch_scripts(&runtime.paths, &config).map_err(|e| e.to_string())?;
+    takeover_profiles::apply_profile(&runtime.paths.config_dir, &config, &profile_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn can_ai_parse_takeover(runtime: State<'_, AppRuntime>) -> Result<bool, String> {
+    let config = runtime.config.read().await.clone();
+    Ok(config.providers.iter().any(|p| p.enabled))
+}
+
+#[tauri::command]
+pub async fn parse_takeover_config_path(
+    runtime: State<'_, AppRuntime>,
+    path: String,
+    save: Option<bool>,
+) -> Result<TakeoverProfile, String> {
+    let config = runtime.config.read().await.clone();
+    let path_buf = std::path::PathBuf::from(path.trim());
+    if !path_buf.is_file() {
+        return Err(format!("文件不存在：{}", path_buf.display()));
+    }
+    let profile = takeover_profiles::parse_config_file_heuristic(&path_buf, &config)
+        .map_err(|e| e.to_string())?;
+    if save.unwrap_or(false) {
+        let mut custom = takeover_profiles::load_custom_profiles(&runtime.paths.config_dir);
+        custom.retain(|p| p.id != profile.id);
+        custom.push(profile.clone());
+        takeover_profiles::save_custom_profiles(&runtime.paths.config_dir, &custom)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(profile)
 }
 
 #[tauri::command]
