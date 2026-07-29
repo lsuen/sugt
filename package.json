@@ -1,0 +1,32 @@
+{
+  "name": "sugt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:app": "tauri dev",
+    "dev:app:store": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SUGT_PRODUCT='store'; npm run tauri dev\"",
+    "build": "tsc && vite build",
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-shell": "^2.3.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "@tauri-apps/cli-win32-x64-msvc": "^2.9.0",
+    "@types/node": "^25.9.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
