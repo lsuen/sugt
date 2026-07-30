@@ -1,0 +1,181 @@
+[[permission]]
+identifier = "allow-get-status"
+description = "Enables the get_status command"
+commands.allow = ["get_status"]
+
+[[permission]]
+identifier = "allow-start-gateway"
+description = "Enables the start_gateway command"
+commands.allow = ["start_gateway"]
+
+[[permission]]
+identifier = "allow-stop-gateway"
+description = "Enables the stop_gateway command"
+commands.allow = ["stop_gateway"]
+
+[[permission]]
+identifier = "allow-list-providers"
+description = "Enables the list_providers command"
+commands.allow = ["list_providers"]
+
+[[permission]]
+identifier = "allow-save-provider"
+description = "Enables the save_provider command"
+commands.allow = ["save_provider"]
+
+[[permission]]
+identifier = "allow-delete-provider"
+description = "Enables the delete_provider command"
+commands.allow = ["delete_provider"]
+
+[[permission]]
+identifier = "allow-restore-experimental-zen"
+description = "Enables the restore_experimental_zen command"
+commands.allow = ["restore_experimental_zen"]
+
+[[permission]]
+identifier = "allow-set-active-provider"
+description = "Enables the set_active_provider command"
+commands.allow = ["set_active_provider"]
+
+[[permission]]
+identifier = "allow-test-provider"
+description = "Enables the test_provider command"
+commands.allow = ["test_provider"]
+
+[[permission]]
+identifier = "allow-list-provider-models"
+description = "Enables the list_provider_models command"
+commands.allow = ["list_provider_models"]
+
+[[permission]]
+identifier = "allow-set-failover"
+description = "Enables the set_failover command"
+commands.allow = ["set_failover"]
+
+[[permission]]
+identifier = "allow-set-autostart"
+description = "Enables the set_autostart command"
+commands.allow = ["set_autostart"]
+
+[[permission]]
+identifier = "allow-set-autostart-gateway"
+description = "Enables the set_autostart_gateway command"
+commands.allow = ["set_autostart_gateway"]
+
+[[permission]]
+identifier = "allow-set-auto-takeover"
+description = "Enables the set_auto_takeover command"
+commands.allow = ["set_auto_takeover"]
+
+[[permission]]
+identifier = "allow-set-quit-behavior"
+description = "Enables the set_quit_behavior command"
+commands.allow = ["set_quit_behavior"]
+
+[[permission]]
+identifier = "allow-read-logs"
+description = "Enables the read_logs command"
+commands.allow = ["read_logs"]
+
+[[permission]]
+identifier = "allow-get-config"
+description = "Enables the get_config command"
+commands.allow = ["get_config"]
+
+[[permission]]
+identifier = "allow-open-config-dir"
+description = "Enables the open_config_dir command"
+commands.allow = ["open_config_dir"]
+
+[[permission]]
+identifier = "allow-get-clients-env-status"
+description = "Enables the get_clients_env_status command"
+commands.allow = ["get_clients_env_status"]
+
+[[permission]]
+identifier = "allow-install-clients-env"
+description = "Enables the install_clients_env command"
+commands.allow = ["install_clients_env"]
+
+[[permission]]
+identifier = "allow-repair-clients-env"
+description = "Enables the repair_clients_env command"
+commands.allow = ["repair_clients_env"]
+
+[[permission]]
+identifier = "allow-uninstall-clients-env"
+description = "Enables the uninstall_clients_env command"
+commands.allow = ["uninstall_clients_env"]
+
+[[permission]]
+identifier = "allow-set-provider-enabled"
+description = "Enables the set_provider_enabled command"
+commands.allow = ["set_provider_enabled"]
+
+[[permission]]
+identifier = "allow-update-gateway-settings"
+description = "Enables the update_gateway_settings command"
+commands.allow = ["update_gateway_settings"]
+
+[[permission]]
+identifier = "allow-test-provider-draft"
+description = "Enables the test_provider_draft command"
+commands.allow = ["test_provider_draft"]
+
+[[permission]]
+identifier = "allow-quick-gateway-chat"
+description = "Enables the quick_gateway_chat command"
+commands.allow = ["quick_gateway_chat"]
+
+[[permission]]
+identifier = "allow-takeover-commands"
+description = "Enables takeover profile commands"
+commands.allow = [
+  "list_takeover_profiles",
+  "apply_takeover_profile",
+  "release_takeover_profile",
+  "delete_takeover_profile",
+  "set_takeover_settings_path",
+  "can_ai_parse_takeover",
+  "parse_takeover_config_path",
+  "save_takeover_profile",
+  "discover_agents",
+  "add_discovered_agents"
+]
+
+[[permission]]
+identifier = "allow-store-commands"
+description = "Enables store edition commands"
+commands.allow = [
+  "store_list_repos",
+  "store_parse_repo_url",
+  "store_test_repo",
+  "store_add_repo",
+  "store_update_repo",
+  "store_remove_repo",
+  "store_refresh_repo",
+  "store_refresh_all_repos",
+  "store_ensure_preferred_repo",
+  "store_list_catalog",
+  "store_install_skill",
+  "store_uninstall_skill",
+  "store_mount_skill",
+  "store_unmount_skill",
+  "store_get_plugin_panel",
+  "store_get_client_paths",
+  "store_test_github_proxy",
+  "store_launch_client",
+  "store_get_settings",
+  "store_set_settings",
+  "store_open_skill",
+  "store_open_staging_dir",
+  "store_list_local_skills",
+  "store_list_skill_agents",
+  "store_mount_skills",
+  "store_unmount_skills",
+  "store_create_local_skill",
+  "get_agent_advanced",
+  "import_agent_skill",
+  "save_agent_advanced_path"
+]
