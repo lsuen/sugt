@@ -31,11 +31,13 @@ When things are steadier, I will publish a **permanent full build** (no trial co
 
 Some modules (mainly the skill console source) are still private for the same reason — polish and review — **not** because I plan to keep them closed forever. I intend to open the rest over time, and eventually all of it.
 
-### Why I’m asking for a little patience (and a star, if you can)
+### Why this release took courage
 
-I’m not a young founder with a big platform behind me. I’m older than the average “ship it on GitHub” crowd, and these past years have been tight — money, energy, and the feeling of building alone without a company or audience to lean on. SUGT started as a tool I needed for my own work. Sharing it publicly is both a product decision and a small bet that honest work can still find people.
+I’m not a young founder with investors, a team, or a big account behind me. I’m older than most people who casually drop repos on GitHub. The last few years have been hard — money, energy, and the quiet fear that work done alone might never be seen.
 
-If the project helps you, a star or an Issue is enough. If it doesn’t, that’s fine too. I’m not asking for pity — only for a fair look.
+SUGT began as something I needed for my own days. Putting it online meant saying out loud: this might matter to someone else. That was not easy. I finally gathered the courage to open-source what I could, and to ship a usable build even while unfinished pieces remain.
+
+If it helps you, a star or a short Issue is enough. If it doesn’t, that’s okay. I’m not asking for pity — only for a fair look, and maybe a little patience while I keep improving it.
 
 ## Download
 
