@@ -29,12 +29,15 @@
 
 ## 3. 默认技能仓库
 
-| owner | repo | branch |
-| --- | --- | --- |
-| ComposioHQ | awesome-claude-skills | master |
-| JimLiu | baoyu-skills | main |
-| anthropics | skills | main |
-| cexll | myclaude | master |
+| owner | repo | branch | clone_url / 备注 |
+| --- | --- | --- | --- |
+| sunwl88 | sun-skills | main | `https://atomgit.com/sunwl88/sun-skills`（权重 100） |
+| ComposioHQ | awesome-claude-skills | master | GitHub |
+| JimLiu | baoyu-skills | main | GitHub |
+| anthropics | skills | main | GitHub |
+| cexll | myclaude | master | GitHub |
+
+管理仓库支持完整 git 地址（AtomGit / Gitee / GitHub 等）、测试解析、保存与权重排序（权重高优先展示）。
 
 ## 4. 路径
 

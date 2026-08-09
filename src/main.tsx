@@ -3,17 +3,19 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, PlugZap, Plus, RefreshCw, ShieldCheck, Trash2, Users, Wrench, X, XCircle,
+  Play, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Users, X, XCircle, Settings2,
 } from 'lucide-react';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
+import { SettingsPanel } from './SettingsPanel';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
-import { StoreClientsPanel } from './store/StoreClientsPanel';
+import { SkillsPanel } from './SkillsPanel';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
+import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import type { ProviderForm } from './providerPresets';
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'logs' | 'about';
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'settings' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -22,11 +24,13 @@ type RuntimeStatus = {
   listen_url: string;
   openai_base_url?: string;
   anthropic_base_url?: string;
+  gateway_client_api_key?: string;
   gateway_client_api_key_masked?: string;
   public_model_id?: string | null;
   allow_lan_access?: boolean;
   active_model?: string | null;
   active_provider?: string | null;
+  active_provider_id?: string | null;
   last_proxy_provider?: string | null;
   last_proxy_path?: string | null;
   last_proxy_failover?: boolean;
@@ -56,6 +60,7 @@ type ProviderView = {
   name: string;
   provider: string;
   base_url: string;
+  api_key: string;
   api_key_masked: string;
   model_name: string;
   protocol: ProviderProtocol | 'open_ai';
@@ -63,6 +68,8 @@ type ProviderView = {
   status: ProviderStatus;
   last_checked_at?: string | null;
   last_error?: string | null;
+  auto_adapt_base_url?: boolean;
+  experimental?: boolean;
 };
 
 type AppConfig = {
@@ -72,6 +79,9 @@ type AppConfig = {
   active_provider_id?: string | null;
   autostart: boolean;
   autostart_gateway: boolean;
+  auto_takeover_enabled?: boolean;
+  claude_takeover_enabled?: boolean;
+  codex_takeover_enabled?: boolean;
   quit_behavior: QuitBehavior;
   port_fallback_enabled?: boolean;
   gateway_watchdog_enabled?: boolean;
@@ -107,6 +117,7 @@ const emptyForm: ProviderForm = {
   model_name: '',
   protocol: 'openai',
   enabled: true,
+  auto_adapt_base_url: true,
 };
 
 function isTauriRuntime(): boolean {
@@ -136,9 +147,14 @@ function parseLogLine(line: string, index: number): ParsedLogLine {
       level?: string;
       message?: string;
       target?: string;
-      fields?: { message?: string };
+      fields?: Record<string, unknown>;
     };
-    const message = data.fields?.message ?? data.message ?? line;
+    const fields = data.fields ?? {};
+    const base = String(fields.message ?? data.message ?? line);
+    const extras = ['client', 'provider', 'model', 'path', 'mode', 'latency_ms', 'status', 'failover', 'error', 'reason']
+      .filter((key) => fields[key] !== undefined && fields[key] !== null && fields[key] !== '')
+      .map((key) => `${key}=${String(fields[key])}`);
+    const message = extras.length ? `${base} · ${extras.join(' · ')}` : base;
     let time: string | undefined;
     if (data.timestamp) {
       const date = new Date(data.timestamp);
@@ -150,7 +166,7 @@ function parseLogLine(line: string, index: number): ParsedLogLine {
       key: `${index}-${data.timestamp ?? line.slice(0, 24)}`,
       time,
       level: (data.level ?? 'INFO').toUpperCase(),
-      message: String(message),
+      message,
       target: data.target,
     };
   } catch {
@@ -245,9 +261,22 @@ function protocolLabel(protocol: ProviderProtocol) {
   return protocol === 'anthropic' ? 'Anthropic 原生' : 'OpenAI 兼容';
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({
+  title,
+  onClose,
+  children,
+  closeOnOverlay = false,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  closeOnOverlay?: boolean;
+}) {
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div
+      className="modal-overlay"
+      onClick={closeOnOverlay ? onClose : undefined}
+    >
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
@@ -256,131 +285,6 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         <div className="modal-body">{children}</div>
       </div>
     </div>
-  );
-}
-
-type TakeoverProfileView = {
-  id: string;
-  name: string;
-  vendor: string;
-  description: string;
-  protocol: string;
-  configured: boolean;
-  settings_detected: boolean;
-  skills_detected: boolean;
-  builtin: boolean;
-};
-
-function TakeoverProfilesSection({
-  busy,
-  run,
-  pushToast,
-}: {
-  busy: boolean;
-  run: (fn: () => Promise<void>, ok?: string) => void;
-  pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void;
-}) {
-  const [profiles, setProfiles] = useState<TakeoverProfileView[]>([]);
-  const [aiEnabled, setAiEnabled] = useState(false);
-  const [parsePath, setParsePath] = useState('');
-
-  useEffect(() => {
-    invoke<TakeoverProfileView[]>('list_takeover_profiles').then(setProfiles).catch(() => undefined);
-    invoke<boolean>('can_ai_parse_takeover').then(setAiEnabled).catch(() => undefined);
-  }, []);
-
-  const apply = (id: string) =>
-    run(async () => {
-      await invoke('apply_takeover_profile', { profileId: id, autoStart: true });
-      const next = await invoke<TakeoverProfileView[]>('list_takeover_profiles');
-      setProfiles(next);
-    }, `已接管 ${id}`);
-
-  const parseFile = () =>
-    run(async () => {
-      if (!parsePath.trim()) {
-        pushToast('请输入配置文件路径', 'error');
-        return;
-      }
-      await invoke('parse_takeover_config_path', { path: parsePath.trim(), save: true });
-      const next = await invoke<TakeoverProfileView[]>('list_takeover_profiles');
-      setProfiles(next);
-    }, '已解析并保存自定义模板');
-
-  return (
-    <div className="takeover-profiles">
-      <div className="section-title">
-        <h4>Agent 接管模板</h4>
-        <span className="hint">Claude / Codex / OpenCode / Aider 等</span>
-      </div>
-      <div className="takeover-profile-grid">
-        {profiles.map((p) => (
-          <div className="takeover-profile-card" key={p.id}>
-            <div className="takeover-profile-head">
-              <strong>{p.name}</strong>
-              <span className={p.configured ? 'badge ok' : 'badge'}>{p.configured ? '已接管' : '未接管'}</span>
-            </div>
-            <p className="hint compact">{p.vendor} · {p.protocol}</p>
-            <p className="hint compact">{p.description}</p>
-            <div className="hint compact">
-              {p.settings_detected ? '✓ 配置目录' : '○ 配置目录'}
-              {' · '}
-              {p.skills_detected ? '✓ Skill 目录' : '○ Skill 目录'}
-            </div>
-            <button type="button" className="tiny primary" disabled={busy} onClick={() => apply(p.id)}>接管</button>
-          </div>
-        ))}
-      </div>
-      <div className="takeover-parse-row">
-        <input
-          placeholder={aiEnabled ? '配置文件路径（可 AI 增强解析）' : '配置文件路径（需先配大模型服务才可 AI 解析）'}
-          value={parsePath}
-          onChange={(e) => setParsePath(e.target.value)}
-          disabled={!aiEnabled}
-        />
-        <button type="button" className="tiny" disabled={busy || !aiEnabled} onClick={() => parseFile()}>解析为模板</button>
-      </div>
-    </div>
-  );
-}
-
-function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; listenUrl: string }) {
-  const [hover, setHover] = useState(false);
-
-  return (
-    <span
-      className="badge-wrap"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-    >
-      <span className={`badge popover-trigger ${client.configured ? 'ok' : 'stop'}`}>
-        {client.configured ? '已接管' : '未接管'}
-      </span>
-      {hover && (
-        <div className="badge-popover" role="tooltip">
-          <div className="badge-popover-title">{client.client}</div>
-          {client.issues && client.issues.length > 0 && (
-            <ul className="badge-popover-issues">
-              {client.issues.map((issue) => <li key={issue}>{issue}</li>)}
-            </ul>
-          )}
-          {!client.configured && client.missing && client.missing.length > 0 && (
-            <p className="hint compact">待写入：{client.missing.join('、')}</p>
-          )}
-          {client.variables && (
-            <div className="env-vars compact">
-              {Object.entries(client.variables).map(([name, value]) => (
-                <div className="env-row" key={name}>
-                  <span>{name}</span>
-                  <code>{value || '（未设置）'}</code>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="hint compact popover-foot">网关 {listenUrl} · 客户端页可「关闭接管」恢复</p>
-        </div>
-      )}
-    </span>
   );
 }
 
@@ -397,6 +301,7 @@ function App() {
   const toastSeq = useRef(0);
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
+  const [skillsAgentFilter, setSkillsAgentFilter] = useState('');
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
@@ -414,18 +319,6 @@ function App() {
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
-
-  const clientsHint = useMemo(() => {
-    const parts = ['写入用户环境变量，仅对新打开的终端生效；从 Cursor/VS Code 内启动的客户端需完全重启 IDE。悬停标签可查看变量详情。'];
-    if (!status?.running) {
-      parts.push('网关未运行：请点「启动网关并接管」，或保持 SUGT 托盘运行。');
-    }
-    if (clients?.gateway_reachable === false && (clients?.claude?.configured || clients?.codex?.configured)) {
-      parts.push('环境已接管但网关不可达，Claude/Codex 会一直重连——请先启动网关。');
-    }
-    if (clients?.has_issues) parts.push('检测到冲突，请点击「修复接管」。');
-    return parts.join(' ');
-  }, [status?.running, clients?.has_issues, clients?.gateway_reachable, clients?.claude?.configured, clients?.codex?.configured]);
 
   const refreshCore = useCallback(async () => {
     const [nextStatus, nextProviders, nextConfig, nextClients] = await Promise.all([
@@ -490,10 +383,11 @@ function App() {
       name: provider.name,
       provider: provider.provider,
       base_url: provider.base_url,
-      api_key: provider.api_key_masked,
+      api_key: provider.api_key,
       model_name: provider.model_name,
       protocol: normalizeProtocol(provider.protocol),
       enabled: provider.enabled,
+      auto_adapt_base_url: provider.auto_adapt_base_url ?? true,
     });
     setProviderModal(true);
   };
@@ -552,17 +446,21 @@ function App() {
   const tabTitle = {
     dashboard: '控制台',
     models: '模型配置',
-    clients: '客户端接管',
+    clients: '客户端',
+    skills: '技能',
+    settings: '设置',
     logs: '运行日志',
     about: '关于 SUGT',
   }[tab];
 
   const tabDesc = {
-    dashboard: '启动/停止本地网关，查看当前模型',
-    models: '管理上游 API 与协议类型',
-    clients: 'Claude Code / Codex 环境变量接管',
+    dashboard: '启停本地网关，查看当前模型与流量',
+    models: '配置上游 API、协议与实验免费通道',
+    clients: '发现本机工具、一键接管与高级配置',
+    skills: '发现、入库并挂到各客户端',
+    settings: '启动、守护、代理与实验功能',
     logs: '网关实时日志与调试信息',
-    about: '版本与项目信息',
+    about: '版本、更新说明与项目信息',
   }[tab];
 
   if (!isTauriRuntime()) {
@@ -584,17 +482,19 @@ function App() {
           <div className="brand-logo">SG</div>
           <div>
             <h1>SUGT</h1>
-            <span>su gateway</span>
+            <span>本地 AI 网关</span>
           </div>
         </div>
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />控制台</button>
         <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />模型配置</button>
         <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />客户端</button>
+        <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />技能</button>
+        <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />设置</button>
         <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />日志</button>
         <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />关于</button>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
-          <span>QM科技内部版</span>
+          <span>异常设计</span>
         </div>
       </aside>
 
@@ -604,98 +504,96 @@ function App() {
             <h2>{tabTitle}</h2>
             <p>{tabDesc}</p>
           </div>
-          <span className="hint compact topbar-meta">每 3 秒自动刷新状态</span>
         </header>
 
         {tab === 'dashboard' && (
-          <section className="page-grid dashboard-grid">
-            <div className="card hero-card">
-              <div className="hero-title">
-                <Cpu size={28} />
-                <div>
-                  <h3>服务状态</h3>
-                  <p>{status?.listen_url ?? 'http://127.0.0.1:8787'}</p>
+          <div className="tab-body dashboard-body">
+          <section className="page-grid dashboard-layout in-tab">
+            <div className="dashboard-main">
+              <div className="card hero-card dashboard-hero">
+                <div className="hero-title">
+                  <Cpu size={28} />
+                  <div>
+                    <h3>服务状态</h3>
+                    <p>{status?.listen_url ?? 'http://127.0.0.1:8787'}</p>
+                  </div>
+                  {statusBadge}
                 </div>
-                {statusBadge}
-              </div>
-              <div className="metric-row">
-                <div className="metric"><span>当前服务商</span><strong title={status?.active_provider ?? ''}>{status?.active_provider ?? '未配置'}</strong></div>
-                <div className="metric"><span>当前模型</span><strong title={status?.active_model ?? ''}>{status?.active_model ?? '未配置'}</strong></div>
-                <div className="metric">
-                  <span>最近请求命中</span>
-                  <strong title={status?.last_proxy_provider ?? ''}>
-                    {status?.last_proxy_provider
-                      ? `${status.last_proxy_provider}${status.last_proxy_failover ? '（故障转移）' : ''}`
-                      : '暂无'}
-                  </strong>
+                {status?.last_proxy_provider && (
+                  <p className="hint compact hero-proxy-hint">
+                    最近命中 {status.last_proxy_provider}
+                    {status.last_proxy_failover ? '（故障转移）' : ''}
+                    · {status.last_proxy_path ?? '-'}
+                    {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
+                  </p>
+                )}
+                <div className="actions dashboard-actions">
+                  <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), '服务已启动')}><Play size={17} />启动</button>
+                  <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), '服务已停止')}><CircleStop size={17} />停止</button>
+                  <button className="ghost" onClick={() => invoke('open_config_dir')}><FolderOpen size={17} />配置目录</button>
                 </div>
               </div>
-              {status?.last_proxy_provider && (
-                <p className="hint compact">
-                  路径 {status.last_proxy_path ?? '-'}
-                  {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
-                </p>
-              )}
-              <GatewayAccessBanner status={status} busy={busy} onRefresh={() => refresh().catch(() => undefined)} pushToast={pushToast} />
-              <div className="actions">
-                <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), '服务已启动')}><Play size={17} />启动</button>
-                <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), '服务已停止')}><CircleStop size={17} />停止</button>
-                <button className="ghost" onClick={() => invoke('open_config_dir')}><FolderOpen size={17} />配置目录</button>
-              </div>
+
+              <TrafficPanel
+                traffic={status?.traffic}
+                running={status?.running}
+                lastProvider={status?.last_proxy_provider}
+                lastPath={status?.last_proxy_path}
+              />
             </div>
 
-            <div className="card switches">
-              <h3>运行选项</h3>
-              <label className="switch-line">
-                <span>开机启动</span>
-                <input type="checkbox" checked={Boolean(config?.autostart)} onChange={(e) => run(() => invoke('set_autostart', { enabled: e.target.checked }), '已更新')} />
-              </label>
-              <label className="switch-line">
-                <span>故障转移</span>
-                <input type="checkbox" checked={Boolean(config?.failover_enabled)} onChange={(e) => run(() => invoke('set_failover', { enabled: e.target.checked }), '已更新')} />
-              </label>
-              <label className="switch-line">
-                <span>启动时自动开网关</span>
-                <input type="checkbox" checked={Boolean(config?.autostart_gateway)} onChange={(e) => run(() => invoke('set_autostart_gateway', { enabled: e.target.checked }), '已更新')} />
-              </label>
-              <label className="switch-line">
-                <span>端口占用时自动换端口</span>
-                <input type="checkbox" checked={Boolean(config?.port_fallback_enabled ?? true)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { portFallbackEnabled: e.target.checked } }), '已更新')} />
-              </label>
-              <label className="switch-line">
-                <span>网关守护循环（不可达自动拉起）</span>
-                <input type="checkbox" checked={Boolean(config?.gateway_watchdog_enabled ?? true)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { gatewayWatchdogEnabled: e.target.checked } }), '已更新')} />
-              </label>
-              <label className="switch-line">
-                <span>允许局域网连接</span>
-                <input type="checkbox" checked={Boolean(config?.allow_lan_access)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { allowLanAccess: e.target.checked } }), '已更新')} />
-              </label>
-              <label className="switch-line select-line">
-                <span>托盘退出时</span>
-                <select
-                  value={config?.quit_behavior ?? 'exit_only'}
-                  onChange={(e) => run(() => invoke('set_quit_behavior', { behavior: e.target.value as QuitBehavior }), '已更新')}
-                >
-                  <option value="exit_only">仅退出程序</option>
-                  <option value="stop_gateway">退出并停止网关</option>
-                  <option value="stop_all">退出、停网关并关接管</option>
-                </select>
-              </label>
-              <div className="hint compact">
-                本地 OpenAI：<code>{status?.listen_url}/v1</code><br />
-                本地 Anthropic：<code>{status?.listen_url}</code>
-              </div>
+            <div className="card dashboard-access-card">
+              <GatewayAccessBanner
+                status={status}
+                providers={providers.map((p) => ({
+                  id: p.id,
+                  name: p.name,
+                  model_name: p.model_name,
+                  enabled: p.enabled,
+                }))}
+                busy={busy}
+                onRefresh={() => refresh().catch(() => undefined)}
+                pushToast={pushToast}
+              />
             </div>
-
-            <TrafficPanel traffic={status?.traffic} running={status?.running} />
           </section>
+          </div>
+        )}
+
+        {tab === 'settings' && (
+          <div className="tab-body">
+          <SettingsPanel
+            config={config}
+            statusListenUrl={status?.listen_url ?? 'http://127.0.0.1:8787'}
+            run={run}
+            onNavigate={setTab}
+            pushToast={pushToast}
+            formatInvokeError={formatInvokeError}
+          />
+          </div>
         )}
 
         {tab === 'models' && (
+          <div className="tab-body">
           <section className="card">
             <div className="section-title">
               <h3>模型列表</h3>
               <div className="title-actions">
+                {!providers.some((p) => p.id === 'sugt-zen-free') && (
+                  <button
+                    className="ghost tiny-btn"
+                    disabled={busy}
+                    title="恢复实验免费通道（不稳定，可删）"
+                    onClick={() =>
+                      run(async () => {
+                        const list = await invoke<ProviderView[]>('restore_experimental_zen');
+                        setProviders(list);
+                      }, '已恢复实验免费源')
+                    }
+                  >
+                    恢复实验源
+                  </button>
+                )}
                 <button className="ghost tiny-btn" disabled={busy || providers.length === 0} onClick={testAllProviders}>一键测试</button>
                 <button className="primary tiny-btn" disabled={busy} onClick={openNewProvider}><Plus size={14} />添加模型</button>
               </div>
@@ -710,11 +608,15 @@ function App() {
                     <div className="provider-main" onClick={() => openEditProvider(provider)}>
                       <div className="provider-title">
                         <strong>{provider.name}</strong>
-                        {isActive && <span className="badge ok inline">默认使用</span>}
-                        <span className={provider.enabled ? 'badge neutral inline' : 'badge stop inline'}>{provider.enabled ? '已启用' : '已禁用'}</span>
+                        {provider.experimental && <span className="badge inline" title="免费额度不稳定，可删；失效后可改 API Key / 地址继续用">实验</span>}
+                        {isActive && <span className="badge ok inline">默认</span>}
+                        <span className={provider.enabled ? 'badge neutral inline' : 'badge stop inline'}>{provider.enabled ? '启用' : '禁用'}</span>
                       </div>
-                      <span>{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
-                      <code>{provider.base_url}</code>
+                      <span className="provider-sub">{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
+                      {provider.experimental && (
+                        <span className="hint compact">免费通道不稳定；失效后可编辑改 Key/地址，或删除后点「恢复实验源」</span>
+                      )}
+                      <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       {provider.last_error && <span className="error-text">{provider.last_error}</span>}
                     </div>
                     <div className="provider-actions">
@@ -729,74 +631,43 @@ function App() {
               })}
             </div>
           </section>
+          </div>
         )}
 
         {tab === 'clients' && (
-          status?.trial.product_line === 'store' ? (
-            <StoreClientsPanel
-              busy={busy}
-              setBusy={setBusy}
-              status={status}
-              clients={clients}
-              onClientsChange={setClients}
-              pushToast={pushToast}
-              clientsHint={clientsHint}
-              formatInvokeError={formatInvokeError}
-            />
-          ) : (
-          <section className="page-grid single">
-            <div className="card">
-              <div className="section-title">
-                <h3>Claude / Codex 接管</h3>
-                <div className="title-actions">
-                  <button className="ghost tiny-btn" disabled={busy} onClick={() => {
-                    setBusy(true);
-                    invoke<ClientsEnvStatus>('get_clients_env_status')
-                      .then((next) => {
-                        setClients(next);
-                        pushToast(
-                          next.has_issues ? '检测到接管问题，可点击「修复接管」' : '接管状态正常',
-                          next.has_issues ? 'info' : 'ok',
-                        );
-                      })
-                      .catch((error) => pushToast(formatInvokeError(error), 'error'))
-                      .finally(() => setBusy(false));
-                  }}><ShieldCheck size={14} />接管检查</button>
-                  <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('repair_clients_env'), '已修复接管冲突，请新开终端')}><Wrench size={14} />修复接管</button>
-                  <button
-                    className="primary tiny-btn"
-                    disabled={busy || !status?.running}
-                    title={!status?.running ? '请先启动网关' : undefined}
-                    onClick={() => run(() => invoke('install_clients_env'), '接管完成，请新开终端')}
-                  ><PlugZap size={14} />一键接管</button>
-                  <button
-                    className="ghost tiny-btn"
-                    disabled={busy || Boolean(status?.running)}
-                    title={status?.running ? '网关已在运行，请使用一键接管' : undefined}
-                    onClick={() => run(() => invoke('install_clients_env', { autoStart: true }), '网关已启动并完成接管，请新开终端')}
-                  ><Play size={14} />启动网关并接管</button>
-                  <button className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('uninstall_clients_env'), '已关闭 SUGT 接管，请新开终端')}>关闭接管</button>
-                </div>
-              </div>
-              <p className="hint">{clientsHint}</p>
-              <TakeoverProfilesSection busy={busy} run={run} pushToast={pushToast} />
-              <div className="client-grid">
-                {[clients?.claude, clients?.codex].filter(Boolean).map((client) => (
-                  <div className="client-card" key={client!.client}>
-                    <div className="client-head">
-                      <strong>{client!.client}</strong>
-                      <ClientStatusBadge client={client!} listenUrl={clients?.listen_url ?? status?.listen_url ?? ''} />
-                    </div>
-                    <p className="hint compact">{client!.note}</p>
-                  </div>
-                ))}
+          <div className="tab-body tab-body-fill">
+            <div className="clients-layout">
+              <div className="card">
+                <TakeoverProfilesSection
+                  busy={busy}
+                  run={run}
+                  pushToast={pushToast}
+                  onClientsChange={setClients}
+                  onOpenSkills={(agentId) => {
+                    setSkillsAgentFilter(agentId);
+                    setTab('skills');
+                  }}
+                />
               </div>
             </div>
-          </section>
-          )
+          </div>
+        )}
+
+        {tab === 'skills' && (
+          <div className="tab-body tab-body-fill">
+            <SkillsPanel
+              busy={busy}
+              setBusy={setBusy}
+              pushToast={pushToast}
+              formatInvokeError={formatInvokeError}
+              agentFilter={skillsAgentFilter}
+              onAgentFilterChange={setSkillsAgentFilter}
+            />
+          </div>
         )}
 
         {tab === 'logs' && (
+          <div className="tab-body tab-body-fill">
           <section className="card log-card-full">
             <div className="section-title">
               <h3>运行日志</h3>
@@ -804,35 +675,47 @@ function App() {
             </div>
             <LogViewer lines={logs} />
           </section>
+          </div>
         )}
 
         {tab === 'about' && (
+          <div className="tab-body">
           <section className="card about-card">
             <div className="about-logo">SUGT</div>
-            <h3>SUGT - su gateway</h3>
-            <p>作者：孙文龙 · QM科技内部版</p>
-            <p className={status?.trial.valid ? 'trial-note' : 'trial-note expired'}>{status?.trial.message ?? '开发模式，无有效期限制'}</p>
+            <h3>SUGT · 本地 AI 网关</h3>
+            {/* <p className="hint compact about-lead">
+              在本机统一接入大模型服务，方便 agent工具调用。
+              <br />
+              支持模型配置、一键接管、技能发现与挂载。
+            </p> */}
+            <p>作者：孙文龙 · 异常设计</p>
+            <p className={status?.trial.valid ? 'trial-note' : 'trial-note expired'}>
+              {status?.trial.message ?? '当前为开发运行，无试用期限制'}
+            </p>
             <div className="about-grid">
+              <div><strong>版本</strong><span>v{CURRENT_VERSION}</span></div>
+              <div><strong>产品形态</strong><span>{status?.trial.product_label ?? '全功能版'}</span></div>
+              <div><strong>授权</strong><span>{status?.trial.message ?? '开发模式'}</span></div>
               <div><strong>配置目录</strong><span>{status?.config_dir}</span></div>
               <div><strong>日志文件</strong><span>{status?.log_file}</span></div>
-              <div><strong>版本</strong><span>v{CURRENT_VERSION} · {status?.trial.product_label ?? '功能版'} · {status?.trial.edition ?? 'dev'}</span></div>
-              <div><strong>试用状态</strong><span>{status?.trial.status ?? 'valid'}</span></div>
+              <div><strong>本机接入</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
             </div>
             <div className="release-notes-frame">
               <div className="release-notes-head">
-                <strong>v{CURRENT_VERSION} 更新说明</strong>
-                <span className="hint compact">仅展示当前版本改动</span>
+                <strong>本版本更新</strong>
+                <span className="hint compact">v{CURRENT_VERSION}</span>
               </div>
               <ul className="release-notes-list">
                 {RELEASE_NOTES.map((note) => (
                   <li key={note.text} className={`release-note ${note.type}`}>
-                    <span className="release-tag">{note.type}</span>
+                    <span className="release-tag">{note.type === 'feat' ? '新功能' : '修复'}</span>
                     {note.text}
                   </li>
                 ))}
               </ul>
             </div>
           </section>
+          </div>
         )}
       </section>
 
@@ -845,12 +728,16 @@ function App() {
           onClose={() => setProviderModal(false)}
           onSave={saveProvider}
           onError={(msg) => pushToast(msg, 'error')}
+          onInfo={(msg) => pushToast(msg, 'ok')}
         />
       )}
 
       {deleteTarget && (
-        <Modal title="确认删除" onClose={() => setDeleteTarget(null)}>
+        <Modal title="确认删除" onClose={() => setDeleteTarget(null)} closeOnOverlay>
           <p>确定删除模型配置「{deleteTarget.name}」？</p>
+          {deleteTarget.experimental && (
+            <p className="hint compact">这是实验免费源，删除后不会自动再添加；需要时可点「恢复实验源」。</p>
+          )}
           <div className="modal-actions">
             <button className="ghost" onClick={() => setDeleteTarget(null)}>取消</button>
             <button className="danger" disabled={busy} onClick={confirmDelete}>删除</button>

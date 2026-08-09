@@ -9,6 +9,8 @@ export type ProviderForm = {
   model_name: string;
   protocol: ProviderProtocol;
   enabled: boolean;
+  /** 保存时自动规范化 Base URL；关闭则原样保存 */
+  auto_adapt_base_url: boolean;
 };
 
 export type TrafficStats = {
@@ -105,11 +107,11 @@ export const VENDOR_DEFINITIONS: VendorDefinition[] = [
     id: 'volcengine',
     label: '火山引擎 · 方舟',
     provider: 'Volcengine',
-    openaiBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    openaiBaseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
     anthropicBaseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
     modelsListMode: 'openai_compatible',
     docUrl: 'https://www.volcengine.com/docs/82379',
-    notes: 'Anthropic 兼容；模型多为接入点 ID，Coding Plan OpenAI 用 /api/coding/v3',
+    notes: 'Coding Plan OpenAI 默认 /api/coding/v3；方舟标准接入可用 /api/v3',
   },
   {
     id: 'siliconflow',

@@ -56,7 +56,7 @@ async fn recover_gateway(runtime: &AppRuntime) -> Result<(), String> {
         let updated = cfg.clone();
         runtime.persist().await.map_err(|e| e.to_string())?;
         let _ = clients::write_launch_scripts(&runtime.paths, &updated);
-        let _ = clients::repair(&updated);
+        let _ = clients::repair(&runtime.paths.config_dir, &updated);
     }
 
     Ok(())

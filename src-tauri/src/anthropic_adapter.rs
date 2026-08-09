@@ -1,3 +1,4 @@
+use crate::gateway_stats::GatewayStatsCollector;
 use anyhow::{Context, Result};
 use async_stream::stream;
 use axum::body::Body;
@@ -380,6 +381,7 @@ pub fn request_wants_stream(body: &Bytes) -> bool {
 pub async fn openai_to_anthropic_response(
     response: ReqwestResponse,
     model: &str,
+    stats: Option<GatewayStatsCollector>,
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -393,7 +395,7 @@ pub async fn openai_to_anthropic_response(
         let stream = response
             .bytes_stream()
             .map(|item| item.map_err(std::io::Error::other));
-        let converted = openai_sse_to_anthropic_sse(stream, model.to_string());
+        let converted = openai_sse_to_anthropic_sse(stream, model.to_string(), stats);
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header(
@@ -407,6 +409,19 @@ pub async fn openai_to_anthropic_response(
 
     let bytes = response.bytes().await?;
     let anthropic = openai_json_to_anthropic_json(&bytes)?;
+    if let Some(collector) = stats {
+        let input = anthropic
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let output = anthropic
+            .pointer("/usage/output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if input > 0 || output > 0 {
+            collector.record_tokens(input, output).await;
+        }
+    }
     Ok(Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, "application/json")
@@ -438,6 +453,7 @@ pub fn anthropic_auth_headers(api_key: &str) -> Result<HeaderMap> {
 fn openai_sse_to_anthropic_sse(
     input: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
     model: String,
+    stats: Option<GatewayStatsCollector>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     stream! {
         let mut parser = SseLineParser::new();
@@ -455,6 +471,14 @@ fn openai_sse_to_anthropic_sse(
 
         for event in adapter.finish() {
             yield Ok(Bytes::from(event));
+        }
+
+        if let Some(collector) = stats {
+            let input_tokens = adapter.input_tokens;
+            let output_tokens = adapter.output_tokens;
+            if input_tokens > 0 || output_tokens > 0 {
+                collector.record_tokens(input_tokens, output_tokens).await;
+            }
         }
     }
 }
@@ -505,6 +529,7 @@ struct AnthropicStreamAdapter {
     model: String,
     started: bool,
     finished: bool,
+    input_tokens: u64,
     output_tokens: u64,
     next_block_index: u32,
     text_block_index: Option<u32>,
@@ -518,6 +543,7 @@ impl AnthropicStreamAdapter {
             model: model.to_string(),
             started: false,
             finished: false,
+            input_tokens: 0,
             output_tokens: 0,
             next_block_index: 0,
             text_block_index: None,
@@ -587,7 +613,18 @@ impl AnthropicStreamAdapter {
             };
             events.extend(self.finish_with_reason(stop_reason));
         } else if let Some(usage) = value.get("usage") {
-            if let Some(completion) = usage.get("completion_tokens").and_then(Value::as_u64) {
+            if let Some(prompt) = usage
+                .get("prompt_tokens")
+                .or_else(|| usage.get("input_tokens"))
+                .and_then(Value::as_u64)
+            {
+                self.input_tokens = prompt;
+            }
+            if let Some(completion) = usage
+                .get("completion_tokens")
+                .or_else(|| usage.get("output_tokens"))
+                .and_then(Value::as_u64)
+            {
                 self.output_tokens = completion;
             }
         }
@@ -844,7 +881,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string());
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {
@@ -873,7 +910,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string());
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {

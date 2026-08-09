@@ -95,16 +95,27 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                             {
                                 let _ = runtime.gateway.start().await;
                             }
+                            {
+                                let mut config = runtime.config.write().await;
+                                crate::commands::add_active_takeover_id(&mut config, "claude-code");
+                            }
+                            let _ = runtime.persist().await;
                             let config = runtime.config.read().await.clone();
                             let _ = clients::write_launch_scripts(&runtime.paths, &config);
-                            let _ = clients::install(&config);
+                            let _ = clients::install_for(&runtime.paths.config_dir, &config, "claude");
                         }
                         let _ = app.emit("sugt://status-changed", ());
                     }
                     "uninstall_clients" => {
                         if let Some(runtime) = app.try_state::<AppRuntime>() {
+                            {
+                                let mut config = runtime.config.write().await;
+                                config.active_takeover_ids.clear();
+                                crate::commands::sync_legacy_takeover_flags(&mut config);
+                            }
+                            let _ = runtime.persist().await;
                             let config = runtime.config.read().await.clone();
-                            let _ = clients::uninstall(&config);
+                            let _ = clients::uninstall(&runtime.paths.config_dir, &config);
                         }
                         let _ = app.emit("sugt://status-changed", ());
                     }
@@ -141,7 +152,7 @@ async fn update_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(runtime) = app.try_state::<AppRuntime>() {
         let running = runtime.gateway.is_running().await;
         let config = runtime.config.read().await.clone();
-        let env_status = clients::status(&config);
+        let env_status = clients::status(&runtime.paths.config_dir, &config);
         let trial_status = trial::status(&runtime.paths);
         let active = config
             .providers
@@ -249,17 +260,23 @@ pub fn hide_main_window(app: &tauri::AppHandle) {
 fn open_path(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer").arg(path).spawn()?;
+        crate::process_util::hidden_command("explorer")
+            .arg(path)
+            .spawn()?;
         return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(path).spawn()?;
+        crate::process_util::hidden_command("open")
+            .arg(path)
+            .spawn()?;
         return Ok(());
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(path).spawn()?;
+        crate::process_util::hidden_command("xdg-open")
+            .arg(path)
+            .spawn()?;
         return Ok(());
     }
     #[allow(unreachable_code)]

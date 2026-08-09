@@ -36,6 +36,9 @@ pub struct ProviderConfig {
     pub last_error: Option<String>,
     #[serde(default)]
     pub model_alias: Option<String>,
+    /// 保存时自动规范化 Base URL（补 /v1、修复火山路径等）；关闭则原样保存
+    #[serde(default = "default_auto_adapt_base_url")]
+    pub auto_adapt_base_url: bool,
 }
 
 impl ProviderConfig {
@@ -59,6 +62,7 @@ impl ProviderConfig {
             last_checked_at: None,
             last_error: None,
             model_alias: None,
+            auto_adapt_base_url: default_auto_adapt_base_url(),
         }
     }
 
@@ -78,12 +82,12 @@ impl ProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum QuitBehavior {
-    /// 仅退出程序，网关与接管保持不变
-    #[default]
+    /// 仅退出程序；若已接管则尝试留下独立网关（不推荐，默认会清理接管）
     ExitOnly,
-    /// 退出并停止网关，保留接管环境变量
+    /// 退出并停止网关；仍会清理接管写入
     StopGateway,
-    /// 退出、停止网关并关闭接管
+    /// 退出、停止网关并清理接管（推荐）
+    #[default]
     StopAll,
 }
 
@@ -113,6 +117,21 @@ pub struct AppConfig {
     /// 客户端连接本地网关时使用的 API Key（可自定义防蹭网）
     #[serde(default = "default_gateway_client_api_key")]
     pub gateway_client_api_key: String,
+    /// 是否显式启用 Codex 接管（默认关闭，避免 OPENAI_* 误伤 OpenCode 等）
+    #[serde(default)]
+    pub codex_takeover_enabled: bool,
+    /// 是否显式启用 Claude 接管
+    #[serde(default)]
+    pub claude_takeover_enabled: bool,
+    /// 启动时自动接管（已弃用，保留字段兼容旧配置）
+    #[serde(default)]
+    pub auto_takeover_enabled: bool,
+    /// 应保持接管的模板 ID 列表（退出清环境，下次按此恢复）
+    #[serde(default)]
+    pub active_takeover_ids: Vec<String>,
+    /// 用户已删除实验·OpenCode Zen，不再自动植入
+    #[serde(default)]
+    pub experimental_zen_dismissed: bool,
 }
 
 fn default_gateway_client_api_key() -> String {
@@ -128,6 +147,10 @@ fn default_port_fallback_ports() -> Vec<u16> {
 }
 
 fn default_gateway_watchdog_enabled() -> bool {
+    true
+}
+
+fn default_auto_adapt_base_url() -> bool {
     true
 }
 
@@ -185,6 +208,11 @@ impl Default for AppConfig {
             gateway_watchdog_enabled: default_gateway_watchdog_enabled(),
             allow_lan_access: false,
             gateway_client_api_key: default_gateway_client_api_key(),
+            codex_takeover_enabled: false,
+            claude_takeover_enabled: false,
+            auto_takeover_enabled: false,
+            active_takeover_ids: Vec::new(),
+            experimental_zen_dismissed: false,
         }
     }
 }
@@ -204,11 +232,13 @@ pub struct RuntimeStatus {
     pub listen_url: String,
     pub openai_base_url: String,
     pub anthropic_base_url: String,
+    pub gateway_client_api_key: String,
     pub gateway_client_api_key_masked: String,
     pub public_model_id: Option<String>,
     pub allow_lan_access: bool,
     pub active_model: Option<String>,
     pub active_provider: Option<String>,
+    pub active_provider_id: Option<String>,
     pub last_proxy_provider: Option<String>,
     pub last_proxy_path: Option<String>,
     pub last_proxy_failover: bool,
@@ -247,6 +277,8 @@ pub struct ProviderInput {
     #[serde(default)]
     pub protocol: ProviderProtocol,
     pub enabled: bool,
+    #[serde(default = "default_auto_adapt_base_url")]
+    pub auto_adapt_base_url: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -255,6 +287,8 @@ pub struct ProviderView {
     pub name: String,
     pub provider: String,
     pub base_url: String,
+    /// 本地配置中的完整 Key，编辑/拉模型列表直接可用
+    pub api_key: String,
     pub api_key_masked: String,
     pub model_name: String,
     pub model_alias: Option<String>,
@@ -264,6 +298,9 @@ pub struct ProviderView {
     pub status: ProviderStatus,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
+    pub auto_adapt_base_url: bool,
+    /// 实验性免费通道（可删；失效后可改 Key/地址继续用）
+    pub experimental: bool,
 }
 
 impl From<&ProviderConfig> for ProviderView {
@@ -273,6 +310,7 @@ impl From<&ProviderConfig> for ProviderView {
             name: value.name.clone(),
             provider: value.provider.clone(),
             base_url: value.base_url.clone(),
+            api_key: value.api_key.clone(),
             api_key_masked: value.masked_key(),
             model_name: value.model_name.clone(),
             model_alias: value.model_alias.clone(),
@@ -282,6 +320,9 @@ impl From<&ProviderConfig> for ProviderView {
             status: value.status.clone(),
             last_checked_at: value.last_checked_at,
             last_error: value.last_error.clone(),
+            auto_adapt_base_url: value.auto_adapt_base_url,
+            experimental: crate::experimental_zen::is_experimental_zen_id(&value.id)
+                || value.provider.eq_ignore_ascii_case(crate::experimental_zen::EXPERIMENTAL_ZEN_PROVIDER),
         }
     }
 }
@@ -298,12 +339,49 @@ pub fn trim_base_url(mut base_url: String) -> String {
     base_url
 }
 
+/// OpenAI 兼容上游常见已带版本路径的后缀（火山 /api/v3、/api/coding/v3、智谱 /paas/v4 等），不应再追加 /v1。
+pub fn openai_base_has_version_suffix(base: &str) -> bool {
+    let base = trim_base_url(base.to_string());
+    if base.ends_with("/v1")
+        || base.ends_with("/api/v3")
+        || base.ends_with("/api/coding/v3")
+        || base.ends_with("/coding/v3")
+        || base.ends_with("/paas/v4")
+        || base.ends_with("/v4")
+    {
+        return true;
+    }
+    // 火山方舟 Coding Plan 等路径以 /v3 结尾
+    if base.ends_with("/v3") && (base.contains("volces.com") || base.contains("/api/")) {
+        return true;
+    }
+    false
+}
+
+/// 修复误追加 /v1 导致的双重后缀。
+pub fn repair_openai_base_url(base_url: String) -> String {
+    let base = trim_base_url(base_url);
+    if base.ends_with("/api/v3/v1") || base.ends_with("/api/coding/v3/v1") {
+        return base.strip_suffix("/v1").unwrap_or(&base).to_string();
+    }
+    if base.ends_with("/paas/v4/v1") {
+        return base.strip_suffix("/v1").unwrap_or(&base).to_string();
+    }
+    if base.ends_with("/v4/v1") && base.contains("/paas/") {
+        return base.strip_suffix("/v1").unwrap_or(&base).to_string();
+    }
+    if base.ends_with("/v3/v1") && base.contains("volces.com") {
+        return base.strip_suffix("/v1").unwrap_or(&base).to_string();
+    }
+    base
+}
+
 /// 按协议规范化 Base URL（魔搭 OpenAI 需 /v1，Anthropic 原生通常不带 /v1）
 pub fn normalize_base_url_for_protocol(base_url: String, protocol: &ProviderProtocol) -> String {
-    let base = trim_base_url(base_url);
+    let base = repair_openai_base_url(trim_base_url(base_url));
     match protocol {
         ProviderProtocol::OpenAi => {
-            if base.ends_with("/v1") {
+            if openai_base_has_version_suffix(&base) {
                 base
             } else {
                 format!("{}/v1", base)
@@ -311,6 +389,39 @@ pub fn normalize_base_url_for_protocol(base_url: String, protocol: &ProviderProt
         }
         ProviderProtocol::Anthropic => base,
     }
+}
+
+/// 保存/加载时解析 Base URL：`auto_adapt` 为 false 时仅去尾部斜杠。
+pub fn resolve_provider_base_url(
+    base_url: String,
+    protocol: &ProviderProtocol,
+    auto_adapt: bool,
+) -> String {
+    let trimmed = trim_base_url(base_url);
+    if !auto_adapt {
+        tracing::info!(
+            raw = %trimmed,
+            protocol = ?protocol,
+            "provider base_url kept as configured (auto_adapt disabled)"
+        );
+        return trimmed;
+    }
+    let normalized = normalize_base_url_for_protocol(trimmed.clone(), protocol);
+    if normalized != trimmed {
+        tracing::info!(
+            raw = %trimmed,
+            normalized = %normalized,
+            protocol = ?protocol,
+            "provider base_url auto-adapted"
+        );
+    } else {
+        tracing::debug!(
+            raw = %trimmed,
+            protocol = ?protocol,
+            "provider base_url unchanged after auto-adapt check"
+        );
+    }
+    normalized
 }
 
 pub fn mask_secret(secret: &str) -> String {
@@ -355,6 +466,52 @@ mod tests {
             &ProviderProtocol::OpenAi,
         );
         assert_eq!(url, "https://api-inference.modelscope.cn/v1");
+    }
+
+    #[test]
+    fn keeps_volcengine_api_v3_without_extra_v1() {
+        let url = normalize_base_url_for_protocol(
+            "https://ark.cn-beijing.volces.com/api/v3".into(),
+            &ProviderProtocol::OpenAi,
+        );
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/v3");
+    }
+
+    #[test]
+    fn repairs_volcengine_api_v3_v1_suffix() {
+        let url = normalize_base_url_for_protocol(
+            "https://ark.cn-beijing.volces.com/api/v3/v1".into(),
+            &ProviderProtocol::OpenAi,
+        );
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/v3");
+    }
+
+    #[test]
+    fn keeps_volcengine_coding_v3_without_extra_v1() {
+        let url = normalize_base_url_for_protocol(
+            "https://ark.cn-beijing.volces.com/api/coding/v3".into(),
+            &ProviderProtocol::OpenAi,
+        );
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/coding/v3");
+    }
+
+    #[test]
+    fn repairs_volcengine_coding_v3_v1_suffix() {
+        let url = normalize_base_url_for_protocol(
+            "https://ark.cn-beijing.volces.com/api/coding/v3/v1".into(),
+            &ProviderProtocol::OpenAi,
+        );
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/coding/v3");
+    }
+
+    #[test]
+    fn resolve_skips_adapt_when_disabled() {
+        let url = resolve_provider_base_url(
+            "https://ark.cn-beijing.volces.com/api/coding/v3".into(),
+            &ProviderProtocol::OpenAi,
+            false,
+        );
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/coding/v3");
     }
 
     #[test]

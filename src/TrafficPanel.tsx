@@ -14,7 +14,7 @@ function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) 
               {bucket.failed > 0 && (
                 <div
                   className="traffic-bar fail"
-                  style={{ flexGrow: total - bucket.success }}
+                  style={{ flexGrow: Math.max(total - bucket.success, 1) }}
                 />
               )}
               {bucket.success > 0 && (
@@ -74,7 +74,14 @@ function ClientsDetailModal({
   );
 }
 
-export function TrafficPanel({ traffic, running }: { traffic?: TrafficStats; running?: boolean }) {
+type Props = {
+  traffic?: TrafficStats;
+  running?: boolean;
+  lastProvider?: string | null;
+  lastPath?: string | null;
+};
+
+export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props) {
   const [clientsOpen, setClientsOpen] = useState(false);
 
   if (!traffic) {
@@ -87,58 +94,79 @@ export function TrafficPanel({ traffic, running }: { traffic?: TrafficStats; run
   }
 
   const failText = traffic.fail_rate_percent.toFixed(1);
-  const hasTokens = traffic.today_input_tokens > 0 || traffic.today_output_tokens > 0;
+  const successRate = traffic.total_requests === 0
+    ? 100
+    : ((traffic.success_count / traffic.total_requests) * 100);
+  const empty = traffic.total_requests === 0 && traffic.today_requests === 0;
 
   return (
     <div className="card traffic-card">
       <div className="section-title">
         <h3>请求统计</h3>
-        <span className="hint compact">{running ? '实时累计' : '网关未运行'}</span>
+        <span className="hint compact">{running ? '实时' : '网关未运行'}</span>
       </div>
-      <div className="traffic-metrics">
-        <div className="traffic-metric">
-          <span>今日请求</span>
-          <strong>{traffic.today_requests}</strong>
-        </div>
-        <div className="traffic-metric">
-          <span>累计请求</span>
-          <strong>{traffic.total_requests}</strong>
-        </div>
-        <div className="traffic-metric">
-          <span>平均耗时</span>
-          <strong>{traffic.avg_latency_ms} ms</strong>
-        </div>
-        <div className="traffic-metric">
-          <span>失败占比</span>
-          <strong className={traffic.fail_rate_percent > 10 ? 'store-error' : ''}>{failText}%</strong>
-        </div>
-        <div className="traffic-metric">
-          <span>活跃来源</span>
-          <strong>{traffic.active_clients}</strong>
-        </div>
-        {hasTokens && (
-          <div className="traffic-metric">
-            <span>今日 Token</span>
-            <strong>
-              {traffic.today_input_tokens.toLocaleString()} / {traffic.today_output_tokens.toLocaleString()}
-            </strong>
-            <span className="hint compact traffic-token-hint">入 / 出</span>
+      {empty ? (
+        <p className="hint compact traffic-empty">
+          {running ? '暂无请求。客户端经接管访问网关后会显示在这里。' : '启动网关并接管客户端后开始统计。'}
+        </p>
+      ) : (
+        <>
+          <div className="traffic-metrics">
+            <div className="traffic-metric">
+              <span>今日</span>
+              <strong>{traffic.today_requests}</strong>
+            </div>
+            <div className="traffic-metric">
+              <span>累计</span>
+              <strong>{traffic.total_requests}</strong>
+            </div>
+            <div className="traffic-metric">
+              <span>平均耗时</span>
+              <strong>{traffic.avg_latency_ms}<span className="traffic-unit">ms</span></strong>
+            </div>
+            <div className="traffic-metric">
+              <span>成功率</span>
+              <strong className={successRate < 90 ? 'store-error' : ''}>{successRate.toFixed(0)}%</strong>
+            </div>
+            <div className="traffic-metric">
+              <span>失败</span>
+              <strong className={traffic.fail_rate_percent > 10 ? 'store-error' : ''}>
+                {traffic.failed_count}
+                <span className="traffic-unit">/{failText}%</span>
+              </strong>
+            </div>
+            <div className="traffic-metric">
+              <span>来源</span>
+              <strong>{traffic.active_clients}</strong>
+            </div>
+            <div className="traffic-metric">
+              <span>Token 入</span>
+              <strong>{traffic.today_input_tokens.toLocaleString()}</strong>
+            </div>
+            <div className="traffic-metric">
+              <span>Token 出</span>
+              <strong>{traffic.today_output_tokens.toLocaleString()}</strong>
+            </div>
           </div>
-        )}
-      </div>
-      <TrafficChart buckets={traffic.hourly_buckets} />
-      <p className="hint compact">近 60 分钟 · 绿=成功 红=失败{hasTokens ? ' · Token 来自响应 usage 字段' : ''}</p>
-
-      {traffic.recent_clients.length > 0 && (
-        <div className="traffic-clients">
-          <button
-            type="button"
-            className="ghost tiny-btn traffic-clients-toggle"
-            onClick={() => setClientsOpen(true)}
-          >
-            查看调用来源（{traffic.recent_clients.length}）
-          </button>
-        </div>
+          {(lastProvider || lastPath) && (
+            <p className="hint compact traffic-last-hit">
+              最近：{lastProvider ?? '—'}
+              {lastPath ? ` · ${lastPath}` : ''}
+            </p>
+          )}
+          <TrafficChart buckets={traffic.hourly_buckets} />
+          {traffic.recent_clients.length > 0 && (
+            <div className="traffic-clients">
+              <button
+                type="button"
+                className="ghost tiny-btn traffic-clients-toggle"
+                onClick={() => setClientsOpen(true)}
+              >
+                调用来源（{traffic.recent_clients.length}）
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {clientsOpen && (

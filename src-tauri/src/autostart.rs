@@ -3,10 +3,10 @@ use std::path::Path;
 
 #[cfg(windows)]
 pub fn set_enabled(enabled: bool, exe_path: &Path) -> Result<()> {
-    use std::process::Command;
+    use crate::process_util::hidden_command;
     let name = "SUGT";
     let status = if enabled {
-        Command::new("reg")
+        hidden_command("reg")
             .args([
                 "add",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -20,7 +20,7 @@ pub fn set_enabled(enabled: bool, exe_path: &Path) -> Result<()> {
             .args(["/f"])
             .status()?
     } else {
-        Command::new("reg")
+        hidden_command("reg")
             .args([
                 "delete",
                 "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",

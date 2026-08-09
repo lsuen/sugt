@@ -16,12 +16,22 @@ export type SkillRepoView = {
   owner: string;
   repo: string;
   branch: string;
+  weight: number;
   enabled: boolean;
   clone_url: string;
   label: string;
   last_refresh_at?: string | null;
   last_error?: string | null;
   skill_count: number;
+};
+
+export type ParsedGitRepo = {
+  clone_url: string;
+  host: string;
+  owner: string;
+  repo: string;
+  is_github: boolean;
+  label: string;
 };
 
 export type PluginItemView = {
@@ -61,7 +71,7 @@ export type StoreSubview = 'main' | 'discover' | 'repos';
 
 export type StoreClientTab = 'claude' | 'codex';
 
-export type StoreContentTab = 'env' | 'skills' | 'plugins';
+export type StoreContentTab = 'env' | 'templates' | 'skills' | 'plugins';
 
 export type DiscoverFilter = 'all' | 'available' | 'staged' | 'mounted';
 

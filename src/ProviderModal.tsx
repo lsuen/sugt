@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, Save } from 'lucide-react';
+import { Download, PlugZap, Save } from 'lucide-react';
 import {
   applyVendorToForm,
   findVendorById,
@@ -20,12 +20,16 @@ type ProviderModalProps = {
   onClose: () => void;
   onSave: () => void;
   onError: (message: string) => void;
+  onInfo?: (message: string) => void;
 };
 
-export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, onError }: ProviderModalProps) {
+export function ProviderModal({
+  form, busy, isEdit, onChange, onClose, onSave, onError, onInfo,
+}: ProviderModalProps) {
   const [vendorId, setVendorId] = useState('');
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [useModelSelect, setUseModelSelect] = useState(false);
 
   useEffect(() => {
@@ -38,7 +42,12 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
     const vendor = findVendorById(id);
     if (!vendor) return;
     const nextProtocol = protocol ?? form.protocol;
-    onChange(applyVendorToForm(vendor, nextProtocol, form));
+    const next = applyVendorToForm(vendor, nextProtocol, form);
+    onChange(
+      form.auto_adapt_base_url
+        ? next
+        : { ...next, base_url: form.base_url },
+    );
     setFetchedModels([]);
     setUseModelSelect(false);
   };
@@ -56,7 +65,7 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
         onChange({
           ...form,
           protocol,
-          base_url: suggested ?? form.base_url,
+          base_url: form.auto_adapt_base_url && suggested ? suggested : form.base_url,
         });
         return;
       }
@@ -64,10 +73,18 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
     onChange({ ...form, protocol });
   };
 
+  const draftInput = () => ({
+    base_url: form.base_url,
+    api_key: form.api_key.trim(),
+    protocol: form.protocol,
+    vendor_id: vendorId || null,
+    auto_adapt_base_url: form.auto_adapt_base_url,
+  });
+
   const fetchModels = async () => {
     const key = form.api_key.trim();
-    if (!key || key.includes('****')) {
-      onError('请先填写完整 API Key');
+    if (!key) {
+      onError('请先填写 API Key');
       return;
     }
     const vendor = vendorId ? findVendorById(vendorId) : undefined;
@@ -77,25 +94,46 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
     }
     setModelsLoading(true);
     try {
-      const models = await invoke<string[]>('list_provider_models', {
-        input: {
-          base_url: form.base_url,
-          api_key: key,
-          protocol: form.protocol,
-          vendor_id: vendorId || null,
-        },
-      });
+      const models = await invoke<string[]>('list_provider_models', { input: draftInput() });
       setFetchedModels(models);
       setUseModelSelect(true);
       if (models.length > 0 && !form.model_name) {
         onChange({ ...form, model_name: models[0] });
       }
+      onInfo?.(`已获取 ${models.length} 个模型`);
     } catch (error) {
       setFetchedModels([]);
       setUseModelSelect(false);
       throw error;
     } finally {
       setModelsLoading(false);
+    }
+  };
+
+  const testConnection = async () => {
+    if (!form.api_key.trim()) {
+      onError('请先填写 API Key');
+      return;
+    }
+    if (!form.base_url.trim()) {
+      onError('请先填写 Base URL');
+      return;
+    }
+    if (!form.model_name.trim()) {
+      onError('请先填写 Model Name');
+      return;
+    }
+    setTesting(true);
+    try {
+      const msg = await invoke<string>('test_provider_draft', {
+        input: draftInput(),
+        modelName: form.model_name.trim(),
+      });
+      onInfo?.(msg);
+    } catch (error) {
+      onError(String(error));
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -106,8 +144,8 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
       : undefined;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay">
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{isEdit ? '编辑模型' : '添加模型'}</h3>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
@@ -175,15 +213,31 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
                   : 'https://api-inference.modelscope.cn'
               }
             />
+            <span className="hint compact">
+              {form.auto_adapt_base_url
+                ? '已开启自适配：保存时自动补 /v1 或识别火山 /api/coding/v3 等路径'
+                : '已关闭自适配：将按输入原样保存 Base URL'}
+            </span>
+          </label>
+
+          <label className="switch-line">
+            <span>Base URL 自适配</span>
+            <input
+              type="checkbox"
+              checked={form.auto_adapt_base_url}
+              onChange={(e) => onChange({ ...form, auto_adapt_base_url: e.target.checked })}
+            />
           </label>
 
           <label className="field-label">
             API Key
             <input
-              type="password"
+              type="text"
               value={form.api_key}
               onChange={(e) => onChange({ ...form, api_key: e.target.value })}
-              placeholder={isEdit ? '留空则不修改' : 'ms-... / sk-...'}
+              placeholder="ms-... / sk-..."
+              autoComplete="off"
+              spellCheck={false}
             />
           </label>
 
@@ -214,15 +268,12 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
                   busy
                   || modelsLoading
                   || !form.api_key.trim()
-                  || form.api_key.includes('****')
                   || (vendor && !vendorSupportsModelList(vendor))
                 }
                 title={
-                  form.api_key.includes('****')
-                    ? '编辑时请重新输入完整 API Key'
-                    : vendor && !vendorSupportsModelList(vendor)
-                      ? '该服务商需手填 Model Name'
-                      : '调用官方模型列表接口'
+                  vendor && !vendorSupportsModelList(vendor)
+                    ? '该服务商需手填 Model Name'
+                    : '调用官方模型列表接口'
                 }
                 onClick={() => fetchModels().catch((err) => onError(String(err)))}
               >
@@ -230,9 +281,6 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
                 {modelsLoading ? '获取中…' : '获取模型'}
               </button>
             </div>
-            <span className="hint compact">
-              详见 docs/provider-vendors.md · Anthropic 协议下仍用 OpenAI 列表接口（若有）
-            </span>
           </div>
 
           <label className="switch-line">
@@ -244,11 +292,22 @@ export function ProviderModal({ form, busy, isEdit, onChange, onClose, onSave, o
             />
           </label>
 
-          <div className="modal-actions">
-            <button type="button" className="ghost" onClick={onClose}>取消</button>
-            <button type="button" className="primary" disabled={busy} onClick={onSave}>
-              <Save size={16} />保存
+          <div className="modal-actions modal-actions-spread">
+            <button
+              type="button"
+              className="ghost"
+              disabled={busy || testing || !form.api_key.trim() || !form.model_name.trim()}
+              onClick={() => void testConnection()}
+            >
+              <PlugZap size={16} />
+              {testing ? '测试中…' : '测试连接'}
             </button>
+            <div className="modal-actions-right">
+              <button type="button" className="ghost" onClick={onClose}>取消</button>
+              <button type="button" className="primary" disabled={busy} onClick={onSave}>
+                <Save size={16} />保存
+              </button>
+            </div>
           </div>
         </div>
       </div>

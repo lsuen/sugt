@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { TakeoverProfilesSection } from '../TakeoverProfilesSection';
 import { invoke } from '@tauri-apps/api/core';
 import {
   ArrowLeft, BookOpen, FolderOpen, Globe, Package, PlugZap, Play, RefreshCw,
@@ -13,6 +14,7 @@ import type {
   PluginPanelView,
   SkillCatalogItem,
   SkillRepoView,
+  ParsedGitRepo,
   StoreClientPaths,
   StoreClientTab,
   StoreContentTab,
@@ -65,6 +67,7 @@ const DISCOVER_FILTERS: { id: DiscoverFilter; label: string }[] = [
 
 const CONTENT_TABS: { id: StoreContentTab; label: string }[] = [
   { id: 'env', label: '环境' },
+  { id: 'templates', label: '接管模板' },
   { id: 'skills', label: '技能' },
   { id: 'plugins', label: '插件' },
 ];
@@ -116,7 +119,9 @@ export function StoreClientsPanel({
   const [settings, setSettings] = useState<StoreSettings>({ editor_command: '', github_proxy_prefix: '' });
   const [search, setSearch] = useState('');
   const [repoFilter, setRepoFilter] = useState('');
-  const [newRepo, setNewRepo] = useState({ owner: '', repo: '', branch: 'main' });
+  const [newRepo, setNewRepo] = useState({ url: '', branch: 'main', weight: '100' });
+  const [repoTestHint, setRepoTestHint] = useState<string | null>(null);
+  const [parsedPreview, setParsedPreview] = useState<ParsedGitRepo | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
@@ -303,8 +308,8 @@ export function StoreClientsPanel({
   );
 
   if (subview === 'discover') {
-    return (
-      <section className="page-grid single store-subview">
+  return (
+    <section className="page-grid single store-subview in-tab">
         <div className="card store-card store-card-fill">
           <div className="section-title">
             <div className="store-title-row">
@@ -371,8 +376,8 @@ export function StoreClientsPanel({
   }
 
   if (subview === 'repos') {
-    return (
-      <section className="page-grid single store-subview">
+  return (
+    <section className="page-grid single store-subview in-tab">
         <div className="card store-card store-card-fill">
           <div className="section-title">
             <div className="store-title-row">
@@ -383,33 +388,105 @@ export function StoreClientsPanel({
             </div>
           </div>
           {statusText && <StatusBanner text={statusText} />}
-          <div className="store-repo-form">
-            <input placeholder="owner" value={newRepo.owner} onChange={(e) => setNewRepo({ ...newRepo, owner: e.target.value })} />
-            <input placeholder="repo" value={newRepo.repo} onChange={(e) => setNewRepo({ ...newRepo, repo: e.target.value })} />
-            <input placeholder="branch" value={newRepo.branch} onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })} />
+          <div className="store-repo-form store-repo-form-grid">
+            <input
+              className="store-repo-url"
+              placeholder="完整 git 地址，如 https://atomgit.com/sunwl88/sun-skills"
+              value={newRepo.url}
+              onChange={(e) => {
+                setNewRepo({ ...newRepo, url: e.target.value });
+                setRepoTestHint(null);
+                setParsedPreview(null);
+              }}
+            />
+            <input
+              placeholder="branch"
+              value={newRepo.branch}
+              onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })}
+            />
+            <input
+              placeholder="权重"
+              title="权重越高，发现技能列表越靠前"
+              value={newRepo.weight}
+              onChange={(e) => setNewRepo({ ...newRepo, weight: e.target.value })}
+            />
             <button
               type="button"
               className="tiny"
               disabled={busy}
               onClick={() => run(async () => {
-                const next = await invoke<SkillRepoView[]>('store_add_repo', newRepo);
-                setRepos(next);
-                setNewRepo({ owner: '', repo: '', branch: 'main' });
-              }, '仓库已添加')}
+                const parsed = await invoke<ParsedGitRepo>('store_parse_repo_url', { url: newRepo.url });
+                setParsedPreview(parsed);
+                const msg = await invoke<string>('store_test_repo', {
+                  url: newRepo.url,
+                  branch: newRepo.branch || 'main',
+                });
+                setRepoTestHint(msg);
+              }, '仓库测试通过')}
             >
-              添加
+              测试解析
+            </button>
+            <button
+              type="button"
+              className="tiny primary"
+              disabled={busy}
+              onClick={() => run(async () => {
+                const weight = Number.parseInt(newRepo.weight || '0', 10);
+                if (Number.isNaN(weight)) throw new Error('权重必须是数字');
+                const next = await invoke<SkillRepoView[]>('store_add_repo', {
+                  url: newRepo.url,
+                  branch: newRepo.branch || 'main',
+                  weight,
+                });
+                setRepos(next);
+                setNewRepo({ url: '', branch: 'main', weight: '100' });
+                setRepoTestHint(null);
+                setParsedPreview(null);
+              }, '仓库已保存')}
+            >
+              保存
             </button>
           </div>
+          {parsedPreview && (
+            <p className="hint compact store-ok-hint">
+              解析：{parsedPreview.host} · {parsedPreview.label}
+              {parsedPreview.is_github ? '（GitHub，可走克隆代理）' : '（国内/第三方源，直连）'}
+            </p>
+          )}
+          {repoTestHint && (
+            <p className={`hint compact${repoTestHint.includes('成功') || repoTestHint.includes('可访问') ? ' store-ok-hint' : ' store-error'}`}>
+              {repoTestHint}
+            </p>
+          )}
           <div className="store-scroll-panel">
             <div className="store-repo-list">
               {repos.map((repo) => (
                 <div className="store-repo-row" key={repo.id}>
-                  <div>
-                    <strong>{repo.label}</strong>
-                    <span className="hint compact">{repo.branch} · {repo.skill_count} 个技能</span>
+                  <div className="store-repo-meta">
+                    <strong className="store-repo-name">{repo.label}</strong>
+                    <span className="hint compact store-repo-stats">
+                      权重 {repo.weight} · {repo.branch} · {repo.skill_count} 个技能
+                    </span>
+                    <code className="store-path-code">{repo.clone_url}</code>
                     {repo.last_error && <p className="hint compact store-error">{repo.last_error}</p>}
                   </div>
-                  <div className="store-skill-actions">
+                  <div className="store-skill-actions store-repo-actions">
+                    <button
+                      type="button"
+                      className="tiny"
+                      disabled={busy}
+                      title="提高权重"
+                      onClick={() => run(async () => {
+                        const next = await invoke<SkillRepoView[]>('store_update_repo', {
+                          repoId: repo.id,
+                          weight: repo.weight + 10,
+                        });
+                        setRepos(next);
+                        await loadCatalog();
+                      }, '权重已更新')}
+                    >
+                      权重+
+                    </button>
                     <button
                       type="button"
                       className="tiny"
@@ -473,7 +550,7 @@ export function StoreClientsPanel({
   }
 
   return (
-    <section className="page-grid single">
+    <section className="page-grid single in-tab">
       <div className="card store-card store-card-fill">
         <div className="section-title">
           <h3>客户端 · 商店版</h3>
@@ -531,7 +608,7 @@ export function StoreClientsPanel({
               </div>
             </div>
             <div className="section-title store-takeover-head">
-              <span className="hint">接管操作</span>
+              <span className="hint">{clientLabel} 检查与快捷操作；长期接管偏好请到「接管模板」</span>
               <div className="title-actions store-action-bar">
                 <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
                   const next = await invoke<ClientsEnvStatus>('get_clients_env_status');
@@ -542,21 +619,24 @@ export function StoreClientsPanel({
                   const next = await invoke<ClientsEnvStatus>('repair_clients_env');
                   onClientsChange(next);
                 }, '已修复')}><Wrench size={14} />修复</button>
-                <button type="button" className="primary tiny-btn" disabled={busy || !status?.running} onClick={() => run(async () => {
-                  const next = await invoke<ClientsEnvStatus>('install_clients_env');
+                {status?.running ? (
+                  <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
+                    const next = await invoke<ClientsEnvStatus>('install_clients_env', { client: clientTab });
+                    onClientsChange(next);
+                  }, `${clientLabel} 已接管`)}><PlugZap size={14} />接管</button>
+                ) : (
+                  <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
+                    const next = await invoke<ClientsEnvStatus>('install_clients_env', { autoStart: true, client: clientTab });
+                    onClientsChange(next);
+                  }, `网关已启动，${clientLabel} 已接管`)}><Play size={14} />启动并接管</button>
+                )}
+                <button type="button" className="ghost tiny-btn" disabled={busy || !activeClient?.configured} onClick={() => run(async () => {
+                  const next = await invoke<ClientsEnvStatus>('uninstall_clients_env', { client: clientTab });
                   onClientsChange(next);
-                }, '接管完成')}><PlugZap size={14} />一键接管</button>
-                <button type="button" className="ghost tiny-btn" disabled={busy || Boolean(status?.running)} onClick={() => run(async () => {
-                  const next = await invoke<ClientsEnvStatus>('install_clients_env', { autoStart: true });
-                  onClientsChange(next);
-                }, '网关已启动并完成接管')}><Play size={14} />启动并接管</button>
-                <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
-                  const next = await invoke<ClientsEnvStatus>('uninstall_clients_env');
-                  onClientsChange(next);
-                }, '已关闭接管')}>关闭接管</button>
+                }, `已取消 ${clientLabel} 接管`)}>取消接管</button>
               </div>
             </div>
-            <p className="hint">{clientsHint}</p>
+            {clientsHint ? <p className="hint">{clientsHint}</p> : null}
             <div className="store-env-actions">
               <button type="button" className="tiny" disabled={busy} onClick={() => setLaunchModalOpen(true)}>
                 <Terminal size={14} />新终端启动 {clientLabel}
@@ -590,6 +670,12 @@ export function StoreClientsPanel({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {contentTab === 'templates' && (
+          <div className="store-content-body store-templates-body">
+            <TakeoverProfilesSection busy={busy} run={run} pushToast={pushToast} onClientsChange={onClientsChange} />
           </div>
         )}
 

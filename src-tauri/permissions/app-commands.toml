@@ -29,6 +29,11 @@ description = "Enables the delete_provider command"
 commands.allow = ["delete_provider"]
 
 [[permission]]
+identifier = "allow-restore-experimental-zen"
+description = "Enables the restore_experimental_zen command"
+commands.allow = ["restore_experimental_zen"]
+
+[[permission]]
 identifier = "allow-set-active-provider"
 description = "Enables the set_active_provider command"
 commands.allow = ["set_active_provider"]
@@ -57,6 +62,11 @@ commands.allow = ["set_autostart"]
 identifier = "allow-set-autostart-gateway"
 description = "Enables the set_autostart_gateway command"
 commands.allow = ["set_autostart_gateway"]
+
+[[permission]]
+identifier = "allow-set-auto-takeover"
+description = "Enables the set_auto_takeover command"
+commands.allow = ["set_auto_takeover"]
 
 [[permission]]
 identifier = "allow-set-quit-behavior"
@@ -104,14 +114,49 @@ description = "Enables the set_provider_enabled command"
 commands.allow = ["set_provider_enabled"]
 
 [[permission]]
+identifier = "allow-update-gateway-settings"
+description = "Enables the update_gateway_settings command"
+commands.allow = ["update_gateway_settings"]
+
+[[permission]]
+identifier = "allow-test-provider-draft"
+description = "Enables the test_provider_draft command"
+commands.allow = ["test_provider_draft"]
+
+[[permission]]
+identifier = "allow-quick-gateway-chat"
+description = "Enables the quick_gateway_chat command"
+commands.allow = ["quick_gateway_chat"]
+
+[[permission]]
+identifier = "allow-takeover-commands"
+description = "Enables takeover profile commands"
+commands.allow = [
+  "list_takeover_profiles",
+  "apply_takeover_profile",
+  "release_takeover_profile",
+  "delete_takeover_profile",
+  "set_takeover_settings_path",
+  "can_ai_parse_takeover",
+  "parse_takeover_config_path",
+  "save_takeover_profile",
+  "discover_agents",
+  "add_discovered_agents"
+]
+
+[[permission]]
 identifier = "allow-store-commands"
 description = "Enables store edition commands"
 commands.allow = [
   "store_list_repos",
+  "store_parse_repo_url",
+  "store_test_repo",
   "store_add_repo",
+  "store_update_repo",
   "store_remove_repo",
   "store_refresh_repo",
   "store_refresh_all_repos",
+  "store_ensure_preferred_repo",
   "store_list_catalog",
   "store_install_skill",
   "store_uninstall_skill",
@@ -124,5 +169,13 @@ commands.allow = [
   "store_get_settings",
   "store_set_settings",
   "store_open_skill",
-  "store_open_staging_dir"
+  "store_open_staging_dir",
+  "store_list_local_skills",
+  "store_list_skill_agents",
+  "store_mount_skills",
+  "store_unmount_skills",
+  "store_create_local_skill",
+  "get_agent_advanced",
+  "import_agent_skill",
+  "save_agent_advanced_path"
 ]

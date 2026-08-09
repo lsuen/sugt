@@ -6,11 +6,16 @@ type Props = {
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  /** 表单弹窗默认 false，防止误点遮罩丢失内容 */
+  closeOnOverlay?: boolean;
 };
 
-export function StoreModal({ title, onClose, children, wide }: Props) {
+export function StoreModal({ title, onClose, children, wide, closeOnOverlay = false }: Props) {
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div
+      className="modal-overlay"
+      onClick={closeOnOverlay ? onClose : undefined}
+    >
       <div className={`modal${wide ? ' modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>

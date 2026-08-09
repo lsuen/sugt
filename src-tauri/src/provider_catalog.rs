@@ -21,16 +21,19 @@ pub fn vendor_by_id(id: &str) -> Option<&'static VendorCatalogEntry> {
     VENDORS.iter().find(|v| v.id == id)
 }
 
-/// 解析模型列表请求 URL（兼容 /v1、/api/v3、/paas/v4 等常见形态）
+/// 解析模型列表请求 URL（兼容 /v1、/api/v3、/api/coding/v3、/paas/v4 等常见形态）
 pub fn resolve_models_list_url(base_url: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
-    if base.ends_with("/api/v3") {
+    if base.ends_with("/api/v3") || base.ends_with("/api/coding/v3") || base.ends_with("/coding/v3") {
         return format!("{}/models", base);
     }
     if base.ends_with("/v4") || base.ends_with("/paas/v4") {
         return format!("{}/models", base);
     }
     if base.ends_with("/v1") {
+        return format!("{}/models", base);
+    }
+    if base.ends_with("/v3") && base.contains("volces.com") {
         return format!("{}/models", base);
     }
     format!("{}/v1/models", base)
@@ -81,7 +84,7 @@ pub static VENDORS: [VendorCatalogEntry; 12] = [
     },
     VendorCatalogEntry {
         id: "volcengine",
-        openai_base_url: "https://ark.cn-beijing.volces.com/api/v3",
+        openai_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3",
         anthropic_base_url: Some("https://ark.cn-beijing.volces.com/api/coding"),
         models_list_mode: ModelsListMode::OpenAiCompatible,
         doc_url: "https://www.volcengine.com/docs/82379",
@@ -133,6 +136,12 @@ pub static VENDORS: [VendorCatalogEntry; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_volcengine_coding_v3_models_url() {
+        let url = resolve_models_list_url("https://ark.cn-beijing.volces.com/api/coding/v3");
+        assert_eq!(url, "https://ark.cn-beijing.volces.com/api/coding/v3/models");
+    }
 
     #[test]
     fn resolves_volcengine_v3_models_url() {

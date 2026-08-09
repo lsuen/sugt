@@ -98,16 +98,17 @@ pub fn mount_skill(
             codex_folder: None,
             folder_name: None,
             mounted_at: None,
+            agents: Default::default(),
+            custom_paths: Default::default(),
         });
 
     if matches!(target, MountTarget::Claude | MountTarget::Both) {
         mount_to_dir(&source, &StorePaths::claude_skills_dir()?, &folder_name)?;
-        entry.claude_folder = Some(folder_name.clone());
-        entry.folder_name = Some(folder_name.clone());
+        entry.set_agent_mount("claude-code", &folder_name);
     }
     if matches!(target, MountTarget::Codex | MountTarget::Both) {
         mount_to_dir(&source, &StorePaths::codex_skills_dir()?, &folder_name)?;
-        entry.codex_folder = Some(folder_name);
+        entry.set_agent_mount("codex", &folder_name);
     }
     entry.mounted_at = Some(now_secs());
     save_mounted_meta(store_paths, &mounted)?;
@@ -143,18 +144,17 @@ pub fn unmount_skill(
             let claude_dir = StorePaths::claude_skills_dir()?;
             remove_dir_if_exists(&claude_dir.join(folder))?;
         }
-        record.claude_folder = None;
-        record.folder_name = None;
+        record.clear_agent_mount("claude-code");
     }
     if matches!(target, MountTarget::Codex | MountTarget::Both) {
-        if let Some(folder) = &record.codex_folder {
+        if let Some(folder) = record.codex_folder.clone().or_else(|| record.agents.get("codex").cloned()) {
             let codex_dir = StorePaths::codex_skills_dir()?;
             remove_dir_if_exists(&codex_dir.join(folder))?;
         }
-        record.codex_folder = None;
+        record.clear_agent_mount("codex");
     }
 
-    if !record.is_mounted_claude() && record.codex_folder.is_none() {
+    if record.is_empty_mount() {
         mounted.skills.remove(skill_id);
     }
     save_mounted_meta(store_paths, &mounted)?;
@@ -206,7 +206,7 @@ pub fn repo_skill_count(store_paths: &StorePaths, repo_id: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn mount_to_dir(source: &PathBuf, skills_dir: &PathBuf, folder_name: &str) -> Result<()> {
+pub(crate) fn mount_to_dir(source: &PathBuf, skills_dir: &PathBuf, folder_name: &str) -> Result<()> {
     std::fs::create_dir_all(skills_dir)?;
     let dest = skills_dir.join(folder_name);
     remove_dir_if_exists(&dest)?;
@@ -214,7 +214,7 @@ fn mount_to_dir(source: &PathBuf, skills_dir: &PathBuf, folder_name: &str) -> Re
     Ok(())
 }
 
-fn folder_name_from_record(record: &StagedSkillRecord) -> String {
+pub(crate) fn folder_name_from_record(record: &StagedSkillRecord) -> String {
     record
         .relative_path
         .split('/')
@@ -223,7 +223,7 @@ fn folder_name_from_record(record: &StagedSkillRecord) -> String {
         .to_string()
 }
 
-fn now_secs() -> String {
+pub(crate) fn now_secs() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())

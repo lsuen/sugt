@@ -1,166 +1,96 @@
 # SUGT
 
-SUGT（su gateway）是面向内部研发场景的本地 OpenAI 兼容网关，用于让 Claude Code、OpenAI Codex 等 CLI 通过统一本地代理访问大模型服务。
+本地 AI 网关。把模型 Key、Agent 接管、Skills 挂载收拢到一个本机小工具里。
 
-| 项 | 说明 |
+用 Claude Code / Codex / OpenCode 的时候，不用在每个客户端里反复改 Base URL；上游可以换成国内服务商或自建模型，客户端仍走本地网关。完整版里我觉得更有用的，其实是 Skills 中控台：能下、能管、挂上卸下都不容易丢。
+
+| | |
 | --- | --- |
-| 产品名 | SUGT |
-| 全称 | su gateway |
-| 作者 | 孙文龙 |
-| 授权 | QM 科技内部定制，未经授权禁止传播 |
+| 版本 | 1.0.0 |
+| 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
+| 开源 | 功能版核心 [Apache-2.0](LICENSE) |
+| 当前下载 | [全功能试用包](https://github.com/lsuen/sugt/releases/tag/v1.0.0-store-trial)（含技能中控台） |
 
-## 产品线
+English: [README.en.md](README.en.md)
 
-| 构建变量 `SUGT_PRODUCT` | 说明 |
-| --- | --- |
-| `feature`（默认） | 功能版：网关、模型配置、客户端接管 |
-| `store` | 商店版：在功能版底座上增加 Claude/Codex 技能发现、暂存安装与挂载 |
+## 为啥做这个
 
-两条产品线共用网关与接管逻辑；商店相关代码在 `dev-store` 分支演进，网关核心在 `dev-feature` 回流。
+- Key 一堆：OpenAI、Anthropic、魔搭、火山……散落在各个客户端
+- Agent 一堆：Claude Code、Codex、OpenCode、自己写的脚本，每个都要单独配
+- Skills 散养：没有统一发现和挂载，换机器又重来一遍
 
-## 环境要求
+SUGT 干的事很直接：本机起一个兼容网关，一键把 Agent 指过来；完整发行版还能管 Skills。
 
-- Windows 10/11 x64
-- Node.js 18+
-- Rust 1.78+（含 `cargo`、`tauri-cli`）
-- Git for Windows（商店版刷新技能仓库时需要）
+## 说在前面（发版和开源节奏）
 
-## 开发
+先把话说清楚，免得误会：
+
+**会一直有免费可用的版本。** 我不是靠卡试用过日子的。
+
+现在 Releases 上挂的是**有期限的全功能试用包**，主要是因为：手里还有一些想打磨的想法，代码也还想再多看几轮；但它已经能解决一部分真实问题，所以先放出来给人用。对我来说这是责任问题——能帮上忙的，就先别藏着。
+
+稳定一些之后，我会打**不限时的全功能包**再发上来。公开仓库里的功能版核心，本来就可以自己编译，做出**没有试用限制**的构建（公开树不含作者侧的试用注入脚本；你在完整源码树上按自用/开发方式构建即可）。
+
+还有一部分能力（主要是技能中控台相关源码）暂时没放进公开仓，道理差不多：想再收一收、再 review 一轮，不是打算永久闭源。**后续会逐步、最终全部放出来。**
+
+有问题或建议，直接开 [Issues](https://github.com/lsuen/sugt/issues)。Star 不是必须，但有的话更新会更有劲。
+
+## 先下载试用
+
+Windows x64 全功能试用（约 90 天，绑本机）：
+
+**[Download SUGT 1.0.0 trial](https://github.com/lsuen/sugt/releases/tag/v1.0.0-store-trial)**
+
+装完能跑网关、接管、技能发现。配置默认在 `Documents\.sugt\`（可用 `SUGT_CONFIG_DIR` 改）。
+
+## 长啥样
+
+控制台：启停、流量、接入点。
+
+![控制台](docs/images/client.png)
+
+模型：多服务商、默认切换、测连通。
+
+![模型配置](docs/images/client-llm.png)
+
+客户端：发现本机 Agent，一键接管 / 取消。
+
+![客户端接管](docs/images/client-agents.png)
+
+技能（完整版）：本地挂载 + 仓库发现入库。
+
+![本地技能](docs/images/client-skills-local.png)
+
+![发现技能](docs/images/client-skills-store.png)
+
+## 能干什么
+
+- 本机网关：Chat Completions / Anthropic Messages / Responses（失败可回退）
+- 协议互转：Anthropic ↔ OpenAI
+- 模型管理：预设、启用禁用、默认、测试
+- 一键接管：Claude Code、Codex、OpenCode 等
+- 技能中控台（发行版）：刷新仓库、入库、挂到各 Agent
+- GUI + `sugt-cli`
+
+说明文档：[开源边界](docs/open-source.md) · [国内服务商](docs/provider-vendors.md) · [从源码构建](docs/build.md)
+
+## 自己编译（功能版核心）
+
+需要：Windows 10/11、Node 18+、Rust 1.78+、WebView2。
 
 ```cmd
 npm install
-npm run dev:app              REM 功能版 GUI
-npm run dev:app:store        REM 商店版 GUI（SUGT_PRODUCT=store）
-npm run check                REM TypeScript 检查
+npm run check
+npm run dev:app
 ```
 
-Rust 单元测试：
-
-```cmd
-cd src-tauri
-cargo test --lib
-```
-
-配置与日志默认目录：`Documents\.sugt\`（可通过环境变量 `SUGT_CONFIG_DIR` 覆盖）。
-
-## 打包（Portable 绿色版）
-
-产物输出到 `release/`（已 git 排除）。详见 `scripts/RELEASE.md` 与本地 `debug.md`（开发者备忘，不纳入版本库）。
-
-常用命令：
-
-```cmd
-npm run package:release:self:zip           REM 功能版自用
-npm run package:release:store:self:zip     REM 商店版自用
-npm run package:release:all:zip            REM 功能版试用 + 自用
-npm run package:release:wizard             REM 交互式选择
-```
-
-商店版打包示例产物：
-
-```text
-release/SUGT-0.2.1-store-self-windows-x64/
-├── SUGT.exe
-├── sugt-cli.exe
-├── README.txt
-├── VERSION.txt
-└── manifest.json
-```
-
-
-详细说明见 `scripts/RELEASE.md`。
-
-## 内部试用版有效期配置
-
-有效期配置集中放在：
-
-```text
-scripts/release-settings.json
-```
-
-默认字段：
-
-```json
-{
-  "defaultTrialDays": 30,
-  "defaultTrialExpiresAt": null,
-  "buildTrialByDefault": true,
-  "buildSelfByDefault": true,
-  "defaultTarget": "all",
-  "createZipByDefault": true
-}
-```
-
-修改默认试用天数：
-
-- 文件：`scripts/release-settings.json`
-- 字段：`defaultTrialDays`
-
-指定固定截止日期：
-
-- 文件：`scripts/release-settings.json`
-- 字段：`defaultTrialExpiresAt`
-- 示例：`"2026-07-10T23:59:59+08:00"`
-
-临时指定截止日期：
-
-```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialExpiresAt "2026-07-10T23:59:59+08:00" -Zip
-```
-
-有效期信息会在打包编译时写入 exe。程序运行后不会在 exe 所在目录生成运行时文件；机器绑定状态写入：
-
-```text
-Documents\.sugt\trial-state.json
-```
-
-关于页只显示一行低调说明：`内部试用版本，有效期至 yyyy-MM-dd` 或 `内部自用版本，无有效期限制`。
-
-## 开发命令
-
-国内 LLM 服务商 Base URL / 模型列表约定见 [docs/provider-vendors.md](docs/provider-vendors.md)。
-
-```cmd
-set "PATH=C:\Users\swl\.cargo\bin;%PATH%"
-call "C:\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-npm install
-npm run tauri:build
-```
-
-## CLI
+更完整的构建步骤见 [docs/build.md](docs/build.md)。公开仓是功能版核心；不含作者侧打包脚本和试用注入。完整树里用自用/开发构建，可以打出无试用期的包。
 
 ```cmd
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
-sugt-cli env install --start-gateway
 ```
 
-## 商店版（0.2.x）概要
+## License
 
-- 客户端页：Claude / Codex 大标签；其下 **环境 / 技能 / 插件** 平级 Tab
-- **发现技能**：全部 / 可安装 / 已暂存 / 已挂载；安装到 `Documents\.sugt\store\skills\`
-- **GitHub 代理**：可选加速前缀（如 `https://ghfast.top`），刷新仓库时用于 git clone
-- 挂载目录：Claude `~\.claude\skills`；Codex `~\.agents\skills`（与官方 SKILL.md 规范一致）
-- 插件：只读列表 + 官方安装命令说明（不提供在线安装）
-- 分支策略见 `docs/BRANCHING.md`；商店 PRD 见 `docs/PRD-store-v0.2.md`
-
-## 构建注意
-
-GUI 须通过 `tauri build` 或 `npm run package:release*` 构建。仅 `cargo build --release --bin sugt` 可能导致 WebView 资源未嵌入，界面出现「拒绝连接」。
-
-窗口尺寸：`src-tauri/tauri.conf.json` 中的 `width` / `height`。
-
-## 目录结构（简要）
-
-```text
-src/                 React 前端
-src/store/           商店版 UI
-src-tauri/src/       Rust 后端
-src-tauri/src/store/ 商店模块（仓库、索引、安装、挂载）
-scripts/             打包与通知脚本
-docs/                产品/分支文档（部分开发文档在 docs/dev，不跟踪）
-```
-
-## 许可证与分发
-
-内部使用。禁止将构建产物或源码向外部人员传播。
+功能版核心：Apache-2.0。技能中控台等未公开部分会随项目推进逐步开源。见 [LICENSE](LICENSE)、[NOTICE](NOTICE)、[docs/open-source.md](docs/open-source.md)。

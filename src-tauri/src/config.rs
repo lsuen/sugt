@@ -1,7 +1,7 @@
 use crate::model::{AppConfig, ProviderConfig};
 use anyhow::{Context, Result};
 use directories::UserDirs;
-use std::{fs, path::PathBuf};
+use std::{fs, path::{Path, PathBuf}};
 
 const DIR_NAME: &str = ".sugt";
 const CONFIG_FILE: &str = "config.toml";
@@ -39,18 +39,30 @@ pub fn ensure_paths() -> Result<AppPaths> {
     Ok(paths)
 }
 
+pub fn load_config_file(path: &Path) -> Result<AppConfig> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("无法读取配置文件 {}", path.display()))?;
+    let mut config: AppConfig = toml::from_str(&raw).context("配置文件格式错误")?;
+    normalize_config(&mut config);
+    Ok(config)
+}
+
 pub fn load_or_init_config() -> Result<(AppPaths, AppConfig)> {
     let paths = ensure_paths()?;
     if !paths.config_file.exists() {
-        let config = default_config_from_env();
+        let mut config = default_config_from_env();
+        let _ = crate::experimental_zen::ensure_experimental_zen(&mut config);
+        normalize_config(&mut config);
         save_config(&paths, &config)?;
         return Ok((paths, config));
     }
 
-    let raw = fs::read_to_string(&paths.config_file)
-        .with_context(|| format!("无法读取配置文件 {}", paths.config_file.display()))?;
-    let mut config: AppConfig = toml::from_str(&raw).context("配置文件格式错误")?;
+    let mut config = load_config_file(&paths.config_file)?;
+    let seeded = crate::experimental_zen::ensure_experimental_zen(&mut config);
     normalize_config(&mut config);
+    if seeded {
+        let _ = save_config(&paths, &config);
+    }
     Ok((paths, config))
 }
 
@@ -63,9 +75,10 @@ pub fn save_config(paths: &AppPaths, config: &AppConfig) -> Result<()> {
 
 pub fn normalize_config(config: &mut AppConfig) {
     for provider in &mut config.providers {
-        provider.base_url = crate::model::normalize_base_url_for_protocol(
+        provider.base_url = crate::model::resolve_provider_base_url(
             provider.base_url.clone(),
             &provider.protocol,
+            provider.auto_adapt_base_url,
         );
     }
 

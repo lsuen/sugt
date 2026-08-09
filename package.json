@@ -1,6 +1,6 @@
 {
   "name": "sugt",
-  "version": "0.2.6",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,20 +12,22 @@
     "tauri:build": "tauri build",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",
     "package:release:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self -Zip",
-    "package:release:trial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30",
-    "package:release:trial:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30 -Zip",
+    "package:release:trial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 90",
+    "package:release:trial:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 90 -Zip",
     "package:release:self": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",
     "package:release:self:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self -Zip",
     "package:release:store:self": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant self",
     "package:release:store:self:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant self -Zip",
-    "package:release:store:trial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant trial -TrialDays 30",
-    "package:release:store:trial:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant trial -TrialDays 30 -Zip",
+    "package:release:store:trial": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant trial -TrialDays 90",
+    "package:release:store:trial:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Product store -Variant trial -TrialDays 90 -Zip",
     "package:release:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-all.ps1",
     "package:release:all:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-all.ps1 -Zip",
     "package:release:wizard": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release-wizard.ps1",
-    "package:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 30 -Test",
+    "package:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant trial -TrialDays 90 -Test",
     "test:connectivity": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-connectivity.ps1",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
+    "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

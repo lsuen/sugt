@@ -2,6 +2,7 @@
 /src-tauri/target
 /node_modules
 /dist
+/dist-public
 /.vite
 /.idea
 /.vscode
@@ -21,3 +22,13 @@ Thumbs.db
 /docs/dev/
 /baks/
 /debug.md
+.MemoryForAI/
+
+# Credentials and local notify payloads
+/.secrets/
+/.github-tokens*
+scripts/.notify-*.json
+.env.dingtalk.local
+
+# Footgun: a FILE named .github must never store tokens
+# (workflows live in the .github/ DIRECTORY only)

@@ -59,13 +59,14 @@ pub fn spawn_detached(config_dir: &Path) -> Result<()> {
         return Ok(());
     }
     let exe = locate_cli_exe()?;
-    let mut cmd = std::process::Command::new(&exe);
+    let mut cmd = crate::process_util::hidden_command(&exe);
     cmd.arg("serve");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
+        // 覆盖 hidden_command 的 flags，额外分离进程
         cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
     let child = cmd.spawn().context("后台启动 sugt-cli serve 失败")?;
@@ -87,6 +88,19 @@ pub fn stop_detached(config_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 强制结束残留的独立网关进程（pid 文件丢失时的兜底）。
+pub fn kill_sugt_cli_processes() {
+    #[cfg(windows)]
+    {
+        use std::process::Stdio;
+        let _ = crate::process_util::hidden_command("taskkill")
+            .args(["/IM", "sugt-cli.exe", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn is_pid_file_alive(config_dir: &Path) -> bool {
     let pid_path = config_dir.join(GATEWAY_PID_FILE);
     let content = match fs::read_to_string(&pid_path) {
@@ -106,11 +120,11 @@ fn is_pid_file_alive(config_dir: &Path) -> bool {
 
 #[cfg(windows)]
 fn is_pid_running(pid: u32) -> bool {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("tasklist")
+    use std::process::Stdio;
+    crate::process_util::hidden_command("tasklist")
         .args(["/FI", &format!("PID eq {}", pid)])
-        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .output()
         .map(|output| {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -126,11 +140,11 @@ fn is_pid_running(_pid: u32) -> bool {
 
 #[cfg(windows)]
 fn kill_pid(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let _ = std::process::Command::new("taskkill")
+    use std::process::Stdio;
+    let _ = crate::process_util::hidden_command("taskkill")
         .args(["/PID", &pid.to_string(), "/F"])
-        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status();
 }
 

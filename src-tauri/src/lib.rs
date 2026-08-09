@@ -1,4 +1,7 @@
 pub mod anthropic_adapter;
+pub mod agent_advanced;
+pub mod agent_discover;
+pub mod experimental_zen;
 pub mod app;
 pub mod autostart;
 pub mod clients;
@@ -17,6 +20,9 @@ pub mod tray;
 pub mod product;
 pub mod provider_catalog;
 pub mod store;
+pub mod codex_config;
+pub mod openai_responses_adapter;
+pub mod process_util;
 pub mod takeover_profiles;
 pub mod trial;
 

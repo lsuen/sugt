@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SUGT",
-  "version": "0.2.6",
+  "version": "1.0.0",
   "identifier": "com.qmtech.sugt",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SUGT - su gateway",
+        "title": "SUGT · 本地 AI 网关",
         "width": 1040,
         "height": 680,
         "minWidth": 960,
@@ -35,8 +35,8 @@
     "targets": "all",
     "copyright": "Copyright © 2026 孙文龙. All rights reserved.",
     "category": "DeveloperTool",
-    "shortDescription": "SUGT su gateway",
-    "longDescription": "Lightweight OpenAI-compatible gateway for Claude Code, Codex and domestic LLM providers.",
+    "shortDescription": "SUGT 本地 AI 网关",
+    "longDescription": "轻量本地网关：对接 Claude Code、Codex 与国内大模型，支持技能发现与 Agent 接管。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -3,13 +3,22 @@ use axum::http::HeaderMap;
 use crate::model::AppConfig;
 
 pub fn validate_client_request(headers: &HeaderMap, config: &AppConfig) -> bool {
-    let expected = config.gateway_client_api_key.trim();
-    if expected.is_empty() {
-        return true;
+    let expected = effective_client_key(config);
+    match extract_client_api_key(headers) {
+        None => true, // Codex 等可能仅走 config.toml 鉴权，本地网关允许无头
+        Some(key) => key == expected || key == DUMMY_LOCAL_KEY,
     }
-    extract_client_api_key(headers)
-        .map(|key| key == expected)
-        .unwrap_or(false)
+}
+
+const DUMMY_LOCAL_KEY: &str = "sugt-local-key";
+
+fn effective_client_key(config: &AppConfig) -> String {
+    let key = config.gateway_client_api_key.trim();
+    if key.is_empty() {
+        DUMMY_LOCAL_KEY.to_string()
+    } else {
+        key.to_string()
+    }
 }
 
 pub fn extract_client_api_key(headers: &HeaderMap) -> Option<String> {
@@ -44,6 +53,13 @@ mod tests {
             gateway_client_api_key: "sugt-local-key".to_string(),
             ..AppConfig::default()
         };
+        assert!(validate_client_request(&headers, &config));
+    }
+
+    #[test]
+    fn accepts_missing_auth_for_local() {
+        let headers = HeaderMap::new();
+        let config = AppConfig::default();
         assert!(validate_client_request(&headers, &config));
     }
 

@@ -1,5 +1,5 @@
 use chrono::{Local, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -17,13 +17,13 @@ pub struct RequestRecord {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HourlyBucketView {
     pub success: u32,
     pub failed: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientActivityView {
     pub label: String,
     pub provider_name: String,
@@ -33,7 +33,7 @@ pub struct ClientActivityView {
     pub last_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficStatsView {
     pub total_requests: u64,
     pub today_requests: u64,
@@ -246,6 +246,14 @@ fn client_label(user_agent: &str) -> String {
     } else {
         label.to_string()
     }
+}
+
+pub fn client_label_from_headers(headers: &axum::http::HeaderMap) -> String {
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    client_label(ua)
 }
 
 #[cfg(test)]

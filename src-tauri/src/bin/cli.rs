@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
             if let Some(port) = port {
                 app_config.port = port;
             }
-            let gateway = GatewayState::new(app_config)?;
+            let gateway = GatewayState::new(app_config, Some(paths.config_file.clone()))?;
             let url = gateway.start().await?;
             println!("SUGT gateway listening on {}", url);
             signal::ctrl_c().await?;
@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         Command::Test => {
             let (paths, app_config) = config::load_or_init_config()?;
             trial::ensure_allowed(&paths)?;
-            let gateway = GatewayState::new(app_config.clone())?;
+            let gateway = GatewayState::new(app_config.clone(), Some(paths.config_file.clone()))?;
             for provider in app_config.providers {
                 let status = gateway.test_provider(&provider.id).await?;
                 println!("{}: {:?}", provider.name, status);
@@ -131,23 +131,25 @@ async fn main() -> Result<()> {
         Command::Env { command } => {
             let (paths, app_config) = config::load_or_init_config()?;
             match command {
-                EnvCommand::Status => print_env_status(&clients::status(&app_config)),
+                EnvCommand::Status => {
+                    print_env_status(&clients::status(&paths.config_dir, &app_config))
+                }
                 EnvCommand::Install { start_gateway } => {
                     ensure_gateway_reachable(&paths, &app_config, start_gateway).await?;
                     clients::write_launch_scripts(&paths, &app_config)?;
-                    let status = clients::install(&app_config)?;
+                    let status = clients::install(&paths.config_dir, &app_config)?;
                     print_env_status(&status);
                     println!("launch_scripts={}", paths.config_dir.display());
                 }
                 EnvCommand::Repair { start_gateway } => {
                     ensure_gateway_reachable(&paths, &app_config, start_gateway).await?;
                     clients::write_launch_scripts(&paths, &app_config)?;
-                    let status = clients::repair(&app_config)?;
+                    let status = clients::repair(&paths.config_dir, &app_config)?;
                     print_env_status(&status);
                     println!("launch_scripts={}", paths.config_dir.display());
                 }
                 EnvCommand::Uninstall => {
-                    let status = clients::uninstall(&app_config)?;
+                    let status = clients::uninstall(&paths.config_dir, &app_config)?;
                     print_env_status(&status);
                 }
                 EnvCommand::Print => print!("{}", clients::print_launch_script(&app_config)),

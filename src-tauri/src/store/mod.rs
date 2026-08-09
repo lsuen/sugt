@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod commands;
+pub mod hub;
 pub mod install;
 pub mod paths;
 pub mod plugins;

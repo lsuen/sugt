@@ -39,7 +39,6 @@ pub async fn bind_with_fallback(config: &AppConfig) -> Result<(TcpListener, std:
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::model::AppConfig;
 
     #[test]

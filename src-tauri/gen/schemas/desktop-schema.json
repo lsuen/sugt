@@ -435,6 +435,12 @@
           "markdownDescription": "Enables the open_config_dir command"
         },
         {
+          "description": "Enables the quick_gateway_chat command",
+          "type": "string",
+          "const": "allow-quick-gateway-chat",
+          "markdownDescription": "Enables the quick_gateway_chat command"
+        },
+        {
           "description": "Enables the read_logs command",
           "type": "string",
           "const": "allow-read-logs",
@@ -447,6 +453,12 @@
           "markdownDescription": "Enables the repair_clients_env command"
         },
         {
+          "description": "Enables the restore_experimental_zen command",
+          "type": "string",
+          "const": "allow-restore-experimental-zen",
+          "markdownDescription": "Enables the restore_experimental_zen command"
+        },
+        {
           "description": "Enables the save_provider command",
           "type": "string",
           "const": "allow-save-provider",
@@ -457,6 +469,12 @@
           "type": "string",
           "const": "allow-set-active-provider",
           "markdownDescription": "Enables the set_active_provider command"
+        },
+        {
+          "description": "Enables the set_auto_takeover command",
+          "type": "string",
+          "const": "allow-set-auto-takeover",
+          "markdownDescription": "Enables the set_auto_takeover command"
         },
         {
           "description": "Enables the set_autostart command",
@@ -507,16 +525,34 @@
           "markdownDescription": "Enables store edition commands"
         },
         {
+          "description": "Enables takeover profile commands",
+          "type": "string",
+          "const": "allow-takeover-commands",
+          "markdownDescription": "Enables takeover profile commands"
+        },
+        {
           "description": "Enables the test_provider command",
           "type": "string",
           "const": "allow-test-provider",
           "markdownDescription": "Enables the test_provider command"
         },
         {
+          "description": "Enables the test_provider_draft command",
+          "type": "string",
+          "const": "allow-test-provider-draft",
+          "markdownDescription": "Enables the test_provider_draft command"
+        },
+        {
           "description": "Enables the uninstall_clients_env command",
           "type": "string",
           "const": "allow-uninstall-clients-env",
           "markdownDescription": "Enables the uninstall_clients_env command"
+        },
+        {
+          "description": "Enables the update_gateway_settings command",
+          "type": "string",
+          "const": "allow-update-gateway-settings",
+          "markdownDescription": "Enables the update_gateway_settings command"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

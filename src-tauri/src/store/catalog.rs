@@ -49,6 +49,12 @@ pub(crate) struct MountedSkillRecord {
     pub folder_name: Option<String>,
     #[serde(default)]
     pub mounted_at: Option<String>,
+    /// agent 模板 id → 挂载目录下的文件夹名
+    #[serde(default)]
+    pub agents: HashMap<String, String>,
+    /// 自定义/项目 skills 绝对路径 → 文件夹名
+    #[serde(default)]
+    pub custom_paths: HashMap<String, String>,
 }
 
 pub(crate) fn mount_flags(
@@ -57,19 +63,91 @@ pub(crate) fn mount_flags(
 ) -> (bool, bool, bool) {
     let record = mounted.skills.get(skill_id);
     let claude = record.map(|r| r.is_mounted_claude()).unwrap_or(false);
-    let codex = record.map(|r| r.codex_folder.is_some()).unwrap_or(false);
-    (claude, codex, claude || codex)
+    let codex = record.map(|r| r.is_mounted_codex()).unwrap_or(false);
+    let any_agent = record.map(|r| !r.mounted_agent_ids().is_empty()).unwrap_or(false);
+    (claude, codex, claude || codex || any_agent)
 }
 
 impl MountedSkillRecord {
     pub fn is_mounted_claude(&self) -> bool {
-        self.claude_folder.is_some() || self.folder_name.is_some()
+        self.claude_folder.is_some()
+            || self.folder_name.is_some()
+            || self.agents.contains_key("claude-code")
+            || self.agents.contains_key("claude")
+    }
+
+    pub fn is_mounted_codex(&self) -> bool {
+        self.codex_folder.is_some()
+            || self.agents.contains_key("codex")
     }
 
     pub fn claude_folder_name(&self) -> Option<&str> {
         self.claude_folder
             .as_deref()
             .or(self.folder_name.as_deref())
+            .or_else(|| self.agents.get("claude-code").map(|s| s.as_str()))
+            .or_else(|| self.agents.get("claude").map(|s| s.as_str()))
+    }
+
+    pub fn mounted_agent_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.agents.keys().cloned().collect();
+        if self.is_mounted_claude()
+            && !ids
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case("claude-code") || id.eq_ignore_ascii_case("claude"))
+        {
+            ids.push("claude-code".into());
+        }
+        if self.codex_folder.is_some() && !ids.iter().any(|id| id.eq_ignore_ascii_case("codex")) {
+            ids.push("codex".into());
+        }
+        ids.sort();
+        ids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        ids
+    }
+
+    pub fn set_agent_mount(&mut self, agent_id: &str, folder: &str) {
+        self.agents.insert(agent_id.to_string(), folder.to_string());
+        if agent_id.eq_ignore_ascii_case("claude-code") || agent_id.eq_ignore_ascii_case("claude") {
+            self.claude_folder = Some(folder.to_string());
+            self.folder_name = Some(folder.to_string());
+        }
+        if agent_id.eq_ignore_ascii_case("codex") {
+            self.codex_folder = Some(folder.to_string());
+        }
+    }
+
+    pub fn clear_agent_mount(&mut self, agent_id: &str) {
+        self.agents
+            .retain(|id, _| !id.eq_ignore_ascii_case(agent_id));
+        if agent_id.eq_ignore_ascii_case("claude-code") || agent_id.eq_ignore_ascii_case("claude") {
+            self.claude_folder = None;
+            self.folder_name = None;
+            self.agents
+                .retain(|id, _| !id.eq_ignore_ascii_case("claude"));
+        }
+        if agent_id.eq_ignore_ascii_case("codex") {
+            self.codex_folder = None;
+        }
+    }
+
+    pub fn set_path_mount(&mut self, path_key: &str, folder: &str) {
+        self.custom_paths
+            .insert(path_key.to_string(), folder.to_string());
+    }
+
+    pub fn clear_path_mount(&mut self, path_key: &str) {
+        self.custom_paths.remove(path_key);
+    }
+
+    pub fn mounted_custom_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self.custom_paths.keys().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    pub fn is_empty_mount(&self) -> bool {
+        self.mounted_agent_ids().is_empty() && self.custom_paths.is_empty()
     }
 }
 
@@ -77,6 +155,10 @@ pub fn build_catalog(store_paths: &StorePaths) -> Result<Vec<SkillCatalogItem>> 
     let repos = load_repos(store_paths)?;
     let staged = load_staged_meta(store_paths)?;
     let mounted = load_mounted_meta(store_paths)?;
+    let weight_by_repo: HashMap<&str, i32> = repos
+        .iter()
+        .map(|repo| (repo.id.as_str(), repo.weight))
+        .collect();
     let mut items = Vec::new();
 
     for repo in repos.iter().filter(|repo| repo.enabled) {
@@ -87,7 +169,13 @@ pub fn build_catalog(store_paths: &StorePaths) -> Result<Vec<SkillCatalogItem>> 
         scan_repo_skills(&repo_dir, &repo_dir, repo, &staged, &mounted, &mut items);
     }
 
-    items.sort_by(|a, b| a.name.cmp(&b.name));
+    items.sort_by(|a, b| {
+        let wa = weight_by_repo.get(a.repo_id.as_str()).copied().unwrap_or(0);
+        let wb = weight_by_repo.get(b.repo_id.as_str()).copied().unwrap_or(0);
+        wb.cmp(&wa)
+            .then_with(|| a.repo_label.cmp(&b.repo_label))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(items)
 }
 

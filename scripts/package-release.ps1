@@ -4,7 +4,7 @@
   Build SUGT GUI/CLI and assemble a portable package under release/.
 
 .EXAMPLE
-  .\scripts\package-release.ps1 -Variant trial -TrialDays 30 -Zip
+  .\scripts\package-release.ps1 -Variant trial -TrialDays 90 -Zip
   .\scripts\package-release.ps1 -Variant trial -TrialExpiresAt "2026-07-10T23:59:59+08:00" -Zip
   .\scripts\package-release.ps1 -Variant self -Zip
   .\scripts\package-release.ps1 -Product store -Variant self -Zip
@@ -17,7 +17,7 @@ param(
     [string]$Variant = "self",
     [ValidateSet("gui", "cli", "all")]
     [string]$Target = "all",
-    [int]$TrialDays = 30,
+    [int]$TrialDays = 90,
     [string]$TrialExpiresAt,
     [switch]$SkipBuild,
     [switch]$Zip,

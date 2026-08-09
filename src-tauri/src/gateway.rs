@@ -16,9 +16,8 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
-    net::TcpListener,
     sync::{oneshot, RwLock},
 };
 use tower_http::{
@@ -37,22 +36,46 @@ pub struct GatewayState {
 
 struct GatewayInner {
     config: AppConfig,
+    config_file: Option<PathBuf>,
+    config_mtime: Option<std::time::SystemTime>,
     shutdown: Option<oneshot::Sender<()>>,
     running: bool,
 }
 
+fn maybe_reload_config(inner: &mut GatewayInner) {
+    let path = match &inner.config_file {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let mtime = match meta.modified() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    if inner.config_mtime == Some(mtime) {
+        return;
+    }
+    if let Ok(cfg) = config::load_config_file(&path) {
+        inner.config = cfg;
+        inner.config_mtime = Some(mtime);
+    }
+}
+
 impl GatewayState {
-    pub fn new(config: AppConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(600))
-            .connect_timeout(Duration::from_secs(15))
-            .tcp_keepalive(Duration::from_secs(30))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()?;
+    pub fn new(config: AppConfig, config_file: Option<PathBuf>) -> Result<Self> {
+        let config_mtime = config_file
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        let client = build_upstream_client(Duration::from_secs(600))?;
 
         Ok(Self {
             inner: Arc::new(RwLock::new(GatewayInner {
                 config,
+                config_file,
+                config_mtime,
                 shutdown: None,
                 running: false,
             })),
@@ -60,6 +83,10 @@ impl GatewayState {
             last_hit: Arc::new(RwLock::new(None)),
             stats: GatewayStatsCollector::new(),
         })
+    }
+
+    pub fn http_client(&self) -> &Client {
+        &self.client
     }
 
     pub async fn list_provider_models(
@@ -156,15 +183,29 @@ impl GatewayState {
             failover: provider_index > 0,
             at: chrono::Utc::now(),
         };
+        let client = crate::gateway_stats::client_label_from_headers(headers);
         info!(
+            client = %client,
             provider = %provider.name,
+            model = %provider.model_name,
             path = %path,
             failover = provider_index > 0,
             latency_ms,
-            "proxy request succeeded"
+            "inbound request ok"
         );
         *self.last_hit.write().await = Some(hit);
         self.record_request_stats(true, latency_ms, headers, provider, path).await;
+    }
+
+    async fn record_inbound_denied(
+        &self,
+        headers: &HeaderMap,
+        path: &str,
+        reason: &str,
+    ) {
+        let client = crate::gateway_stats::client_label_from_headers(headers);
+        warn!(client = %client, path = %path, reason = %reason, "inbound request denied");
+        self.record_failure_stats(0, headers, path, None).await;
     }
 
     pub async fn ensure_listening(&self, auto_start: bool) -> Result<(), String> {
@@ -184,11 +225,17 @@ impl GatewayState {
     }
 
     pub async fn config(&self) -> AppConfig {
-        self.inner.read().await.config.clone()
+        let mut inner = self.inner.write().await;
+        maybe_reload_config(&mut inner);
+        inner.config.clone()
     }
 
     pub async fn replace_config(&self, config: AppConfig) {
-        self.inner.write().await.config = config;
+        let mut inner = self.inner.write().await;
+        inner.config = config;
+        if let Some(path) = &inner.config_file {
+            inner.config_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        }
     }
 
     pub async fn is_running(&self) -> bool {
@@ -251,8 +298,8 @@ impl GatewayState {
     }
 
     pub async fn active_provider(&self) -> Option<ProviderConfig> {
-        let inner = self.inner.read().await;
-        select_provider(&inner.config).cloned()
+        let config = self.config().await;
+        select_provider(&config).cloned()
     }
 
     pub async fn test_provider(&self, provider_id: &str) -> Result<ProviderStatus> {
@@ -297,6 +344,7 @@ fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))
+        .route("/v1/_sugt/traffic", get(traffic_endpoint))
         .route("/v1/messages", post(proxy_anthropic_messages))
         .route("/*path", any(proxy_openai))
         .layer(
@@ -316,6 +364,10 @@ async fn health(State(state): State<GatewayState>) -> impl IntoResponse {
         "service": "SUGT",
         "active_model": provider.map(|item| item.model_name),
     }))
+}
+
+async fn traffic_endpoint(State(state): State<GatewayState>) -> impl IntoResponse {
+    Json(state.traffic_stats().await)
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -343,15 +395,20 @@ async fn proxy_openai(
     request: Request<Body>,
 ) -> Response<Body> {
     let config = state.config().await;
+    let path = request.uri().path().trim_start_matches('/').to_string();
     if !crate::gateway_auth::validate_client_request(&headers, &config) {
+        state
+            .record_inbound_denied(&headers, &path, "invalid gateway api key")
+            .await;
         return json_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
-    let path = request.uri().path().trim_start_matches('/').to_string();
+    let client = crate::gateway_stats::client_label_from_headers(&headers);
+    info!(client = %client, path = %path, "inbound openai-compatible request");
     let started = std::time::Instant::now();
     match proxy_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,
         Err(err) => {
-            error!(error = %err, "proxy request failed");
+            error!(client = %client, path = %path, error = %err, "inbound request failed");
             state
                 .record_failure_stats(
                     started.elapsed().as_millis() as u64,
@@ -372,13 +429,18 @@ async fn proxy_anthropic_messages(
 ) -> Response<Body> {
     let config = state.config().await;
     if !crate::gateway_auth::validate_client_request(&headers, &config) {
+        state
+            .record_inbound_denied(&headers, "v1/messages", "invalid gateway api key")
+            .await;
         return anthropic_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
+    let client = crate::gateway_stats::client_label_from_headers(&headers);
+    info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
     let started = std::time::Instant::now();
     match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,
         Err(err) => {
-            error!(error = %err, "anthropic proxy request failed");
+            error!(client = %client, path = "v1/messages", error = %err, "inbound request failed");
             state
                 .record_failure_stats(
                     started.elapsed().as_millis() as u64,
@@ -484,6 +546,7 @@ async fn proxy_anthropic_via_openai(
     let payload = anthropic_adapter::anthropic_to_openai(body, &provider.model_name)?;
     let mut builder = state.client.post(&target);
     builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::OpenAi)?;
+    builder = maybe_zen_headers(builder, provider);
 
     info!(
         provider = %provider.name,
@@ -494,7 +557,12 @@ async fn proxy_anthropic_via_openai(
     );
 
     let response = builder.body(payload).send().await?;
-    anthropic_adapter::openai_to_anthropic_response(response, &provider.model_name).await
+    anthropic_adapter::openai_to_anthropic_response(
+        response,
+        &provider.model_name,
+        Some(state.stats.clone()),
+    )
+    .await
 }
 
 async fn proxy_request(
@@ -510,6 +578,11 @@ async fn proxy_request(
         .unwrap_or_default();
     let method = request.method().clone();
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
+
+    if path == "v1/responses" || path.starts_with("v1/responses/") {
+        return proxy_responses_via_chat(state, headers, method, body_bytes, &query).await;
+    }
+
     let providers = ordered_providers(&state.config().await);
 
     if providers.is_empty() {
@@ -523,6 +596,7 @@ async fn proxy_request(
         let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
         let mut builder = state.client.request(method.clone(), &target);
         builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
+        builder = maybe_zen_headers(builder, provider);
 
         info!(
             provider = %provider.name,
@@ -559,6 +633,199 @@ async fn proxy_request(
     Err(last_error.unwrap_or_else(|| anyhow!("所有模型配置均不可用")))
 }
 
+async fn proxy_responses_via_chat(
+    state: GatewayState,
+    headers: HeaderMap,
+    method: http::Method,
+    body_bytes: Bytes,
+    query: &str,
+) -> Result<Response<Body>> {
+    let providers = ordered_providers(&state.config().await);
+    if providers.is_empty() {
+        bail!("没有可用模型配置");
+    }
+
+    let stream = serde_json::from_slice::<Value>(&body_bytes)
+        .ok()
+        .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+        .unwrap_or(false);
+
+    let mut last_error = None;
+    let started = std::time::Instant::now();
+    for (index, provider) in providers.iter().enumerate() {
+        let try_native = crate::openai_responses_adapter::should_try_native_responses(
+            &provider.base_url,
+            &provider.model_name,
+        );
+        info!(
+            provider = %provider.name,
+            base_url = %provider.base_url,
+            model = %provider.model_name,
+            try_native_responses = try_native,
+            "codex responses routing"
+        );
+
+        if try_native {
+            let native_base =
+                crate::openai_responses_adapter::native_responses_base_url(
+                    &provider.base_url,
+                    &provider.model_name,
+                );
+            let upstream_body = crate::openai_responses_adapter::rewrite_responses_upstream_model(
+                &body_bytes,
+                &provider.model_name,
+            )?;
+            let target = build_target_url(&native_base, "v1/responses", query);
+            let mut builder = state.client.request(method.clone(), &target);
+            builder =
+                copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
+            builder = maybe_zen_headers(builder, provider);
+
+            info!(
+                provider = %provider.name,
+                model = %provider.model_name,
+                base_url = %provider.base_url,
+                native_base = %native_base,
+                target_url = %target,
+                path = "v1/responses",
+                stream,
+                mode = "native_responses_passthrough",
+                "proxying codex responses to upstream Responses API"
+            );
+
+            let native_result = builder.body(upstream_body).send().await;
+            match native_result {
+                Ok(response)
+                    if response.status().is_success() || response.status().as_u16() < 500 =>
+                {
+                    state
+                        .record_proxy_hit(
+                            provider,
+                            "v1/responses",
+                            index,
+                            started.elapsed().as_millis() as u64,
+                            &headers,
+                        )
+                        .await;
+                    return into_axum_response(response, Some(state.stats.clone())).await;
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    warn!(
+                        provider = %provider.name,
+                        %status,
+                        body = %text,
+                        "native responses upstream error, will try chat/completions fallback"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        provider = %provider.name,
+                        error = %err,
+                        "native responses request failed, will try chat/completions fallback"
+                    );
+                }
+            }
+        }
+
+        let chat_body =
+            crate::openai_responses_adapter::responses_to_chat(&body_bytes, &provider.model_name)?;
+        let target = build_target_url(&provider.base_url, "v1/chat/completions", query);
+        let mut builder = state.client.request(method.clone(), &target);
+        builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
+        builder = maybe_zen_headers(builder, provider);
+
+        info!(
+            provider = %provider.name,
+            model = %provider.model_name,
+            base_url = %provider.base_url,
+            target_url = %target,
+            path = "v1/responses",
+            stream,
+            auto_adapt = provider.auto_adapt_base_url,
+            mode = "chat_completions_adapter",
+            "proxying codex responses via chat completions"
+        );
+
+        if stream {
+            let response = builder.body(chat_body).send().await?;
+            if response.status().is_success() || response.status().as_u16() < 500 {
+                state
+                    .record_proxy_hit(
+                        provider,
+                        "v1/responses",
+                        index,
+                        started.elapsed().as_millis() as u64,
+                        &headers,
+                    )
+                    .await;
+                let status = response.status();
+                let model = provider.public_model_id();
+                let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse(
+                    response.bytes_stream(),
+                    model,
+                );
+                return Ok(Response::builder()
+                    .status(status)
+                    .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+                    .header(http::header::CACHE_CONTROL, "no-cache")
+                    .body(Body::from_stream(mapped))?);
+            }
+            last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
+            continue;
+        }
+
+        match builder.body(chat_body).send().await {
+            Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                let status = response.status();
+                let body_text = response.text().await.unwrap_or_default();
+                if status.is_success()
+                    && crate::openai_responses_adapter::is_openai_compat_error_body(&body_text)
+                {
+                    warn!(
+                        provider = %provider.name,
+                        body = %body_text,
+                        "upstream returned error JSON for codex responses"
+                    );
+                    last_error =
+                        Some(anyhow!("{} 上游错误: {}", provider.name, body_text));
+                    continue;
+                }
+                state
+                    .record_proxy_hit(
+                        provider,
+                        "v1/responses",
+                        index,
+                        started.elapsed().as_millis() as u64,
+                        &headers,
+                    )
+                    .await;
+                let bytes = if status.is_success() {
+                    crate::openai_responses_adapter::chat_json_to_responses_body(
+                        &body_text,
+                        &provider.public_model_id(),
+                    )?
+                } else {
+                    Bytes::from(body_text)
+                };
+                return Ok(Response::builder()
+                    .status(status)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(bytes))?);
+            }
+            Ok(response) => {
+                last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
+            }
+            Err(err) => {
+                last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("Codex Responses 代理失败")))
+}
+
 fn ordered_providers(config: &AppConfig) -> Vec<ProviderConfig> {
     let mut providers = Vec::new();
     if let Some(active) = select_provider(config) {
@@ -592,15 +859,29 @@ fn select_provider(config: &AppConfig) -> Option<&ProviderConfig> {
 fn build_target_url(base_url: &str, path: &str, query: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
-
-    if base.ends_with("/v1") {
-        let relative = path
-            .strip_prefix("v1/")
+    let relative = if crate::model::openai_base_has_version_suffix(base) {
+        path.strip_prefix("v1/")
             .unwrap_or(path)
-            .trim_start_matches('/');
-        format!("{}/{}{}", base, relative, query)
+            .trim_start_matches('/')
     } else {
-        format!("{}/{}{}", base, path, query)
+        path
+    };
+    format!("{}/{}{}", base, relative, query)
+}
+
+/// 供「直接体验」等场景：按协议构造上游 chat/completions 地址。
+pub fn build_chat_url_for_provider(provider: &ProviderConfig) -> String {
+    match provider.protocol {
+        ProviderProtocol::OpenAi => build_target_url(&provider.base_url, "v1/chat/completions", ""),
+        ProviderProtocol::Anthropic => {
+            // Anthropic 原生无 chat/completions；体验时仍走 OpenAI 兼容路径（多数网关兼容层）。
+            // 若 base 是 anthropic 原生，改走 messages。
+            if provider.base_url.contains("anthropic.com") {
+                build_target_url(&provider.base_url, "v1/messages", "")
+            } else {
+                build_target_url(&provider.base_url, "v1/chat/completions", "")
+            }
+        }
     }
 }
 
@@ -661,6 +942,49 @@ fn copy_forward_headers(
     }
 
     Ok(builder)
+}
+
+/// 上游 HTTP 客户端：优先 IPv4，避免 Windows 上 AAAA 不可达时卡满 connect_timeout。
+pub fn build_upstream_client(timeout: Duration) -> Result<Client> {
+    Ok(Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(8))
+        .tcp_keepalive(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(4)
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .build()?)
+}
+
+fn apply_zen_client_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| format!("{:x}", d.as_millis()))
+        .unwrap_or_else(|_| "0".into());
+    let rnd = uuid::Uuid::new_v4().simple().to_string();
+    let request_id = format!("msg_{ts}{}", &rnd[..12]);
+    let session_id = format!("ses_{ts}{}", &rnd[12..24.min(rnd.len())]);
+    builder
+        .header(
+            http::header::USER_AGENT,
+            "opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
+        )
+        .header("x-opencode-client", "cli")
+        .header("x-opencode-project", "global")
+        .header("x-opencode-request", request_id)
+        .header("x-opencode-session", session_id)
+}
+
+fn maybe_zen_headers(
+    builder: reqwest::RequestBuilder,
+    provider: &ProviderConfig,
+) -> reqwest::RequestBuilder {
+    if crate::experimental_zen::is_zen_upstream(provider) {
+        apply_zen_client_headers(builder)
+    } else {
+        builder
+    }
 }
 
 async fn into_axum_response(
@@ -825,24 +1149,54 @@ pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig
 
 async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
     let chat_url = build_target_url(&provider.base_url, "v1/chat/completions", "");
-    let response = match client
-        .post(&chat_url)
-        .bearer_auth(&provider.api_key)
-        .json(&json!({
+    let zen = crate::experimental_zen::is_zen_upstream(provider);
+    tracing::info!(
+        provider = %provider.name,
+        base_url = %provider.base_url,
+        chat_url = %chat_url,
+        auto_adapt = provider.auto_adapt_base_url,
+        zen,
+        "test_openai_connection"
+    );
+
+    // Zen：流式探测，收到首包即成功（对齐 OpenCode 首字体验）；其它源仍用短非流式。
+    let body = if zen {
+        json!({
+            "model": provider.model_name,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 8,
+            "stream": true
+        })
+    } else {
+        json!({
             "model": provider.model_name,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 1,
             "stream": false
-        }))
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-    {
+        })
+    };
+    let timeout = if zen {
+        Duration::from_secs(25)
+    } else {
+        Duration::from_secs(20)
+    };
+    let mut req = client
+        .post(&chat_url)
+        .bearer_auth(&provider.api_key)
+        .json(&body)
+        .timeout(timeout);
+    if zen {
+        req = apply_zen_client_headers(req);
+    }
+    let response = match req.send().await {
         Ok(response) => response,
         Err(err) => bail!(error_hint::classify_request_error(&err)),
     };
 
     if response.status().is_success() {
+        if zen {
+            return wait_zen_stream_first_byte(response).await;
+        }
         return Ok(());
     }
 
@@ -851,13 +1205,18 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
     warn!(provider = %provider.name, %status, body = %text, "chat completion test failed");
 
     let models_url = build_target_url(&provider.base_url, "v1/models", "");
-    match client
+    let mut models_req = client
         .get(&models_url)
         .bearer_auth(&provider.api_key)
-        .timeout(Duration::from_secs(12))
-        .send()
-        .await
-    {
+        .timeout(if zen {
+            Duration::from_secs(12)
+        } else {
+            Duration::from_secs(12)
+        });
+    if zen {
+        models_req = apply_zen_client_headers(models_req);
+    }
+    match models_req.send().await {
         Ok(resp) if resp.status().is_success() => {
             bail!(
                 "{}；models 接口可访问",
@@ -877,6 +1236,42 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
             error_hint::classify_http_error(status, &text),
             error_hint::classify_request_error(&err)
         ),
+    }
+}
+
+/// 等 SSE 首包（含 data: / error），避免等完整生成。
+async fn wait_zen_stream_first_byte(response: reqwest::Response) -> Result<()> {
+    let mut stream = response.bytes_stream();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut buffered = String::new();
+    loop {
+        let next = tokio::time::timeout_at(deadline, stream.next()).await;
+        match next {
+            Ok(Some(Ok(chunk))) => {
+                buffered.push_str(&String::from_utf8_lossy(&chunk));
+                let lower = buffered.to_ascii_lowercase();
+                if lower.contains("\"error\"") && lower.contains("message") {
+                    bail!("Zen 返回错误：{}", buffered.chars().take(240).collect::<String>());
+                }
+                if buffered.contains("data:")
+                    || buffered.contains("delta")
+                    || buffered.contains("choices")
+                {
+                    return Ok(());
+                }
+                if buffered.len() > 4096 {
+                    return Ok(());
+                }
+            }
+            Ok(Some(Err(err))) => bail!(error_hint::classify_request_error(&err)),
+            Ok(None) => {
+                if buffered.trim().is_empty() {
+                    bail!("Zen 流式响应为空");
+                }
+                return Ok(());
+            }
+            Err(_) => bail!("连接超时：请检查网络、代理或 Base URL 是否可达"),
+        }
     }
 }
 
@@ -932,6 +1327,42 @@ mod tests {
         let rewritten = rewrite_model(body, "new-model");
         let value: Value = serde_json::from_slice(&rewritten).unwrap();
         assert_eq!(value["model"], "new-model");
+    }
+
+    #[test]
+    fn maps_volcengine_coding_v3_responses() {
+        let target = build_target_url(
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "v1/responses",
+            "",
+        );
+        assert_eq!(
+            target,
+            "https://ark.cn-beijing.volces.com/api/coding/v3/responses"
+        );
+    }
+
+    #[test]
+    fn maps_volcengine_coding_v3_chat_completions() {
+        let target = build_target_url(
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "v1/chat/completions",
+            "",
+        );
+        assert_eq!(
+            target,
+            "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+        );
+    }
+
+    #[test]
+    fn maps_volcengine_v3_chat_completions() {
+        let target = build_target_url(
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "v1/chat/completions",
+            "",
+        );
+        assert_eq!(target, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
     }
 
     #[test]

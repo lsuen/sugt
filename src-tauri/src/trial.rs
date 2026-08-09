@@ -73,7 +73,7 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
         };
         let message = match mode {
             TrialMode::Dev => "开发模式，无有效期限制".to_string(),
-            TrialMode::SelfUse => "内部自用版本，无有效期限制".to_string(),
+            TrialMode::SelfUse => "异常设计自用版，无有效期限制".to_string(),
             TrialMode::Trial => unreachable!(),
         };
         return Ok(TrialStatus {
@@ -98,7 +98,7 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
             mode: TrialMode::Trial,
             valid: false,
             status: "expired".to_string(),
-            message: "当前内部试用版本已到期，请联系作者获取新版。".to_string(),
+            message: "当前试用版已到期，请联系异常设计获取新版。".to_string(),
             build_id,
             expires_at: Some(expires_at),
             days_remaining: Some(0),
@@ -107,39 +107,25 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
 
     let machine_hash = machine_hash();
     let state_path = paths.config_dir.join(STATE_FILE);
-    let mut state = if state_path.exists() {
-        read_state(&state_path)?
-    } else {
-        TrialState {
-            build_id: build_id.clone(),
-            machine_hash: machine_hash.clone(),
-            first_seen_at: now,
-            last_seen_at: now,
-        }
-    };
+    let (mut state, reset) = load_trial_state(&state_path, &build_id, &machine_hash, now);
 
-    if state.build_id != build_id {
-        state = TrialState {
-            build_id: build_id.clone(),
-            machine_hash: machine_hash.clone(),
-            first_seen_at: now,
-            last_seen_at: now,
-        };
-    }
-
-    if state.machine_hash != machine_hash {
+    // 换新包 / 损坏状态：按当前编译期试用截止日重新起算，不阻塞关于页。
+    if reset {
+        write_state(&state_path, &state)?;
+    } else if state.machine_hash != machine_hash {
         return Ok(TrialStatus {
             mode: TrialMode::Trial,
             valid: false,
             status: "machine_mismatch".to_string(),
-            message: "当前内部试用版本已绑定其他电脑，请联系作者获取新版。".to_string(),
+            message: "当前试用版已绑定其他电脑，请联系异常设计获取新版。".to_string(),
             build_id,
             expires_at: Some(expires_at),
             days_remaining: Some(days_remaining),
         });
     }
 
-    if now + Duration::minutes(CLOCK_ROLLBACK_TOLERANCE_MINUTES) < state.last_seen_at {
+    if !reset && now + Duration::minutes(CLOCK_ROLLBACK_TOLERANCE_MINUTES) < state.last_seen_at
+    {
         return Ok(TrialStatus {
             mode: TrialMode::Trial,
             valid: false,
@@ -156,7 +142,7 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
         write_state(&state_path, &state)?;
     }
 
-    let message = format!("内部试用版本，有效期至 {}", expires_at.format("%Y-%m-%d"));
+    let message = format!("异常设计试用版，有效期至 {}", expires_at.format("%Y-%m-%d"));
     Ok(TrialStatus {
         mode: TrialMode::Trial,
         valid: true,
@@ -168,10 +154,54 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
     })
 }
 
+fn fresh_state(build_id: &str, machine_hash: &str, now: DateTime<Utc>) -> TrialState {
+    TrialState {
+        build_id: build_id.to_string(),
+        machine_hash: machine_hash.to_string(),
+        first_seen_at: now,
+        last_seen_at: now,
+    }
+}
+
+/// 读取试用状态；文件缺失、格式损坏或 build_id 变更时自动重置为当前包。
+/// 返回 `(state, reset)`，`reset=true` 表示应按新版本试用期重新起算。
+fn load_trial_state(
+    path: &Path,
+    build_id: &str,
+    machine_hash: &str,
+    now: DateTime<Utc>,
+) -> (TrialState, bool) {
+    if !path.exists() {
+        return (fresh_state(build_id, machine_hash, now), true);
+    }
+
+    match read_state(path) {
+        Ok(state) if state.build_id == build_id => (state, false),
+        Ok(_) => {
+            // 新包覆盖安装：丢弃旧绑定，使用本包 SUGT_TRIAL_EXPIRES_AT
+            let _ = archive_corrupt_state(path, "build-mismatch");
+            (fresh_state(build_id, machine_hash, now), true)
+        }
+        Err(_) => {
+            let _ = archive_corrupt_state(path, "corrupt");
+            (fresh_state(build_id, machine_hash, now), true)
+        }
+    }
+}
+
 fn read_state(path: &Path) -> Result<TrialState> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("无法读取试用状态文件 {}", path.display()))?;
     serde_json::from_str(&raw).context("试用状态文件格式错误")
+}
+
+fn archive_corrupt_state(path: &Path, reason: &str) -> Result<()> {
+    let backup = path.with_extension(format!("json.bak-{reason}"));
+    let _ = fs::remove_file(&backup);
+    fs::rename(path, &backup).or_else(|_| {
+        fs::remove_file(path)?;
+        Ok(())
+    })
 }
 
 fn write_state(path: &Path, state: &TrialState) -> Result<()> {
@@ -227,17 +257,17 @@ fn machine_hash() -> String {
 
 #[cfg(windows)]
 fn machine_guid() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    use std::process::Stdio;
 
-    let output = std::process::Command::new("reg")
+    let output = crate::process_util::hidden_command("reg")
         .args([
             "query",
             r"HKLM\SOFTWARE\Microsoft\Cryptography",
             "/v",
             "MachineGuid",
         ])
-        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .output()
         .ok()?;
     if !output.status.success() {
@@ -301,5 +331,47 @@ mod tests {
         };
         let status = status(&paths);
         assert!(status.valid);
+    }
+
+    #[test]
+    fn corrupt_state_resets_for_new_build() {
+        let dir = std::env::temp_dir().join(format!(
+            "sugt-trial-corrupt-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(STATE_FILE);
+        fs::write(&path, "{not-json").unwrap();
+
+        let now = Utc::now();
+        let (state, reset) = load_trial_state(&path, "build-new", "machine-a", now);
+        assert!(reset);
+        assert_eq!(state.build_id, "build-new");
+        assert_eq!(state.machine_hash, "machine-a");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_id_change_resets_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "sugt-trial-build-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(STATE_FILE);
+        let old = TrialState {
+            build_id: "old-build".into(),
+            machine_hash: "machine-a".into(),
+            first_seen_at: Utc::now() - Duration::days(10),
+            last_seen_at: Utc::now() - Duration::days(1),
+        };
+        write_state(&path, &old).unwrap();
+
+        let now = Utc::now();
+        let (state, reset) = load_trial_state(&path, "new-build", "machine-a", now);
+        assert!(reset);
+        assert_eq!(state.build_id, "new-build");
+        assert_eq!(state.first_seen_at, now);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

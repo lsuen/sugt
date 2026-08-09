@@ -37,7 +37,7 @@ export function LaunchClientModal({ clientTab, onClose, pushToast, formatError }
       <p className="hint compact">
         将打开新的命令行窗口，并注入 SUGT 网关环境变量（使用配置目录中的启动脚本）。
       </p>
-      <label>
+      <label className="field-label">
         工作目录（可选）
         <input
           placeholder="留空则使用用户主目录"

@@ -22,7 +22,7 @@ pub fn product_line_id() -> &'static str {
 pub fn product_line_label() -> &'static str {
     match product_line() {
         ProductLine::Feature => "功能版",
-        ProductLine::Store => "商店版",
+        ProductLine::Store => "全功能版",
     }
 }
 
@@ -35,8 +35,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_product_is_feature() {
-        assert_eq!(product_line(), ProductLine::Feature);
-        assert_eq!(product_line_id(), "feature");
+    fn product_line_matches_compile_env() {
+        match option_env!("SUGT_PRODUCT") {
+            Some("store") => {
+                assert_eq!(product_line(), ProductLine::Store);
+                assert_eq!(product_line_id(), "store");
+            }
+            _ => {
+                assert_eq!(product_line(), ProductLine::Feature);
+                assert_eq!(product_line_id(), "feature");
+            }
+        }
     }
 }

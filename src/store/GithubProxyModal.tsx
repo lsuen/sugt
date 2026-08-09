@@ -61,7 +61,7 @@ export function GithubProxyModal({ prefix, onClose, onSaved, pushToast, formatEr
       <p className="hint compact">
         国内网络可配置加速前缀，刷新技能仓库时 git clone 将访问拼接后的地址。留空则直连 GitHub。
       </p>
-      <label>
+      <label className="field-label">
         代理前缀
         <input
           placeholder="例如 https://ghfast.top"
