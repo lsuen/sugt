@@ -23,6 +23,7 @@ pub mod store;
 pub mod codex_config;
 pub mod openai_responses_adapter;
 pub mod process_util;
+pub mod sugt_skill;
 pub mod takeover_profiles;
 pub mod trial;
 

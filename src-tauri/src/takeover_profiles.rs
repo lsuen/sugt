@@ -679,6 +679,9 @@ pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
     if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
         let _ = crate::codex_config::apply_codex_config(config);
     }
+    // 注入 SUGT 自带 skill，让 Agent 能调用 sugt-cli
+    let targets = crate::sugt_skill::inject_targets_for_profile(&profile);
+    let _ = crate::sugt_skill::inject_sugt_skill(&targets);
     Ok(profile_view_with_config_dir(Some(config_dir), config, &profile))
 }
 
@@ -693,6 +696,16 @@ pub fn release_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Resul
     }
     if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
         let _ = crate::codex_config::clear_sugt_codex_overrides(config);
+    }
+    // 清理 SUGT skill（仅在没有任何其他 active 接管时才完全移除）
+    let still_active = config
+        .active_takeover_ids
+        .iter()
+        .filter(|other| other.as_str() != id)
+        .count();
+    if still_active == 0 {
+        let targets = crate::sugt_skill::inject_targets_for_profile(&profile);
+        let _ = crate::sugt_skill::remove_sugt_skill(&targets);
     }
     Ok(profile_view_with_config_dir(Some(config_dir), config, &profile))
 }
