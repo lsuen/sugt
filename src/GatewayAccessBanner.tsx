@@ -7,7 +7,6 @@ type ProviderOption = {
   name: string;
   model_name: string;
   enabled: boolean;
-  public_model_id?: string;
   base_url: string;
   api_key_masked: string;
   protocol: 'openai' | 'anthropic' | 'open_ai';
@@ -77,6 +76,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const enabledProviders = providers.filter((p) => p.enabled);
+
   useEffect(() => {
     const preferred = status?.active_provider_id
       || providers.find((p) => p.enabled)?.id
@@ -89,6 +89,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const [upstreamProviderId, setUpstreamProviderId] = useState('');
   const [models, setModels] = useState<string[]>([]);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
 
   useEffect(() => {
     if (chatOpen) {
@@ -123,15 +124,13 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
       const cfg = await invoke<{ gateway_client_api_key?: string }>('get_config');
       const fromConfig = (cfg.gateway_client_api_key || '').trim();
       if (fromConfig) return fromConfig;
-    } catch {
-      // fall through
-    }
+    } catch { /* fall through */ }
     return 'sugt-local-key';
   };
 
   const openCodeExample = async () => {
     const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
-    const modelId = status?.public_model_id ?? 'sutai';
+    const modelId = 'sutai';
     try {
       const apiKey = await resolveGatewayApiKey();
       setCodeSample(pythonExample(openaiBase, modelId, apiKey));
@@ -192,6 +191,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const switchUpstream = async (id: string) => {
     setUpstreamProviderId(id);
     setModels([]);
+    setModelsLoaded(false);
     onActiveProviderChange(id);
   };
 
@@ -202,11 +202,35 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     try {
       const result = await invoke<string[]>('list_provider_models', { input: { base_url: provider.base_url, api_key: provider.api_key_masked, protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol, vendor_id: null, auto_adapt_base_url: true } });
       setModels(result);
+      setModelsLoaded(true);
     } catch (e) {
       pushToast(String(e), 'error');
     } finally {
       setModelsBusy(false);
     }
+  };
+
+  const selectModel = async (model: string) => {
+    const provider = providers.find((p) => p.id === upstreamProviderId);
+    if (!provider) return;
+    await run(
+      () => invoke('save_provider', {
+        input: {
+          id: provider.id,
+          name: provider.name,
+          provider: provider.provider,
+          base_url: provider.base_url,
+          api_key: provider.api_key_masked,
+          model_name: model,
+          model_alias: 'sutai',
+          protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
+          enabled: provider.enabled,
+          auto_adapt_base_url: true,
+        },
+      }),
+      '模型已切换',
+    );
+    onRefresh();
   };
 
   const testCurrent = async () => {
@@ -216,7 +240,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
   const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
   const anthropicBase = status?.anthropic_base_url ?? status?.listen_url;
-  const selectedChat = enabledProviders.find((p) => p.id === chatProviderId);
+  const activeProvider = providers.find((p) => p.id === upstreamProviderId);
 
   return (
     <div className="gateway-access-side">
@@ -229,17 +253,48 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
       <div className="access-model-block">
         <span className="access-label">当前上游</span>
-        <strong className="access-model-name">{status?.active_provider ?? '未配置'}</strong>
-        <span className="hint compact access-model-sub">{status?.active_model ?? '—'}</span>
-        <div className="upstream-actions">
-          <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
-            <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
-          </button>
-          <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
-            <Play size={12} />测试
-          </button>
-        </div>
+        <select
+          className="app-select upstream-select"
+          value={upstreamProviderId}
+          disabled={busy || enabledProviders.length === 0}
+          onChange={(e) => void switchUpstream(e.target.value)}
+        >
+          {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
+          {enabledProviders.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · {p.model_name}
+            </option>
+          ))}
+        </select>
       </div>
+
+      {upstreamProviderId && activeProvider && (
+        <div className="access-model-select-block">
+          <span className="access-label">模型 ID</span>
+          <div className="access-value-row">
+            {modelsLoaded ? (
+              <select
+                className="app-select"
+                value={status?.active_model ?? activeProvider.model_name}
+                disabled={modelsBusy}
+                onChange={(e) => void selectModel(e.target.value)}
+              >
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : (
+              <code className="access-code">{status?.active_model ?? activeProvider.model_name}</code>
+            )}
+            <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
+              <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
+            </button>
+            <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
+              <Play size={12} />测试
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="access-fields">
         <div className="access-field">
@@ -276,21 +331,11 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
           <span className="access-label">网关 API Key</span>
           <div className="access-value-row">
             <code className="access-code">local-key</code>
+            <button type="button" className="tiny icon-only" onClick={() => copy('local-key', 'API Key')} aria-label="复制 API Key">
+              <Copy size={14} />
+            </button>
           </div>
         </div>
-
-        {models.length > 0 && (
-          <div className="access-models-list" style={{ padding: '8px 12px' }}>
-            <span className="hint compact" style={{ display: 'block', marginBottom: 4 }}>
-              可用上游模型（{models.length}）
-            </span>
-            <div className="model-tags">
-              {models.map((m) => (
-                <span key={m} className="model-tag">{m}</span>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="access-actions">
