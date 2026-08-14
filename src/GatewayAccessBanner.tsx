@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Code2, Copy, KeyRound, MessageSquare, Pencil, Play, RefreshCw, X } from 'lucide-react';
+import { Code2, Copy, MessageSquare, Play, RefreshCw, X } from 'lucide-react';
 
 type ProviderOption = {
   id: string;
@@ -189,7 +189,6 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     }
   };
 
-
   const switchUpstream = async (id: string) => {
     setUpstreamProviderId(id);
     setModels([]);
@@ -210,42 +209,13 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     }
   };
 
-  const selectModel = async (model: string) => {
-    const provider = providers.find((p) => p.id === upstreamProviderId);
-    if (!provider) return;
-    await run(
-      () => invoke('save_provider', {
-        input: {
-          id: provider.id,
-          name: provider.name,
-          provider: provider.provider,
-          base_url: provider.base_url,
-          api_key: provider.api_key_masked,
-          model_name: model,
-          model_alias: 'sutai',
-          protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
-          enabled: provider.enabled,
-          auto_adapt_base_url: true,
-        },
-      }),
-      '模型已切换',
-    );
-  };
-
   const testCurrent = async () => {
     if (!upstreamProviderId) return;
-    await run(
-      () => invoke('test_provider', { id: upstreamProviderId }),
-      '测试完成',
-    );
+    await run(() => invoke('test_provider', { id: upstreamProviderId }), '测试完成');
   };
-
 
   const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
   const anthropicBase = status?.anthropic_base_url ?? status?.listen_url;
-  const displayKey = (status?.gateway_client_api_key || '').trim()
-    || status?.gateway_client_api_key_masked
-    || 'sugt-local-key';
   const selectedChat = enabledProviders.find((p) => p.id === chatProviderId);
 
   return (
@@ -259,52 +229,28 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
       <div className="access-model-block">
         <span className="access-label">当前上游</span>
-        <select
-          className="app-select upstream-select"
-          value={upstreamProviderId}
-          disabled={busy || enabledProviders.length === 0}
-          onChange={(e) => void switchUpstream(e.target.value)}
-        >
-          {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
-          {enabledProviders.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} · {p.model_name}
-            </option>
-          ))}
-        </select>
+        <strong className="access-model-name">{status?.active_provider ?? '未配置'}</strong>
+        <span className="hint compact access-model-sub">{status?.active_model ?? '—'}</span>
+        <div className="upstream-actions">
+          <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
+            <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
+          </button>
+          <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
+            <Play size={12} />测试
+          </button>
+        </div>
       </div>
 
-      {upstreamProviderId && (
-        <div className="access-upstream-controls">
-          <div className="access-field" style={{marginBottom: 8}}>
-            <span className="access-label">模型 ID（对外）</span>
-            <div className="access-value-row">
-              <select
-                className="app-select"
-                value={status?.public_model_id ?? ''}
-                disabled={modelsBusy}
-                onChange={(e) => void selectModel(e.target.value)}
-              >
-                <option value="">sutai（默认）</option>
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
-                <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
-              </button>
-              <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
-                <Play size={12} />测试
-              </button>
-            </div>
-            {models.length > 0 && (
-              <span className="hint compact" style={{marginTop: 4}}>已加载 {models.length} 个上游模型，选中后自动同步</span>
-            )}
+      <div className="access-fields">
+        <div className="access-field">
+          <span className="access-label">Model ID（对外）</span>
+          <div className="access-value-row">
+            <code className="access-code">sutai</code>
+            <button type="button" className="tiny icon-only" onClick={() => copy('sutai', 'Model ID')} aria-label="复制 Model ID">
+              <Copy size={14} />
+            </button>
           </div>
         </div>
-      )}
-
-      <div className="access-fields">
 
         <div className="access-field">
           <span className="access-label">OpenAI Base（Codex 等）</span>
@@ -327,118 +273,78 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </div>
 
         <div className="access-field">
-          <span className="access-label"><KeyRound size={12} /> 网关 API Key</span>
-          {editingKey ? (
-            <div className="key-edit access-key-edit">
-              <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="本地网关 Key" />
-              <button type="button" className="tiny primary" disabled={busy} onClick={() => saveKey()}>保存</button>
-              <button type="button" className="tiny ghost" onClick={() => setEditingKey(false)}>取消</button>
-            </div>
-          ) : (
-            <div className="access-value-row">
-              <code className="access-code">{displayKey}</code>
-              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => { setNewKey((status?.gateway_client_api_key || '').trim()); setEditingKey(true); }} aria-label="编辑 API Key">
-                <Pencil size={14} />
-              </button>
-            </div>
-          )}
+          <span className="access-label">网关 API Key</span>
+          <div className="access-value-row">
+            <code className="access-code">local-key</code>
+          </div>
         </div>
+
+        {models.length > 0 && (
+          <div className="access-models-list" style={{ padding: '8px 12px' }}>
+            <span className="hint compact" style={{ display: 'block', marginBottom: 4 }}>
+              可用上游模型（{models.length}）
+            </span>
+            <div className="model-tags">
+              {models.map((m) => (
+                <span key={m} className="model-tag">{m}</span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="access-foot-actions">
-        <button type="button" className="tiny" disabled={busy} onClick={() => void openCodeExample()}>
+      <div className="access-actions">
+        <button type="button" className="button ghost" onClick={() => void openCodeExample()}>
           <Code2 size={14} />查看代码范例
         </button>
-        <button type="button" className="tiny primary" disabled={busy} onClick={openChat}>
+        <button type="button" className="button ghost" onClick={() => void openChat()}>
           <MessageSquare size={14} />直接体验
         </button>
       </div>
 
       {codeOpen && (
-        <div className="modal-overlay" onClick={() => setCodeOpen(false)}>
-          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3>Python 请求网关范例</h3>
-              <button type="button" className="ghost tiny-btn" onClick={() => setCodeOpen(false)} aria-label="关闭">
-                <X size={16} />
+        <div className="modal-backdrop" onClick={() => setCodeOpen(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <strong>代码范例</strong>
+              <button type="button" className="tiny icon-only" onClick={() => setCodeOpen(false)}>
+                <X size={14} />
               </button>
             </div>
-            <div className="modal-body">
-              <p className="hint compact">
-                可直接复制运行；已写入当前本地网关真实 API Key 与 Model ID。
-                {status?.allow_lan_access ? ' · 已允许局域网' : ''}
-              </p>
-              <pre className="code-sample">{codeSample}</pre>
-              <div className="modal-actions">
-                <button type="button" className="ghost" onClick={() => setCodeOpen(false)}>关闭</button>
-                <button type="button" className="primary" onClick={() => copy(codeSample, 'Python 范例')}>复制代码</button>
-              </div>
-            </div>
+            <pre className="code-block">{codeSample}</pre>
           </div>
         </div>
       )}
 
       {chatOpen && (
-        <div className="modal-overlay">
-          <div className="modal modal-wide quick-chat-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3>直接体验</h3>
-              <button type="button" className="ghost tiny-btn" onClick={() => setChatOpen(false)} aria-label="关闭">
-                <X size={16} />
+        <div className="modal-backdrop" onClick={() => setChatOpen(false)}>
+          <div className="modal-card chat-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <strong>直接体验</strong>
+              <button type="button" className="tiny icon-only" onClick={() => setChatOpen(false)}>
+                <X size={14} />
               </button>
             </div>
-            <div className="modal-body quick-chat-body">
-              <label className="field-label quick-chat-model">
-                选择模型
-                <select
-                  className="app-select"
-                  value={chatProviderId}
-                  disabled={chatBusy || enabledProviders.length === 0}
-                  onChange={(e) => setChatProviderId(e.target.value)}
-                >
-                  {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
-                  {enabledProviders.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} · {p.model_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="quick-chat-messages">
-                {messages.length === 0 && (
-                  <p className="hint compact">
-                    {selectedChat
-                      ? `向「${selectedChat.name}」发送消息（直连该上游）。`
-                      : '请先在模型配置中添加并启用模型。'}
-                  </p>
-                )}
-                {messages.map((m, i) => (
-                  <div key={`${m.role}-${i}`} className={`quick-chat-bubble ${m.role}`}>
-                    <span className="quick-chat-role">
-                      {m.role === 'user' ? '我' : m.role === 'assistant' ? '模型' : '系统'}
-                    </span>
-                    <div className="quick-chat-text">{m.content}</div>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-              <div className="quick-chat-input-row">
-                <input
-                  value={chatInput}
-                  placeholder={chatBusy ? '等待回复…' : '输入消息，回车发送'}
-                  disabled={chatBusy || !chatProviderId}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      void sendChat();
-                    }
-                  }}
-                />
-                <button type="button" className="primary" disabled={chatBusy || !chatInput.trim() || !chatProviderId} onClick={() => void sendChat()}>
-                  {chatBusy ? '发送中…' : '发送'}
-                </button>
-              </div>
+            <div className="chat-messages">
+              {messages.map((msg, i) => (
+                <div key={i} className={`chat-msg ${msg.role}`}>
+                  <div className="chat-msg-bubble">{msg.content}</div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="chat-input-row">
+              <input
+                className="app-input"
+                value={chatInput}
+                placeholder="发送消息测试…"
+                disabled={chatBusy}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat(); } }}
+              />
+              <button type="button" className="button primary" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendChat()}>
+                发送
+              </button>
             </div>
           </div>
         </div>

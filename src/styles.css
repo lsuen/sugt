@@ -1627,3 +1627,60 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .store-settings-block { margin-top: 16px; }
 .store-error { color: #f87171; }
 .store-client-panel { margin-bottom: 8px; }
+
+/* 中控台上游切换 & 模型联动 */
+.upstream-select {
+  width: 100%;
+  margin-top: 4px;
+}
+.access-upstream-controls {
+  padding: 8px 12px;
+}
+
+/* 中控台上游展示 & 模型列表 */
+.access-model-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.03);
+  border-radius: 10px;
+  border: 1px solid rgba(142,232,255,.1);
+}
+.access-model-block .access-label { margin: 0; }
+.access-model-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e8f0f8;
+  display: block;
+}
+.access-model-sub {
+  font-size: 12px;
+  color: #7a8f9f;
+}
+.upstream-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.model-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  background: rgba(142,232,255,.1);
+  color: #8ee8ff;
+  border: 1px solid rgba(142,232,255,.18);
+  margin: 2px 3px 2px 0;
+}
+.model-tags { display: flex; flex-wrap: wrap; gap: 2px; }
+.access-models-list {
+  border-top: 1px solid rgba(142,232,255,.08);
+  margin-top: 4px;
+}
+.access-actions {
+  display: flex;
+  gap: 8px;
+}
+.access-actions .button.ghost { flex: 1; }
