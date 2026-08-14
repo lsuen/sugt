@@ -279,11 +279,11 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
             ) : (
               <code className="access-code">{activeProvider.model_name}</code>
             )}
-            <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
-              <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
+            <button type="button" className="tiny icon-only" disabled={modelsBusy} onClick={() => void fetchModels()} aria-label="获取模型列表">
+              <RefreshCw size={14} />
             </button>
-            <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
-              <Play size={12} />测试
+            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void testCurrent()} aria-label="测试">
+              <Play size={14} />
             </button>
           </div>
         </div>
