@@ -1658,11 +1658,8 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   font-size: 12px;
   color: #7a8f9f;
 }
-.upstream-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 4px;
-}
+.upstream-actions { display: flex; gap: 6px; }
+.access-model-select { flex: 1; min-width: 0; }
 .model-tag {
   display: inline-block;
   padding: 3px 8px;
