@@ -1683,4 +1683,5 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   display: flex;
   gap: 8px;
 }
-.access-actions .button.ghost { flex: 1; }
+.access-actions .button.ghost { flex: 1; }.access-key-edit { width: 100%; }
+.access-key-edit .app-input { width: 100%; }

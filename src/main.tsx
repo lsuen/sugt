@@ -450,7 +450,7 @@ function App() {
     skills: '技能',
     settings: '设置',
     logs: '运行日志',
-    about: '关于 SUGT',
+    about: '关于 SUTAI',
   }[tab];
 
   const tabDesc = {
@@ -466,7 +466,7 @@ function App() {
   if (!isTauriRuntime()) {
     return (
       <main className="browser-only">
-        <h2>SUGT 需在 Tauri 窗口中运行</h2>
+        <h2>SUTAI 需在 Tauri 窗口中运行</h2>
         <p>当前在普通浏览器中打开，没有 Tauri IPC，因此会出现 <code>invoke</code> 报错。</p>
         <p>请在项目根目录执行：</p>
         <pre>npm run tauri dev</pre>
@@ -479,10 +479,10 @@ function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-logo">SG</div>
+          <div className="brand-logo">SA</div>
           <div>
-            <h1>SUGT</h1>
-            <span>本地 AI 网关</span>
+            <h1>SUTAI</h1>
+            <span>朴素的 AI 时代中控台</span>
           </div>
         </div>
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />控制台</button>
@@ -546,13 +546,20 @@ function App() {
               <GatewayAccessBanner
                 status={status}
                 providers={providers.map((p) => ({
-                  id: p.id,
-                  name: p.name,
-                  model_name: p.model_name,
-                  enabled: p.enabled,
-                }))}
+                    id: p.id,
+                    name: p.name,
+                    model_name: p.model_name,
+                    enabled: p.enabled,
+                    base_url: p.base_url,
+                    api_key: p.api_key,
+                    api_key_masked: p.api_key_masked,
+                    provider: p.provider,
+                    protocol: p.protocol,
+                  }))}
                 busy={busy}
                 onRefresh={() => refresh().catch(() => undefined)}
+                onActiveProviderChange={(id) => run(() => invoke('set_active_provider', { id }), '已切换上游')}
+                run={run}
                 pushToast={pushToast}
               />
             </div>
@@ -567,7 +574,6 @@ function App() {
             statusListenUrl={status?.listen_url ?? 'http://127.0.0.1:8787'}
             run={run}
             onNavigate={setTab}
-            pushToast={pushToast}
             formatInvokeError={formatInvokeError}
           />
           </div>
@@ -681,8 +687,8 @@ function App() {
         {tab === 'about' && (
           <div className="tab-body">
           <section className="card about-card">
-            <div className="about-logo">SUGT</div>
-            <h3>SUGT · 本地 AI 网关</h3>
+            <div className="about-logo">SUTAI</div>
+            <h3>SUTAI · 朴素的 AI 时代中控台</h3>
             {/* <p className="hint compact about-lead">
               在本机统一接入大模型服务，方便 agent工具调用。
               <br />

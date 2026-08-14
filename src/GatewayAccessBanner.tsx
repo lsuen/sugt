@@ -1,6 +1,6 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Code2, Copy, MessageSquare, Play, RefreshCw, X } from 'lucide-react';
+import { Code2, Copy, MessageSquare, Pencil, Play, RefreshCw, X } from 'lucide-react';
 
 type ProviderOption = {
   id: string;
@@ -8,7 +8,8 @@ type ProviderOption = {
   model_name: string;
   enabled: boolean;
   base_url: string;
-  api_key_masked: string;
+  api_key: string;          // 未脱敏，用于请求上游
+  api_key_masked: string;   // 脱敏展示用
   protocol: 'openai' | 'anthropic' | 'open_ai';
   provider: string;
 };
@@ -24,7 +25,6 @@ type Props = {
     public_model_id?: string | null;
     active_provider?: string | null;
     active_provider_id?: string | null;
-    active_model?: string | null;
     allow_lan_access?: boolean;
   } | null;
   providers: ProviderOption[];
@@ -64,8 +64,6 @@ print(resp.json()["choices"][0]["message"]["content"])
 }
 
 export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActiveProviderChange, run, pushToast }: Props) {
-  const [editingKey, setEditingKey] = useState(false);
-  const [newKey, setNewKey] = useState('');
   const [codeOpen, setCodeOpen] = useState(false);
   const [codeSample, setCodeSample] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
@@ -74,6 +72,10 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [chatProviderId, setChatProviderId] = useState('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // 网关 API Key 编辑状态
+  const [editingKey, setEditingKey] = useState(false);
+  const [keyInput, setKeyInput] = useState('sugt-local-key');
 
   const enabledProviders = providers.filter((p) => p.enabled);
 
@@ -117,27 +119,16 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     }
   };
 
-  const resolveGatewayApiKey = async (): Promise<string> => {
-    const fromStatus = (status?.gateway_client_api_key || '').trim();
-    if (fromStatus) return fromStatus;
-    try {
-      const cfg = await invoke<{ gateway_client_api_key?: string }>('get_config');
-      const fromConfig = (cfg.gateway_client_api_key || '').trim();
-      if (fromConfig) return fromConfig;
-    } catch { /* fall through */ }
-    return 'sugt-local-key';
+  // 网关 API Key：优先从 status 读取，否则 fallback
+  const resolveGatewayApiKey = (): string => {
+    const key = (status?.gateway_client_api_key || '').trim();
+    return key || 'sugt-local-key';
   };
 
   const openCodeExample = async () => {
     const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
     const modelId = 'sutai';
-    try {
-      const apiKey = await resolveGatewayApiKey();
-      setCodeSample(pythonExample(openaiBase, modelId, apiKey));
-      setCodeOpen(true);
-    } catch (e) {
-      pushToast(String(e), 'error');
-    }
+    setCodeSample(pythonExample(openaiBase, modelId, resolveGatewayApiKey())); setCodeOpen(true);
   };
 
   const openChat = () => {
@@ -146,17 +137,16 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     setChatOpen(true);
   };
 
-  const saveKey = async () => {
-    const trimmed = newKey.trim();
+  const saveGatewayKey = async () => {
+    const trimmed = keyInput.trim();
     if (!trimmed) {
       pushToast('API Key 不能为空', 'error');
       return;
     }
     try {
       await invoke('update_gateway_settings', { input: { gatewayClientApiKey: trimmed } });
-      pushToast('网关 API Key 已更新，请修复接管', 'ok');
+      pushToast('网关 API Key 已更新', 'ok');
       setEditingKey(false);
-      setNewKey('');
       onRefresh();
     } catch (e) {
       pushToast(String(e), 'error');
@@ -200,7 +190,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     if (!provider) return;
     setModelsBusy(true);
     try {
-      const result = await invoke<string[]>('list_provider_models', { input: { base_url: provider.base_url, api_key: provider.api_key_masked, protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol, vendor_id: null, auto_adapt_base_url: true } });
+      const result = await invoke<string[]>('list_provider_models', { input: { base_url: provider.base_url, api_key: provider.api_key, protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol, vendor_id: null, auto_adapt_base_url: true } });
       setModels(result);
       setModelsLoaded(true);
     } catch (e) {
@@ -220,7 +210,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
           name: provider.name,
           provider: provider.provider,
           base_url: provider.base_url,
-          api_key: provider.api_key_masked,
+          api_key: provider.api_key,
           model_name: model,
           model_alias: 'sutai',
           protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
@@ -241,6 +231,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
   const anthropicBase = status?.anthropic_base_url ?? status?.listen_url;
   const activeProvider = providers.find((p) => p.id === upstreamProviderId);
+  const gatewayKey = resolveGatewayApiKey();
 
   return (
     <div className="gateway-access-side">
@@ -251,6 +242,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </span>
       </div>
 
+      {/* 当前上游：从模型配置 tab 读取 enabled providers */}
       <div className="access-model-block">
         <span className="access-label">当前上游</span>
         <select
@@ -268,6 +260,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </select>
       </div>
 
+      {/* 模型 ID：获取模型列表后切换为下拉，选中后实时同步到模型配置 */}
       {upstreamProviderId && activeProvider && (
         <div className="access-model-select-block">
           <span className="access-label">模型 ID</span>
@@ -275,7 +268,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
             {modelsLoaded ? (
               <select
                 className="app-select"
-                value={status?.active_model ?? activeProvider.model_name}
+                value={activeProvider.model_name}
                 disabled={modelsBusy}
                 onChange={(e) => void selectModel(e.target.value)}
               >
@@ -284,7 +277,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
                 ))}
               </select>
             ) : (
-              <code className="access-code">{status?.active_model ?? activeProvider.model_name}</code>
+              <code className="access-code">{activeProvider.model_name}</code>
             )}
             <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
               <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
@@ -296,6 +289,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </div>
       )}
 
+      {/* 连接信息 */}
       <div className="access-fields">
         <div className="access-field">
           <span className="access-label">Model ID（对外）</span>
@@ -329,15 +323,30 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
         <div className="access-field">
           <span className="access-label">网关 API Key</span>
-          <div className="access-value-row">
-            <code className="access-code">local-key</code>
-            <button type="button" className="tiny icon-only" onClick={() => copy('local-key', 'API Key')} aria-label="复制 API Key">
-              <Copy size={14} />
-            </button>
-          </div>
+          {editingKey ? (
+            <div className="access-key-edit">
+              <input
+                className="app-input"
+                value={keyInput}
+                onChange={(e) => setKeyInput(e.target.value)}
+                placeholder="输入新的 API Key"
+                autoFocus
+                onBlur={() => void saveGatewayKey()}
+                onKeyDown={(e) => { if (e.key === 'Enter') void saveGatewayKey(); if (e.key === 'Escape') { setEditingKey(false); setKeyInput(gatewayKey); } }}
+              />
+            </div>
+          ) : (
+            <div className="access-value-row">
+              <code className="access-code">{gatewayKey}</code>
+              <button type="button" className="tiny icon-only" onClick={() => { setKeyInput(gatewayKey); setEditingKey(true); }} aria-label="编辑 API Key">
+                <Pencil size={14} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* 底部操作按钮 */}
       <div className="access-actions">
         <button type="button" className="button ghost" onClick={() => void openCodeExample()}>
           <Code2 size={14} />查看代码范例
@@ -347,6 +356,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </button>
       </div>
 
+      {/* 代码范例弹窗 */}
       {codeOpen && (
         <div className="modal-backdrop" onClick={() => setCodeOpen(false)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()}>
@@ -361,6 +371,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </div>
       )}
 
+      {/* 直接体验弹窗 */}
       {chatOpen && (
         <div className="modal-backdrop" onClick={() => setChatOpen(false)}>
           <div className="modal-card chat-card" onClick={(e) => e.stopPropagation()}>
