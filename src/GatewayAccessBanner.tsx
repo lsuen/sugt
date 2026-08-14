@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Code2, Copy, KeyRound, MessageSquare, Pencil, X } from 'lucide-react';
+import { Code2, Copy, KeyRound, MessageSquare, Pencil, Play, RefreshCw, X } from 'lucide-react';
 
 type ProviderOption = {
   id: string;
@@ -8,6 +8,10 @@ type ProviderOption = {
   model_name: string;
   enabled: boolean;
   public_model_id?: string;
+  base_url: string;
+  api_key_masked: string;
+  protocol: 'openai' | 'anthropic' | 'open_ai';
+  provider: string;
 };
 
 type Props = {
@@ -27,6 +31,8 @@ type Props = {
   providers: ProviderOption[];
   busy: boolean;
   onRefresh: () => void;
+  onActiveProviderChange: (id: string) => void;
+  run: (action: () => Promise<unknown>, ok?: string) => Promise<void>;
   pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void;
 };
 
@@ -58,7 +64,7 @@ print(resp.json()["choices"][0]["message"]["content"])
 `;
 }
 
-export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushToast }: Props) {
+export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActiveProviderChange, run, pushToast }: Props) {
   const [editingKey, setEditingKey] = useState(false);
   const [newKey, setNewKey] = useState('');
   const [codeOpen, setCodeOpen] = useState(false);
@@ -71,6 +77,18 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   const enabledProviders = providers.filter((p) => p.enabled);
+  useEffect(() => {
+    const preferred = status?.active_provider_id
+      || providers.find((p) => p.enabled)?.id
+      || '';
+    setUpstreamProviderId((prev) => {
+      if (prev && providers.some((p) => p.id === prev && p.enabled)) return prev;
+      return preferred;
+    });
+  }, [status?.active_provider_id, providers]);
+  const [upstreamProviderId, setUpstreamProviderId] = useState('');
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsBusy, setModelsBusy] = useState(false);
 
   useEffect(() => {
     if (chatOpen) {
@@ -113,7 +131,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
 
   const openCodeExample = async () => {
     const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
-    const modelId = status?.public_model_id ?? 'your-model-id';
+    const modelId = status?.public_model_id ?? 'sutai';
     try {
       const apiKey = await resolveGatewayApiKey();
       setCodeSample(pythonExample(openaiBase, modelId, apiKey));
@@ -171,12 +189,62 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
     }
   };
 
-  if (!status?.listen_url) return null;
 
-  const openaiBase = status.openai_base_url ?? `${status.listen_url}/v1`;
-  const anthropicBase = status.anthropic_base_url ?? status.listen_url;
-  const displayKey = (status.gateway_client_api_key || '').trim()
-    || status.gateway_client_api_key_masked
+  const switchUpstream = async (id: string) => {
+    setUpstreamProviderId(id);
+    setModels([]);
+    onActiveProviderChange(id);
+  };
+
+  const fetchModels = async () => {
+    const provider = providers.find((p) => p.id === upstreamProviderId);
+    if (!provider) return;
+    setModelsBusy(true);
+    try {
+      const result = await invoke<string[]>('list_provider_models', { input: { base_url: provider.base_url, api_key: provider.api_key_masked, protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol, vendor_id: null, auto_adapt_base_url: true } });
+      setModels(result);
+    } catch (e) {
+      pushToast(String(e), 'error');
+    } finally {
+      setModelsBusy(false);
+    }
+  };
+
+  const selectModel = async (model: string) => {
+    const provider = providers.find((p) => p.id === upstreamProviderId);
+    if (!provider) return;
+    await run(
+      () => invoke('save_provider', {
+        input: {
+          id: provider.id,
+          name: provider.name,
+          provider: provider.provider,
+          base_url: provider.base_url,
+          api_key: provider.api_key_masked,
+          model_name: model,
+          model_alias: 'sutai',
+          protocol: provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
+          enabled: provider.enabled,
+          auto_adapt_base_url: true,
+        },
+      }),
+      '模型已切换',
+    );
+  };
+
+  const testCurrent = async () => {
+    if (!upstreamProviderId) return;
+    await run(
+      () => invoke('test_provider', { id: upstreamProviderId }),
+      '测试完成',
+    );
+  };
+
+
+  const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
+  const anthropicBase = status?.anthropic_base_url ?? status?.listen_url;
+  const displayKey = (status?.gateway_client_api_key || '').trim()
+    || status?.gateway_client_api_key_masked
     || 'sugt-local-key';
   const selectedChat = enabledProviders.find((p) => p.id === chatProviderId);
 
@@ -184,33 +252,59 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
     <div className="gateway-access-side">
       <div className="gateway-access-head">
         <strong>Agent 接入点</strong>
-        <span className={status.running ? 'badge ok inline' : 'badge stop inline'}>
-          {status.running ? '网关可用' : '未启动'}
+        <span className={status?.running ? 'badge ok inline' : 'badge stop inline'}>
+          {status?.running ? '网关可用' : '未启动'}
         </span>
       </div>
 
       <div className="access-model-block">
         <span className="access-label">当前上游</span>
-        <strong className="access-model-name" title={status.active_provider ?? ''}>
-          {status.active_provider ?? '未配置'}
-        </strong>
-        <span className="hint compact access-model-sub" title={status.active_model ?? ''}>
-          {status.active_model ?? '—'}
-        </span>
+        <select
+          className="app-select upstream-select"
+          value={upstreamProviderId}
+          disabled={busy || enabledProviders.length === 0}
+          onChange={(e) => void switchUpstream(e.target.value)}
+        >
+          {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
+          {enabledProviders.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · {p.model_name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      <div className="access-fields">
-        <div className="access-field">
-          <span className="access-label">Model ID（对外）</span>
-          <div className="access-value-row">
-            <code className="access-code">{status.public_model_id ?? '未配置默认模型'}</code>
-            {status.public_model_id && (
-              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => copy(status.public_model_id!, 'Model ID')} aria-label="复制 Model ID">
-                <Copy size={14} />
+      {upstreamProviderId && (
+        <div className="access-upstream-controls">
+          <div className="access-field" style={{marginBottom: 8}}>
+            <span className="access-label">模型 ID（对外）</span>
+            <div className="access-value-row">
+              <select
+                className="app-select"
+                value={status?.public_model_id ?? ''}
+                disabled={modelsBusy}
+                onChange={(e) => void selectModel(e.target.value)}
+              >
+                <option value="">sutai（默认）</option>
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <button type="button" className="tiny" disabled={modelsBusy} onClick={() => void fetchModels()}>
+                <RefreshCw size={12} />{modelsBusy ? '获取中…' : '获取模型列表'}
               </button>
+              <button type="button" className="tiny" disabled={busy} onClick={() => void testCurrent()}>
+                <Play size={12} />测试
+              </button>
+            </div>
+            {models.length > 0 && (
+              <span className="hint compact" style={{marginTop: 4}}>已加载 {models.length} 个上游模型，选中后自动同步</span>
             )}
           </div>
         </div>
+      )}
+
+      <div className="access-fields">
 
         <div className="access-field">
           <span className="access-label">OpenAI Base（Codex 等）</span>
@@ -226,7 +320,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
           <span className="access-label">Anthropic Base</span>
           <div className="access-value-row">
             <code className="access-code">{anthropicBase}</code>
-            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => copy(anthropicBase, 'Anthropic Base URL')} aria-label="复制 Anthropic Base">
+            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => copy(anthropicBase ?? '', 'Anthropic Base URL')} aria-label="复制 Anthropic Base">
               <Copy size={14} />
             </button>
           </div>
@@ -243,7 +337,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
           ) : (
             <div className="access-value-row">
               <code className="access-code">{displayKey}</code>
-              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => { setNewKey((status.gateway_client_api_key || '').trim()); setEditingKey(true); }} aria-label="编辑 API Key">
+              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => { setNewKey((status?.gateway_client_api_key || '').trim()); setEditingKey(true); }} aria-label="编辑 API Key">
                 <Pencil size={14} />
               </button>
             </div>
@@ -272,7 +366,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, pushTo
             <div className="modal-body">
               <p className="hint compact">
                 可直接复制运行；已写入当前本地网关真实 API Key 与 Model ID。
-                {status.allow_lan_access ? ' · 已允许局域网' : ''}
+                {status?.allow_lan_access ? ' · 已允许局域网' : ''}
               </p>
               <pre className="code-sample">{codeSample}</pre>
               <div className="modal-actions">
