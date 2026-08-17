@@ -108,7 +108,8 @@ export function GatewayAccessBanner({
     (status?.gateway_client_api_key || '').trim() || 'sugt-local-key'
 
   // 协议状态徽标：默认 auto；显式切换后显示 auto-openai / auto-anthropic
-  const modeBadge = accessMode === 'auto' ? 'auto' : `auto-${accessMode}`
+  const modeBadge =
+    accessMode === 'auto' ? 'auto' : `Force ${accessMode} Protocol`
   const modeBadgeTitle =
     accessMode === 'auto'
       ? '接入协议：auto（自动，推荐）'
