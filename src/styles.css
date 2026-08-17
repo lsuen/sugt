@@ -1738,36 +1738,61 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   min-width: 0;
 }
 .access-config-block .access-field { margin: 0; min-width: 0; }
-.access-mode-hint { margin: 0; line-height: 1.5; }
 
-/* 接入协议三态切换 */
-.access-mode-switch {
+/* LLM 上游 / Agent 接入 分组 */
+.access-group {
   display: flex;
-  gap: 6px;
-  width: 100%;
-}
-.access-mode-switch button {
-  flex: 1 1 0;
+  flex-direction: column;
+  gap: 10px;
   min-width: 0;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(142,232,255,.15);
-  background: rgba(255,255,255,.04);
-  color: #9fb3c7;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all .15s ease;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.access-mode-switch button.active {
-  background: rgba(56,189,248,.16);
-  border-color: rgba(56,189,248,.45);
+.access-group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #5f7a8f;
+  letter-spacing: 0.08em;
+}
+
+/* 当前上游：三列表格（label | 内容 | 操作），防切换按钮被挤压 */
+.access-mode-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.access-mode-label {
+  margin: 0;
+  white-space: nowrap;
+}
+.access-mode-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.access-mode-main .upstream-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+.access-mode-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(56,189,248,.12);
+  border: 1px solid rgba(56,189,248,.35);
   color: #7dd3fc;
 }
-.access-mode-switch button:hover:not(.active) {
-  background: rgba(255,255,255,.08);
-  color: #c6d6e6;
+.access-mode-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }

@@ -7,6 +7,14 @@ import { CodeExampleModal } from './CodeExampleModal';
 
 type AccessMode = 'auto' | 'openai' | 'anthropic';
 
+/** 协议循环切换顺序：auto（最推荐）→ openai（使用最多）→ anthropic（原生） */
+const MODE_ORDER: AccessMode[] = ['auto', 'openai', 'anthropic'];
+const MODE_LABEL: Record<AccessMode, string> = {
+  auto: 'auto',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
+
 type ProviderOption = {
   id: string;
   name: string;
@@ -84,10 +92,12 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
   const gatewayKey = (status?.gateway_client_api_key || '').trim() || 'sugt-local-key';
 
-  // Auto 模式按当前上游协议展示实际走向：auto-openai / auto-anthropic
-  const activeProvider =
-    providers.find((p) => p.id === activeProviderId) ?? providers.find((p) => p.enabled);
-  const autoLabel = activeProvider?.protocol === 'anthropic' ? 'auto-anthropic' : 'auto-openai';
+  // 协议状态徽标：默认 auto；显式切换后显示 auto-openai / auto-anthropic
+  const modeBadge = accessMode === 'auto' ? 'auto' : `auto-${accessMode}`;
+  const modeBadgeTitle =
+    accessMode === 'auto'
+      ? '接入协议：auto（自动，推荐）'
+      : `接入协议：${MODE_LABEL[accessMode]}（强制）`;
 
   const copy = async (text: string, label: string) => {
     try {
@@ -98,19 +108,18 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     }
   };
 
-  const switchAccessMode = async (mode: AccessMode) => {
-    if (mode === accessMode) return;
-    setAccessMode(mode);
+  // 循环切换：auto → openai → anthropic
+  const cycleMode = async () => {
+    const idx = MODE_ORDER.indexOf(accessMode);
+    const next = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
+    if (next === accessMode) return;
     await run(
-      () => invoke('update_gateway_settings', { input: { anthropicAccessMode: mode } }),
-      '接入协议已切换',
+      async () => {
+        await invoke('update_gateway_settings', { input: { anthropicAccessMode: next } });
+        setAccessMode(next);
+      },
+      `接入协议 → ${MODE_LABEL[next]}`,
     );
-  };
-
-  const modeHint: Record<AccessMode, string> = {
-    auto: 'Claude 客户端优先原生端点，失败自动降级转换',
-    openai: '所有请求统一按 OpenAI 协议转换',
-    anthropic: '所有请求统一走 Anthropic 原生协议',
   };
 
   const openCodeExample = () => {
@@ -128,89 +137,65 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </span>
       </div>
 
-      {/* 上游 + 下游统一配置区 */}
       <div className="access-config-block">
-        {/* 接入协议切换：auto（默认）/ openai / anthropic */}
-        <div className="access-field">
-          <span className="access-label">接入协议</span>
-          <div className="access-mode-switch" role="group" aria-label="接入协议">
-            <button
-              type="button"
-              className={accessMode === 'auto' ? 'active' : ''}
-              onClick={() => void switchAccessMode('auto')}
-              title="自动：Claude 客户端优先原生端点，失败降级转换"
-            >
-              {accessMode === 'auto' ? autoLabel : 'auto'}
-            </button>
-            <button
-              type="button"
-              className={accessMode === 'openai' ? 'active' : ''}
-              onClick={() => void switchAccessMode('openai')}
-              title="强制走 OpenAI 协议（请求转换为 chat/completions）"
-            >
-              OpenAI
-            </button>
-            <button
-              type="button"
-              className={accessMode === 'anthropic' ? 'active' : ''}
-              onClick={() => void switchAccessMode('anthropic')}
-              title="强制走 Anthropic 原生协议（服务商不支持时返回明确错误）"
-            >
-              Anthropic
-            </button>
-          </div>
-          <p className="hint compact access-mode-hint">{modeHint[accessMode]}</p>
+        {/* LLM 上游：服务商 / 模型 / 接入协议 */}
+        <div className="access-group">
+          <div className="access-group-title">LLM 上游</div>
+          <UpstreamSelector
+            providers={providers}
+            activeProviderId={activeProviderId}
+            busy={busy}
+            onActiveProviderChange={onActiveProviderChange}
+            onRefresh={onRefresh}
+            run={run}
+            pushToast={pushToast}
+            modeBadge={modeBadge}
+            modeBadgeTitle={modeBadgeTitle}
+            onCycleMode={() => void cycleMode()}
+          />
         </div>
 
-        {/* 上游：当前上游 + 模型 ID */}
-        <UpstreamSelector
-          providers={providers}
-          activeProviderId={activeProviderId}
-          busy={busy}
-          onActiveProviderChange={onActiveProviderChange}
-          onRefresh={onRefresh}
-          run={run}
-          pushToast={pushToast}
-        />
-
-        {/* 下游：对外连接信息 */}
-        <div className="access-field">
-          <span className="access-label">对外 Model ID</span>
-          <div className="access-value-row">
-            <code className="access-code">sutai</code>
-            <button type="button" className="tiny icon-only" onClick={() => void copy('sutai', 'Model ID')} aria-label="复制 Model ID">
-              <Copy size={14} />
-            </button>
+        {/* Agent 接入：客户端连接信息 */}
+        <div className="access-group">
+          <div className="access-group-title">Agent 接入</div>
+          <div className="access-field">
+            <span className="access-label">对外 Model ID</span>
+            <div className="access-value-row">
+              <code className="access-code">sutai</code>
+              <button type="button" className="tiny icon-only" onClick={() => void copy('sutai', 'Model ID')} aria-label="复制 Model ID">
+                <Copy size={14} />
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="access-field">
-          <span className="access-label">OpenAI Base</span>
-          <div className="access-value-row">
-            <code className="access-code">{openaiBase}</code>
-            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void copy(openaiBase, 'OpenAI Base URL')} aria-label="复制 OpenAI Base">
-              <Copy size={14} />
-            </button>
+          <div className="access-field">
+            <span className="access-label">OpenAI Base</span>
+            <div className="access-value-row">
+              <code className="access-code">{openaiBase}</code>
+              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void copy(openaiBase, 'OpenAI Base URL')} aria-label="复制 OpenAI Base">
+                <Copy size={14} />
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="access-field">
-          <span className="access-label">Anthropic Base</span>
-          <div className="access-value-row">
-            <code className="access-code">{anthropicBase}</code>
-            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void copy(anthropicBase ?? '', 'Anthropic Base URL')} aria-label="复制 Anthropic Base">
-              <Copy size={14} />
-            </button>
+          <div className="access-field">
+            <span className="access-label">Anthropic Base</span>
+            <div className="access-value-row">
+              <code className="access-code">{anthropicBase}</code>
+              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void copy(anthropicBase ?? '', 'Anthropic Base URL')} aria-label="复制 Anthropic Base">
+                <Copy size={14} />
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="access-field">
-          <span className="access-label">网关 API Key</span>
-          <div className="access-value-row">
-            <code className="access-code">{gatewayKey}</code>
-            <button type="button" className="tiny icon-only" onClick={() => void copy(gatewayKey, '网关 API Key')} aria-label="复制网关 API Key">
-              <Copy size={14} />
-            </button>
+          <div className="access-field">
+            <span className="access-label">网关 API Key</span>
+            <div className="access-value-row">
+              <code className="access-code">{gatewayKey}</code>
+              <button type="button" className="tiny icon-only" onClick={() => void copy(gatewayKey, '网关 API Key')} aria-label="复制网关 API Key">
+                <Copy size={14} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
