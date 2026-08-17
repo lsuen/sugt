@@ -235,6 +235,7 @@ impl GatewayState {
         provider_index: usize,
         latency_ms: u64,
         headers: &HeaderMap,
+        mode: &str,
     ) {
         let client = crate::gateway_stats::client_label_from_headers(headers);
         let hit = ProxyHit {
@@ -242,6 +243,7 @@ impl GatewayState {
             provider_name: provider.name.clone(),
             path: path.to_string(),
             client: client.clone(),
+            mode: mode.to_string(),
             failover: provider_index > 0,
             at: chrono::Utc::now(),
         };
@@ -575,17 +577,26 @@ async fn proxy_anthropic_request(
         let native_target = anthropic_native_target(provider);
 
         // 依据接入点协议模式决定请求路径
-        let result = match access_mode {
+        // result 附带实际走的协议模式（mode），供命中记录与状态标识展示
+        let (result, mode) = match access_mode {
             // 强制 OpenAI 协议：始终走转换，不尝试原生端点
-            AnthropicAccessMode::OpenAi => {
-                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider).await
-            }
+            AnthropicAccessMode::OpenAi => (
+                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider).await,
+                "openai_adapter",
+            ),
             // 强制 Anthropic 原生协议：不走转换；无原生端点时给出明确错误并尝试下一个
             AnthropicAccessMode::Anthropic => match native_target {
-                Some(target) => {
-                    proxy_anthropic_native(&state, &headers, body_bytes.clone(), provider, Some(target))
-                        .await
-                }
+                Some(target) => (
+                    proxy_anthropic_native(
+                        &state,
+                        &headers,
+                        body_bytes.clone(),
+                        provider,
+                        Some(target),
+                    )
+                    .await,
+                    "anthropic_native",
+                ),
                 None => {
                     let err = anyhow!(
                         "{} 未提供 Anthropic 原生端点，无法以 Anthropic 模式访问，请改用 Auto 或 OpenAI 模式",
@@ -621,19 +632,30 @@ async fn proxy_anthropic_request(
                             );
                             // 记录缓存：后续该 provider 直接走转换，不再白试原生
                             state.mark_native_unsupported(&provider.id).await;
-                            proxy_anthropic_via_openai(
-                                &state,
-                                &headers,
-                                body_bytes.clone(),
-                                provider,
+                            (
+                                proxy_anthropic_via_openai(
+                                    &state,
+                                    &headers,
+                                    body_bytes.clone(),
+                                    provider,
+                                )
+                                .await,
+                                "openai_adapter",
                             )
-                            .await
                         }
-                        other => other,
+                        other => (other, "anthropic_native"),
                     }
                 } else {
-                    proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider)
-                        .await
+                    (
+                        proxy_anthropic_via_openai(
+                            &state,
+                            &headers,
+                            body_bytes.clone(),
+                            provider,
+                        )
+                        .await,
+                        "openai_adapter",
+                    )
                 }
             }
         };
@@ -648,6 +670,7 @@ async fn proxy_anthropic_request(
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
+                        mode,
                     )
                     .await;
                 return Ok(response);
@@ -787,6 +810,7 @@ async fn proxy_request(
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
+                        "openai_direct",
                     )
                     .await;
                 return into_axum_response(response, Some(state.stats.clone())).await;
@@ -889,6 +913,7 @@ async fn proxy_responses_via_chat(
                             index,
                             started.elapsed().as_millis() as u64,
                             &headers,
+                            "responses_native",
                         )
                         .await;
                     return into_axum_response(response, Some(state.stats.clone())).await;
@@ -943,6 +968,7 @@ async fn proxy_responses_via_chat(
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
+                        "chat_completions_adapter",
                     )
                     .await;
                 let status = response.status();
@@ -986,6 +1012,7 @@ async fn proxy_responses_via_chat(
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
+                        "chat_completions_adapter",
                     )
                     .await;
                 let bytes = if status.is_success() {

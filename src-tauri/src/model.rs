@@ -242,6 +242,9 @@ pub struct ProxyHit {
     pub path: String,
     /// 发起请求的客户端标签（如 claude-cli / codex），来自 User-Agent
     pub client: String,
+    /// 实际走的协议路径：anthropic_native / openai_adapter / openai_direct /
+    /// responses_native / chat_completions_adapter
+    pub mode: String,
     pub failover: bool,
     pub at: DateTime<Utc>,
 }
@@ -263,6 +266,8 @@ pub struct RuntimeStatus {
     pub last_proxy_path: Option<String>,
     /// 最近一次代理命中的客户端标签（如 claude-cli），无命中时为 None
     pub last_proxy_client: Option<String>,
+    /// 最近一次代理命中的实际协议模式（anthropic_native / openai_adapter 等），无命中时为 None
+    pub last_proxy_mode: Option<String>,
     pub last_proxy_failover: bool,
     pub last_proxy_at: Option<DateTime<Utc>>,
     pub config_dir: String,

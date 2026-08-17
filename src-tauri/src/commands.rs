@@ -134,10 +134,12 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         runtime.gateway.traffic_stats().await
     };
     // 独立/detached 网关进程的命中在远程；本地 GatewayState 可能为空，用统计里的最近来源兜底
+    // （统计视图不含协议模式，fallback 时 mode 置 None，前端回退显示用户配置）
     let (
         last_proxy_provider,
         last_proxy_path,
         last_proxy_client,
+        last_proxy_mode,
         last_proxy_failover,
         last_proxy_at,
     ) = if let Some(hit) = local_hit {
@@ -145,6 +147,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
             Some(hit.provider_name),
             Some(hit.path),
             Some(hit.client),
+            Some(hit.mode),
             hit.failover,
             Some(hit.at),
         )
@@ -153,11 +156,12 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
             Some(client.provider_name.clone()),
             Some(client.last_path.clone()),
             Some(client.label.clone()),
+            None,
             false,
             Some(client.last_at),
         )
     } else {
-        (None, None, None, false, None)
+        (None, None, None, None, false, None)
     };
     let public_model_id = provider.as_ref().map(|p| p.public_model_id());
     Ok(RuntimeStatus {
@@ -177,6 +181,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         last_proxy_provider,
         last_proxy_path,
         last_proxy_client,
+        last_proxy_mode,
         last_proxy_failover,
         last_proxy_at,
         config_dir: runtime.paths.config_dir.display().to_string(),

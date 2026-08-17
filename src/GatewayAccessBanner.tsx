@@ -15,6 +15,15 @@ const MODE_LABEL: Record<AccessMode, string> = {
   anthropic: 'Anthropic',
 }
 
+/** 后端 ProxyHit.mode 实际协议路径 → 可读标签（与网关日志 mode= 一一对应） */
+const PROXY_MODE_LABEL: Record<string, string> = {
+  anthropic_native: 'Anthropic 原生',
+  openai_adapter: 'OpenAI 适配',
+  openai_direct: 'OpenAI 直连',
+  responses_native: 'Responses 原生',
+  chat_completions_adapter: 'Chat 适配',
+}
+
 type ProviderOption = {
   id: string
   name: string
@@ -41,6 +50,7 @@ type Props = {
     allow_lan_access?: boolean
     anthropic_access_mode?: AccessMode
     last_proxy_client?: string | null
+    last_proxy_mode?: string | null
   } | null
   providers: ProviderOption[]
   busy: boolean
@@ -107,13 +117,17 @@ export function GatewayAccessBanner({
   const gatewayKey =
     (status?.gateway_client_api_key || '').trim() || 'sugt-local-key'
 
-  // 协议状态徽标：默认 auto；显式切换后显示 auto-openai / auto-anthropic
-  const modeBadge =
-    accessMode === 'auto' ? 'auto' : `Force ${accessMode} Protocol`
-  const modeBadgeTitle =
-    accessMode === 'auto'
-      ? '接入协议：auto（自动，推荐）'
-      : `接入协议：${MODE_LABEL[accessMode]}（强制）`
+  // 状态标识（流量视图）：优先显示最近一次请求实际走的协议模式，
+  // 与网关日志 mode= 一一对应；无流量时回退显示用户接入配置（auto / openai / anthropic）
+  const lastMode = status?.last_proxy_mode
+  const modeBadge = lastMode
+    ? (PROXY_MODE_LABEL[lastMode] ?? lastMode)
+    : accessMode
+  const modeBadgeTitle = lastMode
+    ? `最近请求实际协议：${PROXY_MODE_LABEL[lastMode] ?? lastMode}`
+    : accessMode === 'auto'
+      ? '接入协议：auto（自动，尚无流量）'
+      : `接入协议：${MODE_LABEL[accessMode]}（强制，尚无流量）`
 
   // 最近一次代理命中的客户端标签（如 claude-cli），后端无命中时为 null
   const lastClient = status?.last_proxy_client ?? ''
