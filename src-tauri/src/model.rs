@@ -22,12 +22,13 @@ pub enum ProviderStatus {
 
 /// Anthropic 接入点的协议模式（用户可在控制台 Agent 接入点切换）
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum AnthropicAccessMode {
     /// 自动匹配：识别到 Claude 系客户端优先走原生端点，否则走转换（默认）
     #[default]
     Auto,
-    /// 强制走 OpenAI 协议（始终转换）
+    /// 强制走 OpenAI 协议（始终转换）；`open_ai` 为旧 snake_case 兼容 alias
+    #[serde(alias = "open_ai")]
     OpenAi,
     /// 强制走 Anthropic 原生协议（服务商不支持时返回明确错误）
     Anthropic,
