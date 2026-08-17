@@ -1754,22 +1754,18 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   letter-spacing: 0.08em;
 }
 
-/* 当前上游：三列表格（label | 内容 | 操作），防切换按钮被挤压 */
+/* 上游选择行：select + 协议徽标 + 循环切换按钮，无 label（组标题兜住语义） */
 .access-mode-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
-.access-mode-label {
-  margin: 0;
-  white-space: nowrap;
-}
 .access-mode-main {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 .access-mode-main .upstream-select {

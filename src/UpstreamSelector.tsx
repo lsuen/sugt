@@ -119,9 +119,8 @@ export function UpstreamSelector({
 
   return (
     <>
-      {/* 当前上游：三列表格（label | select + 协议徽标 | 循环切换按钮） */}
+      {/* 上游选择：select + 协议徽标 + 循环切换按钮（无 label，组标题 LLM 上游 已兜住语义） */}
       <div className="access-mode-row">
-        <span className="access-label access-mode-label">当前上游</span>
         <div className="access-mode-main">
           <select
             className="app-select upstream-select"
@@ -132,7 +131,7 @@ export function UpstreamSelector({
             {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
             {enabledProviders.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} · {p.model_name}
+                {p.name}
               </option>
             ))}
           </select>
