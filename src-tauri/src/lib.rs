@@ -1,4 +1,5 @@
 pub mod anthropic_adapter;
+pub mod anthropic_client_detect;
 pub mod agent_advanced;
 pub mod agent_discover;
 pub mod experimental_zen;

@@ -72,14 +72,21 @@ pub fn anthropic_to_openai(body: Bytes, model_name: &str) -> Result<Bytes> {
     {
         payload["max_tokens"] = max_tokens.clone();
     }
+    // 跳过 null 字段：部分 Anthropic 客户端会显式发送 null，直接透传会被部分 OpenAI 服务商拒绝
     if let Some(temperature) = value.get("temperature") {
-        payload["temperature"] = temperature.clone();
+        if !temperature.is_null() {
+            payload["temperature"] = temperature.clone();
+        }
     }
     if let Some(top_p) = value.get("top_p") {
-        payload["top_p"] = top_p.clone();
+        if !top_p.is_null() {
+            payload["top_p"] = top_p.clone();
+        }
     }
     if let Some(stop_sequences) = value.get("stop_sequences") {
-        payload["stop"] = stop_sequences.clone();
+        if !stop_sequences.is_null() {
+            payload["stop"] = stop_sequences.clone();
+        }
     }
 
     if let Some(tools) = value.get("tools") {
@@ -144,6 +151,7 @@ fn convert_anthropic_blocks(role: &str, blocks: &[Value], openai_messages: &mut 
 
     if role == "user" {
         let mut text_parts = Vec::new();
+        let mut image_parts = Vec::new();
         let mut tool_results = Vec::new();
 
         for block in blocks {
@@ -176,14 +184,24 @@ fn convert_anthropic_blocks(role: &str, blocks: &[Value], openai_messages: &mut 
                     }));
                 }
                 Some("image") => {
-                    text_parts.push("[image omitted by SUGT adapter]".to_string());
+                    // 图片块 → OpenAI image_url（base64 data URL），避免视觉能力丢失
+                    if let Some(image) = anthropic_image_block_to_openai(block) {
+                        image_parts.push(image);
+                    }
                 }
                 _ => {}
             }
         }
 
-        if !text_parts.is_empty() {
+        if !text_parts.is_empty() && image_parts.is_empty() {
             openai_messages.push(json!({ "role": "user", "content": text_parts.join("\n") }));
+        } else if !text_parts.is_empty() || !image_parts.is_empty() {
+            let mut content_parts = Vec::new();
+            if !text_parts.is_empty() {
+                content_parts.push(json!({ "type": "text", "text": text_parts.join("\n") }));
+            }
+            content_parts.extend(image_parts);
+            openai_messages.push(json!({ "role": "user", "content": content_parts }));
         }
         openai_messages.extend(tool_results);
         return;
@@ -205,6 +223,33 @@ fn convert_anthropic_blocks(role: &str, blocks: &[Value], openai_messages: &mut 
         .join("\n");
     if !text.is_empty() {
         openai_messages.push(json!({ "role": role, "content": text }));
+    }
+}
+
+/// 将 Anthropic image 块转换为 OpenAI image_url 内容块。
+///
+/// Anthropic 格式：`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`
+/// OpenAI 格式：`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`
+fn anthropic_image_block_to_openai(block: &Value) -> Option<Value> {
+    let source = block.get("source")?;
+    let media_type = source.get("media_type").and_then(Value::as_str)?;
+    match source.get("type").and_then(Value::as_str)? {
+        "base64" => {
+            let data = source.get("data").and_then(Value::as_str)?;
+            Some(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{media_type};base64,{data}") }
+            }))
+        }
+        // url 类型直接透传
+        "url" => {
+            let url = source.get("url").and_then(Value::as_str)?;
+            Some(json!({
+                "type": "image_url",
+                "image_url": { "url": url }
+            }))
+        }
+        _ => None,
     }
 }
 
@@ -244,10 +289,17 @@ fn anthropic_tool_choice_to_openai(tool_choice: &Value) -> Value {
         Value::String(text) if text == "auto" => json!("auto"),
         Value::String(text) if text == "any" => json!("required"),
         Value::String(text) if text == "none" => json!("none"),
-        Value::Object(map) if map.get("type").and_then(Value::as_str) == Some("tool") => {
-            let name = map.get("name").and_then(Value::as_str).unwrap_or("");
-            json!({ "type": "function", "function": { "name": name } })
-        }
+        // 新版 Claude 客户端使用对象形式：{"type":"auto"|"none"|"any"}，需映射为 OpenAI 字符串
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            Some("tool") => {
+                let name = map.get("name").and_then(Value::as_str).unwrap_or("");
+                json!({ "type": "function", "function": { "name": name } })
+            }
+            Some("auto") => json!("auto"),
+            Some("none") => json!("none"),
+            Some("any") => json!("required"),
+            _ => tool_choice.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -284,6 +336,17 @@ pub fn openai_json_to_anthropic_json(bytes: &[u8]) -> Result<Value> {
         .unwrap_or_else(|| json!({}));
     let message = choice.get("message").cloned().unwrap_or_else(|| json!({}));
     let mut content = Vec::new();
+
+    // 推理内容（deepseek 等返回 message.reasoning_content）→ anthropic thinking 块
+    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
+        if !reasoning.is_empty() {
+            content.push(json!({
+                "type": "thinking",
+                "thinking": reasoning,
+                "signature": ""
+            }));
+        }
+    }
 
     if let Some(text) = message.get("content") {
         let text = openai_message_content_to_text(Some(text));
@@ -347,6 +410,27 @@ fn openai_function_arguments_to_json(arguments: Option<&Value>) -> Value {
     }
 }
 
+/// 从 OpenAI 流式 delta 中提取文本内容，兼容字符串与数组（多模态服务商常见）。
+fn openai_delta_content_text(delta: &Value) -> Option<String> {
+    match delta.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        Value::Null => None,
+        _ => None,
+    }
+}
+
 fn openai_message_content_to_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
@@ -388,7 +472,9 @@ pub async fn openai_to_anthropic_response(
 
     if !status.is_success() {
         let bytes = response.bytes().await?;
-        return passthrough_response(status, headers, bytes);
+        // 把 OpenAI 错误体转换为 Anthropic 错误格式，避免 Claude 客户端解析失败
+        let anthropic_error = openai_error_to_anthropic_error(&bytes);
+        return passthrough_response(status, headers, Bytes::from(anthropic_error));
     }
 
     if is_streaming_response(&headers) {
@@ -426,6 +512,36 @@ pub async fn openai_to_anthropic_response(
         .status(status)
         .header(http::header::CONTENT_TYPE, "application/json")
         .body(Body::from(anthropic.to_string()))?)
+}
+
+/// 把 OpenAI 错误体转换为 Anthropic 错误格式。
+///
+/// Claude 客户端期望的响应是 `{"type":"error","error":{"type":...,"message":...}}`，
+/// 若直接透传 OpenAI 的 `{"error":{"message":...}}` 会导致客户端解析失败或显示异常。
+fn openai_error_to_anthropic_error(body: &[u8]) -> String {
+    let parsed = serde_json::from_slice::<Value>(body).ok();
+    let message = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/message"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            // 非 JSON 或结构不符时，尝试用原始文本截断作为错误信息
+            String::from_utf8_lossy(body)
+                .trim()
+                .chars()
+                .take(500)
+                .collect()
+        });
+
+    json!({
+        "type": "error",
+        "error": {
+            "type": "api_error",
+            "message": message,
+        }
+    })
+    .to_string()
 }
 
 fn passthrough_response(
@@ -533,6 +649,7 @@ struct AnthropicStreamAdapter {
     output_tokens: u64,
     next_block_index: u32,
     text_block_index: Option<u32>,
+    thinking_block_index: Option<u32>,
     tool_calls: HashMap<usize, ToolCallStreamState>,
 }
 
@@ -547,6 +664,7 @@ impl AnthropicStreamAdapter {
             output_tokens: 0,
             next_block_index: 0,
             text_block_index: None,
+            thinking_block_index: None,
             tool_calls: HashMap::new(),
         }
     }
@@ -584,7 +702,8 @@ impl AnthropicStreamAdapter {
             events.push(format_sse("ping", json!({ "type": "ping" })));
         }
 
-        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+        // 处理 content：兼容字符串与数组（部分服务商流式返回数组 content）
+        if let Some(text) = openai_delta_content_text(&delta) {
             if !text.is_empty() {
                 events.extend(self.ensure_text_block());
                 self.output_tokens += text.chars().count() as u64;
@@ -594,6 +713,21 @@ impl AnthropicStreamAdapter {
                         "type": "content_block_delta",
                         "index": self.text_block_index.unwrap_or(0),
                         "delta": { "type": "text_delta", "text": text }
+                    }),
+                ));
+            }
+        }
+
+        // 推理内容（deepseek 等返回 delta.reasoning_content）→ anthropic thinking 块
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+            if !reasoning.is_empty() {
+                events.extend(self.ensure_thinking_block());
+                events.push(format_sse(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": self.thinking_block_index.unwrap_or(0),
+                        "delta": { "type": "thinking_delta", "thinking": reasoning }
                     }),
                 ));
             }
@@ -670,15 +804,40 @@ impl AnthropicStreamAdapter {
         )]
     }
 
-    fn close_text_block_if_open(&mut self) -> Vec<String> {
-        let Some(index) = self.text_block_index.take() else {
+    fn ensure_thinking_block(&mut self) -> Vec<String> {
+        if self.thinking_block_index.is_some() {
             return Vec::new();
-        };
+        }
+
+        let index = self.next_block_index;
+        self.next_block_index += 1;
+        self.thinking_block_index = Some(index);
 
         vec![format_sse(
-            "content_block_stop",
-            json!({ "type": "content_block_stop", "index": index }),
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": { "type": "thinking", "thinking": "", "signature": "" }
+            }),
         )]
+    }
+
+    fn close_text_block_if_open(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        if let Some(index) = self.text_block_index.take() {
+            events.push(format_sse(
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": index }),
+            ));
+        }
+        if let Some(index) = self.thinking_block_index.take() {
+            events.push(format_sse(
+                "content_block_stop",
+                json!({ "type": "content_block_stop", "index": index }),
+            ));
+        }
+        events
     }
 
     fn handle_tool_call_delta(&mut self, call: &Value) -> Vec<String> {
@@ -861,6 +1020,131 @@ mod tests {
         let response = br#"{"id":"chatcmpl-1","model":"m","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"bash","arguments":{"cmd":"ls"}}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#;
         let value = openai_json_to_anthropic_json(response).unwrap();
         assert_eq!(value["content"][0]["input"]["cmd"], "ls");
+    }
+
+    #[test]
+    fn maps_anthropic_tool_choice_object_to_openai() {
+        assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "auto"})), json!("auto"));
+        assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "none"})), json!("none"));
+        assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "any"})), json!("required"));
+        assert_eq!(
+            anthropic_tool_choice_to_openai(&json!({"type": "tool", "name": "bash"})),
+            json!({"type": "function", "function": {"name": "bash"}})
+        );
+        assert_eq!(anthropic_tool_choice_to_openai(&json!("auto")), json!("auto"));
+        assert_eq!(anthropic_tool_choice_to_openai(&json!("any")), json!("required"));
+    }
+
+    #[test]
+    fn skips_null_fields_when_converting_request() {
+        let body = Bytes::from_static(
+            br#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":100,"temperature":null,"top_p":null,"stop_sequences":null,"stream":false}"#,
+        );
+        let payload = anthropic_to_openai(body, "target").unwrap();
+        let value: Value = serde_json::from_slice(&payload).unwrap();
+        assert!(value.get("temperature").is_none(), "temperature 不应透传 null");
+        assert!(value.get("top_p").is_none(), "top_p 不应透传 null");
+        assert!(value.get("stop").is_none(), "stop 不应透传 null");
+    }
+
+    #[test]
+    fn converts_openai_error_to_anthropic_error_format() {
+        let error_body = br#"{"error":{"message":"invalid api key","type":"authentication_error"}}"#;
+        let converted = openai_error_to_anthropic_error(error_body);
+        let value: Value = serde_json::from_str(&converted).unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["error"]["type"], "api_error");
+        assert_eq!(value["error"]["message"], "invalid api key");
+    }
+
+    #[test]
+    fn converts_non_json_error_body_gracefully() {
+        let converted = openai_error_to_anthropic_error(b"plain text error");
+        let value: Value = serde_json::from_str(&converted).unwrap();
+        assert_eq!(value["error"]["message"], "plain text error");
+    }
+
+    #[test]
+    fn converts_anthropic_image_block_to_openai_image_url() {
+        let block = json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}
+        });
+        let converted = anthropic_image_block_to_openai(&block).unwrap();
+        assert_eq!(converted["type"], "image_url");
+        assert_eq!(converted["image_url"]["url"], "data:image/png;base64,aGVsbG8=");
+    }
+
+    #[test]
+    fn converts_image_block_in_user_message() {
+        let body = Bytes::from(
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAA"}}]}],"max_tokens":100,"stream":false}"#,
+        );
+        let payload = anthropic_to_openai(body, "target").unwrap();
+        let value: Value = serde_json::from_slice(&payload).unwrap();
+        let content = &value["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
+    }
+
+    #[test]
+    fn maps_non_streaming_reasoning_content_to_thinking_block() {
+        let response = br#"{"id":"chatcmpl-1","model":"m","choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"think step by step"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#;
+        let value = openai_json_to_anthropic_json(response).unwrap();
+        assert_eq!(value["content"][0]["type"], "thinking");
+        assert_eq!(value["content"][0]["thinking"], "think step by step");
+        assert_eq!(value["content"][1]["type"], "text");
+    }
+
+    #[tokio::test]
+    async fn converts_stream_delta_array_content() {
+        let chunks = vec![
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            )),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"Hi \"},{\"type\":\"text\",\"text\":\"there\"}]}}]}\n\n",
+            )),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+            Ok(Bytes::from("data: [DONE]\n\n")),
+        ];
+        let stream = futures_util::stream::iter(chunks);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        pin_mut!(out);
+        let mut merged = String::new();
+        while let Some(item) = out.next().await {
+            merged.push_str(&String::from_utf8_lossy(&item.unwrap()));
+        }
+        assert!(merged.contains(r#""text":"Hi there""#));
+    }
+
+    #[tokio::test]
+    async fn converts_stream_reasoning_content_to_thinking_delta() {
+        let chunks = vec![
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            )),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"deep thought\"}}]}\n\n",
+            )),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            )),
+            Ok(Bytes::from("data: [DONE]\n\n")),
+        ];
+        let stream = futures_util::stream::iter(chunks);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        pin_mut!(out);
+        let mut merged = String::new();
+        while let Some(item) = out.next().await {
+            merged.push_str(&String::from_utf8_lossy(&item.unwrap()));
+        }
+        assert!(merged.contains(r#""type":"thinking""#));
+        assert!(merged.contains(r#""thinking":"deep thought""#));
+        assert!(merged.contains("thinking_delta"));
     }
 
     #[tokio::test]

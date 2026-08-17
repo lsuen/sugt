@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Code2, Copy, MessageSquare, Pencil } from 'lucide-react';
+import { Code2, Copy, MessageSquare } from 'lucide-react';
 import { UpstreamSelector } from './UpstreamSelector';
 import { QuickChatModal } from './QuickChatModal';
 import { CodeExampleModal } from './CodeExampleModal';
+
+type AccessMode = 'auto' | 'openai' | 'anthropic';
 
 type ProviderOption = {
   id: string;
@@ -29,6 +31,7 @@ type Props = {
     active_provider?: string | null;
     active_provider_id?: string | null;
     allow_lan_access?: boolean;
+    anthropic_access_mode?: AccessMode;
   } | null;
   providers: ProviderOption[];
   busy: boolean;
@@ -68,22 +71,23 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
   const [codeOpen, setCodeOpen] = useState(false);
   const [codeSample, setCodeSample] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
-
-  // 网关 API Key 编辑状态
-  const [editingKey, setEditingKey] = useState(false);
-  const [keyInput, setKeyInput] = useState('sugt-local-key');
+  const [accessMode, setAccessMode] = useState<AccessMode>('auto');
 
   const openaiBase = status?.openai_base_url ?? `${status?.listen_url}/v1`;
   const anthropicBase = status?.anthropic_base_url ?? status?.listen_url;
   const activeProviderId = status?.active_provider_id ?? '';
 
-  // 网关 API Key：优先从 status 读取，否则 fallback
-  const resolveGatewayApiKey = (): string => {
-    const key = (status?.gateway_client_api_key || '').trim();
-    return key || 'sugt-local-key';
-  };
+  // 同步后端保存的接入协议模式
+  useEffect(() => {
+    if (status?.anthropic_access_mode) setAccessMode(status.anthropic_access_mode);
+  }, [status?.anthropic_access_mode]);
 
-  const gatewayKey = resolveGatewayApiKey();
+  const gatewayKey = (status?.gateway_client_api_key || '').trim() || 'sugt-local-key';
+
+  // Auto 模式按当前上游协议展示实际走向：auto-openai / auto-anthropic
+  const activeProvider =
+    providers.find((p) => p.id === activeProviderId) ?? providers.find((p) => p.enabled);
+  const autoLabel = activeProvider?.protocol === 'anthropic' ? 'auto-anthropic' : 'auto-openai';
 
   const copy = async (text: string, label: string) => {
     try {
@@ -94,26 +98,25 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
     }
   };
 
+  const switchAccessMode = async (mode: AccessMode) => {
+    if (mode === accessMode) return;
+    setAccessMode(mode);
+    await run(
+      () => invoke('update_gateway_settings', { input: { anthropicAccessMode: mode } }),
+      '接入协议已切换',
+    );
+  };
+
+  const modeHint: Record<AccessMode, string> = {
+    auto: 'Claude 客户端优先原生端点，失败自动降级转换',
+    openai: '所有请求统一按 OpenAI 协议转换',
+    anthropic: '所有请求统一走 Anthropic 原生协议',
+  };
+
   const openCodeExample = () => {
     const modelId = 'sutai';
     setCodeSample(pythonExample(openaiBase, modelId, gatewayKey));
     setCodeOpen(true);
-  };
-
-  const saveGatewayKey = async () => {
-    const trimmed = keyInput.trim();
-    if (!trimmed) {
-      pushToast('API Key 不能为空', 'error');
-      return;
-    }
-    try {
-      await invoke('update_gateway_settings', { input: { gatewayClientApiKey: trimmed } });
-      pushToast('网关 API Key 已更新', 'ok');
-      setEditingKey(false);
-      onRefresh();
-    } catch (e) {
-      pushToast(String(e), 'error');
-    }
   };
 
   return (
@@ -125,21 +128,54 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </span>
       </div>
 
-      {/* 上游配置区 */}
-      <UpstreamSelector
-        providers={providers}
-        activeProviderId={activeProviderId}
-        busy={busy}
-        onActiveProviderChange={onActiveProviderChange}
-        onRefresh={onRefresh}
-        run={run}
-        pushToast={pushToast}
-      />
-
-      {/* 连接信息 */}
-      <div className="access-fields">
+      {/* 上游 + 下游统一配置区 */}
+      <div className="access-config-block">
+        {/* 接入协议切换：auto（默认）/ openai / anthropic */}
         <div className="access-field">
-          <span className="access-label">Model ID（对外）</span>
+          <span className="access-label">接入协议</span>
+          <div className="access-mode-switch" role="group" aria-label="接入协议">
+            <button
+              type="button"
+              className={accessMode === 'auto' ? 'active' : ''}
+              onClick={() => void switchAccessMode('auto')}
+              title="自动：Claude 客户端优先原生端点，失败降级转换"
+            >
+              {accessMode === 'auto' ? autoLabel : 'auto'}
+            </button>
+            <button
+              type="button"
+              className={accessMode === 'openai' ? 'active' : ''}
+              onClick={() => void switchAccessMode('openai')}
+              title="强制走 OpenAI 协议（请求转换为 chat/completions）"
+            >
+              OpenAI
+            </button>
+            <button
+              type="button"
+              className={accessMode === 'anthropic' ? 'active' : ''}
+              onClick={() => void switchAccessMode('anthropic')}
+              title="强制走 Anthropic 原生协议（服务商不支持时返回明确错误）"
+            >
+              Anthropic
+            </button>
+          </div>
+          <p className="hint compact access-mode-hint">{modeHint[accessMode]}</p>
+        </div>
+
+        {/* 上游：当前上游 + 模型 ID */}
+        <UpstreamSelector
+          providers={providers}
+          activeProviderId={activeProviderId}
+          busy={busy}
+          onActiveProviderChange={onActiveProviderChange}
+          onRefresh={onRefresh}
+          run={run}
+          pushToast={pushToast}
+        />
+
+        {/* 下游：对外连接信息 */}
+        <div className="access-field">
+          <span className="access-label">对外 Model ID</span>
           <div className="access-value-row">
             <code className="access-code">sutai</code>
             <button type="button" className="tiny icon-only" onClick={() => void copy('sutai', 'Model ID')} aria-label="复制 Model ID">
@@ -149,7 +185,7 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </div>
 
         <div className="access-field">
-          <span className="access-label">OpenAI Base（Codex 等）</span>
+          <span className="access-label">OpenAI Base</span>
           <div className="access-value-row">
             <code className="access-code">{openaiBase}</code>
             <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void copy(openaiBase, 'OpenAI Base URL')} aria-label="复制 OpenAI Base">
@@ -170,26 +206,12 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
         <div className="access-field">
           <span className="access-label">网关 API Key</span>
-          {editingKey ? (
-            <div className="access-key-edit">
-              <input
-                className="app-input"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="输入新的 API Key"
-                autoFocus
-                onBlur={() => void saveGatewayKey()}
-                onKeyDown={(e) => { if (e.key === 'Enter') void saveGatewayKey(); if (e.key === 'Escape') { setEditingKey(false); setKeyInput(gatewayKey); } }}
-              />
-            </div>
-          ) : (
-            <div className="access-value-row">
-              <code className="access-code">{gatewayKey}</code>
-              <button type="button" className="tiny icon-only" onClick={() => { setKeyInput(gatewayKey); setEditingKey(true); }} aria-label="编辑 API Key">
-                <Pencil size={14} />
-              </button>
-            </div>
-          )}
+          <div className="access-value-row">
+            <code className="access-code">{gatewayKey}</code>
+            <button type="button" className="tiny icon-only" onClick={() => void copy(gatewayKey, '网关 API Key')} aria-label="复制网关 API Key">
+              <Copy size={14} />
+            </button>
+          </div>
         </div>
       </div>
 

@@ -20,6 +20,19 @@ pub enum ProviderStatus {
     Unavailable,
 }
 
+/// Anthropic 接入点的协议模式（用户可在控制台 Agent 接入点切换）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicAccessMode {
+    /// 自动匹配：识别到 Claude 系客户端优先走原生端点，否则走转换（默认）
+    #[default]
+    Auto,
+    /// 强制走 OpenAI 协议（始终转换）
+    OpenAi,
+    /// 强制走 Anthropic 原生协议（服务商不支持时返回明确错误）
+    Anthropic,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
@@ -132,6 +145,9 @@ pub struct AppConfig {
     /// 用户已删除实验·OpenCode Zen，不再自动植入
     #[serde(default)]
     pub experimental_zen_dismissed: bool,
+    /// Anthropic 接入点的协议模式（auto / openai / anthropic）
+    #[serde(default)]
+    pub anthropic_access_mode: AnthropicAccessMode,
 }
 
 fn default_gateway_client_api_key() -> String {
@@ -213,6 +229,7 @@ impl Default for AppConfig {
             auto_takeover_enabled: false,
             active_takeover_ids: Vec::new(),
             experimental_zen_dismissed: false,
+            anthropic_access_mode: AnthropicAccessMode::default(),
         }
     }
 }
@@ -247,6 +264,8 @@ pub struct RuntimeStatus {
     pub log_file: String,
     pub trial: TrialStatusView,
     pub traffic: TrafficStatsView,
+    /// Anthropic 接入点协议模式（auto / openai / anthropic）
+    pub anthropic_access_mode: AnthropicAccessMode,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -109,9 +109,9 @@ export function UpstreamSelector({
   };
 
   return (
-    <div className="access-upstream-section">
+    <>
       {/* 当前上游 */}
-      <div className="access-model-block">
+      <div className="access-field">
         <span className="access-label">当前上游</span>
         <select
           className="app-select upstream-select"
@@ -128,9 +128,9 @@ export function UpstreamSelector({
         </select>
       </div>
 
-      {/* 模型 ID */}
+      {/* 模型 ID（上游实际模型） */}
       {upstreamProviderId && activeProvider && (
-        <div className="access-model-select-block">
+        <div className="access-field">
           <span className="access-label">模型 ID</span>
           <div className="access-value-row">
             {modelsLoaded ? (
@@ -156,6 +156,6 @@ export function UpstreamSelector({
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

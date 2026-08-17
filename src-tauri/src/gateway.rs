@@ -1,6 +1,8 @@
 use crate::{
     anthropic_adapter, config, error_hint, gateway_stats::{GatewayStatsCollector, RequestRecord},
-    model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit},
+    model::{
+        AnthropicAccessMode, AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit,
+    },
     provider_catalog,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -50,6 +52,8 @@ struct GatewayInner {
     running: bool,
     /// 熔断器：provider_id -> 故障发生时间
     circuit_breaker: HashMap<String, Instant>,
+    /// 原生 Anthropic 端点不可用的 provider_id 缓存（避免每次请求都先白试一次）
+    native_unsupported: std::collections::HashSet<String>,
 }
 
 fn maybe_reload_config(inner: &mut GatewayInner) {
@@ -71,6 +75,8 @@ fn maybe_reload_config(inner: &mut GatewayInner) {
     if let Ok(cfg) = config::load_config_file(&path) {
         inner.config = cfg;
         inner.config_mtime = Some(mtime);
+        // 配置重载后，之前标记为「原生不支持」的 provider 可能已更换端点，清空缓存
+        inner.native_unsupported.clear();
     }
 }
 
@@ -89,6 +95,7 @@ impl GatewayState {
                 shutdown: None,
                 running: false,
                 circuit_breaker: HashMap::new(),
+                native_unsupported: std::collections::HashSet::new(),
             })),
             client,
             last_hit: Arc::new(RwLock::new(None)),
@@ -122,6 +129,24 @@ impl GatewayState {
     async fn reset_circuit(&self, provider_id: &str) {
         let mut inner = self.inner.write().await;
         inner.circuit_breaker.remove(provider_id);
+    }
+
+    /// 该 provider 的原生 Anthropic 端点是否已被标记为不可用
+    async fn is_native_unsupported(&self, provider_id: &str) -> bool {
+        let inner = self.inner.read().await;
+        inner.native_unsupported.contains(provider_id)
+    }
+
+    /// 标记 provider 的原生 Anthropic 端点不可用（后续请求直接走转换 fallback）
+    async fn mark_native_unsupported(&self, provider_id: &str) {
+        let mut inner = self.inner.write().await;
+        inner.native_unsupported.insert(provider_id.to_string());
+    }
+
+    /// 配置变更（新增/编辑/删除 provider）后清除原生端点缓存
+    pub async fn clear_native_unsupported_cache(&self) {
+        let mut inner = self.inner.write().await;
+        inner.native_unsupported.clear();
     }
 
     pub async fn list_provider_models(
@@ -268,6 +293,8 @@ impl GatewayState {
     pub async fn replace_config(&self, config: AppConfig) {
         let mut inner = self.inner.write().await;
         inner.config = config;
+        // 配置变更（新增/编辑/删除 provider）后清除原生端点缓存
+        inner.native_unsupported.clear();
         if let Some(path) = &inner.config_file {
             inner.config_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         }
@@ -489,17 +516,50 @@ async fn proxy_anthropic_messages(
     }
 }
 
+/// 解析 provider 的原生 Anthropic 端点（base url）。
+///
+/// - Anthropic 协议：直接用自身 base_url
+/// - OpenAI 协议：查服务商目录中的 `anthropic_base_url`（deepseek / zhipu / dashscope 等）
+/// - 目录未收录：返回 None（不瞎猜，避免误伤）
+fn anthropic_native_target(provider: &ProviderConfig) -> Option<String> {
+    match provider.protocol {
+        ProviderProtocol::Anthropic => Some(provider.base_url.clone()),
+        ProviderProtocol::OpenAi => {
+            crate::provider_catalog::vendor_by_id(&provider.provider)
+                .and_then(|vendor| vendor.anthropic_base_url)
+                .map(str::to_string)
+        }
+    }
+}
+
+/// 判断原生 Anthropic 端点请求失败是否为「服务商不支持原生端点」。
+///
+/// - 404 / 405：端点不存在或方法不允许 → 明确不支持，应降级转换
+/// - 其它 4xx（如 401 鉴权失败）：真实错误，应如实返回，避免把鉴权错误误判为不支持
+fn is_native_endpoint_unsupported(response: &Response<Body>) -> bool {
+    matches!(
+        response.status(),
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
+}
+
 async fn proxy_anthropic_request(
     state: GatewayState,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
-    let providers = ordered_providers(&state.config().await);
+    let config = state.config().await;
+    // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
+    let access_mode = config.anthropic_access_mode;
+    let providers = ordered_providers(&config);
 
     if providers.is_empty() {
         bail!("没有可用模型配置");
     }
+
+    // 识别调用来源：Claude 系 TUI/GUI 优先走原生 Anthropic 端点（转换作为 fallback）
+    let anthropic_client = crate::anthropic_client_detect::detect_anthropic_client(&headers);
 
     let mut last_error = None;
     let started = std::time::Instant::now();
@@ -511,20 +571,70 @@ async fn proxy_anthropic_request(
             continue;
         }
 
-        let result = if provider.protocol == ProviderProtocol::Anthropic {
-            match proxy_anthropic_native(&state, &headers, body_bytes.clone(), &provider).await {
-                Ok(response) if response.status() == StatusCode::NOT_FOUND => {
-                    warn!(
-                        provider = %provider.name,
-                        "anthropic native /v1/messages 404, fallback to openai adapter"
-                    );
-                    proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), &provider)
+        let native_target = anthropic_native_target(provider);
+
+        // 依据接入点协议模式决定请求路径
+        let result = match access_mode {
+            // 强制 OpenAI 协议：始终走转换，不尝试原生端点
+            AnthropicAccessMode::OpenAi => {
+                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider).await
+            }
+            // 强制 Anthropic 原生协议：不走转换；无原生端点时给出明确错误并尝试下一个
+            AnthropicAccessMode::Anthropic => match native_target {
+                Some(target) => {
+                    proxy_anthropic_native(&state, &headers, body_bytes.clone(), provider, Some(target))
                         .await
                 }
-                other => other,
+                None => {
+                    let err = anyhow!(
+                        "{} 未提供 Anthropic 原生端点，无法以 Anthropic 模式访问，请改用 Auto 或 OpenAI 模式",
+                        provider.name
+                    );
+                    warn!(provider = %provider.name, error = %err, "force-native mode skipped provider");
+                    last_error = Some(err);
+                    continue;
+                }
+            },
+            // 自动模式：识别到 Claude 客户端且服务商有原生端点则优先原生，失败降级转换
+            AnthropicAccessMode::Auto => {
+                let prefers_native = provider.protocol == ProviderProtocol::Anthropic
+                    || (anthropic_client.is_some()
+                        && native_target.is_some()
+                        && !state.is_native_unsupported(&provider.id).await);
+
+                if prefers_native {
+                    match proxy_anthropic_native(
+                        &state,
+                        &headers,
+                        body_bytes.clone(),
+                        provider,
+                        native_target,
+                    )
+                    .await
+                    {
+                        Ok(response) if is_native_endpoint_unsupported(&response) => {
+                            warn!(
+                                provider = %provider.name,
+                                client = ?anthropic_client.map(|kind| kind.label()),
+                                "anthropic native /v1/messages 不支持, fallback to openai adapter"
+                            );
+                            // 记录缓存：后续该 provider 直接走转换，不再白试原生
+                            state.mark_native_unsupported(&provider.id).await;
+                            proxy_anthropic_via_openai(
+                                &state,
+                                &headers,
+                                body_bytes.clone(),
+                                provider,
+                            )
+                            .await
+                        }
+                        other => other,
+                    }
+                } else {
+                    proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider)
+                        .await
+                }
             }
-        } else {
-            proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), &provider).await
         };
 
         match result {
@@ -563,8 +673,14 @@ async fn proxy_anthropic_native(
     headers: &HeaderMap,
     body: Bytes,
     provider: &ProviderConfig,
+    native_target: Option<String>,
 ) -> Result<Response<Body>> {
-    let target = build_target_url(&provider.base_url, "v1/messages", "");
+    // 原生端点优先用解析结果（可能来自服务商目录的 anthropic_base_url），兜底用 provider.base_url
+    let target = build_target_url(
+        native_target.as_deref().unwrap_or(&provider.base_url),
+        "v1/messages",
+        "",
+    );
     let payload = rewrite_model(body, &provider.model_name);
     let mut builder = state.client.post(&target);
     builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::Anthropic)?;

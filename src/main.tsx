@@ -28,6 +28,7 @@ type RuntimeStatus = {
   gateway_client_api_key_masked?: string;
   public_model_id?: string | null;
   allow_lan_access?: boolean;
+  anthropic_access_mode?: 'auto' | 'openai' | 'anthropic';
   active_model?: string | null;
   active_provider?: string | null;
   active_provider_id?: string | null;

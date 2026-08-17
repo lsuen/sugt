@@ -1725,3 +1725,49 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .access-actions .button.ghost { flex: 1; }.access-key-edit { width: 100%; }
 .access-key-edit .app-input { width: 100%; }
+
+/* 上游 + 下游统一配置区 */
+.access-config-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.04);
+  border-radius: 10px;
+  min-width: 0;
+}
+.access-config-block .access-field { margin: 0; min-width: 0; }
+.access-mode-hint { margin: 0; line-height: 1.5; }
+
+/* 接入协议三态切换 */
+.access-mode-switch {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+.access-mode-switch button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(142,232,255,.15);
+  background: rgba(255,255,255,.04);
+  color: #9fb3c7;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.access-mode-switch button.active {
+  background: rgba(56,189,248,.16);
+  border-color: rgba(56,189,248,.45);
+  color: #7dd3fc;
+}
+.access-mode-switch button:hover:not(.active) {
+  background: rgba(255,255,255,.08);
+  color: #c6d6e6;
+}

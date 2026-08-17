@@ -6,8 +6,8 @@ use crate::{
     gateway::{self, GatewayState},
     gateway_daemon,
     model::{
-        AppConfig, ProviderConfig, ProviderInput, ProviderProtocol, ProviderStatus, ProviderView,
-        QuitBehavior, RuntimeStatus,
+        AnthropicAccessMode, AppConfig, ProviderConfig, ProviderInput, ProviderProtocol,
+        ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
     },
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
@@ -175,6 +175,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         log_file: runtime.paths.log_file.display().to_string(),
         trial: trial::status(&runtime.paths),
         traffic,
+        anthropic_access_mode: config.anthropic_access_mode,
     })
 }
 
@@ -485,6 +486,8 @@ pub struct GatewaySettingsInput {
     pub allow_lan_access: Option<bool>,
     pub port: Option<u16>,
     pub gateway_client_api_key: Option<String>,
+    #[serde(rename = "anthropicAccessMode")]
+    pub anthropic_access_mode: Option<AnthropicAccessMode>,
 }
 
 #[tauri::command]
@@ -514,6 +517,9 @@ pub async fn update_gateway_settings(
             return Err("网关 API Key 不能为空".to_string());
         }
         config.gateway_client_api_key = trimmed.to_string();
+    }
+    if let Some(mode) = input.anthropic_access_mode {
+        config.anthropic_access_mode = mode;
     }
     let snapshot = config.clone();
     drop(config);
