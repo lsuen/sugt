@@ -69,8 +69,12 @@ pub fn load_or_init_config() -> Result<(AppPaths, AppConfig)> {
 pub fn save_config(paths: &AppPaths, config: &AppConfig) -> Result<()> {
     fs::create_dir_all(&paths.config_dir)?;
     let serialized = toml::to_string_pretty(config).context("配置序列化失败")?;
-    fs::write(&paths.config_file, serialized)
-        .with_context(|| format!("无法写入配置文件 {}", paths.config_file.display()))
+    // 原子写入：先写临时文件，再 rename，避免网关热加载读到半截文件
+    let tmp = paths.config_file.with_extension("tmp");
+    fs::write(&tmp, &serialized)
+        .with_context(|| format!("无法写入临时文件 {}", tmp.display()))?;
+    fs::rename(&tmp, &paths.config_file)
+        .with_context(|| format!("无法重命名配置文件 {}", paths.config_file.display()))
 }
 
 pub fn normalize_config(config: &mut AppConfig) {

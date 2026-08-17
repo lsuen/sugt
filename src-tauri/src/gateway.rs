@@ -16,7 +16,12 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{
     sync::{oneshot, RwLock},
 };
@@ -34,12 +39,17 @@ pub struct GatewayState {
     stats: GatewayStatsCollector,
 }
 
+/// 熔断器冷却时间
+const CIRCUIT_BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
+
 struct GatewayInner {
     config: AppConfig,
     config_file: Option<PathBuf>,
     config_mtime: Option<std::time::SystemTime>,
     shutdown: Option<oneshot::Sender<()>>,
     running: bool,
+    /// 熔断器：provider_id -> 故障发生时间
+    circuit_breaker: HashMap<String, Instant>,
 }
 
 fn maybe_reload_config(inner: &mut GatewayInner) {
@@ -78,6 +88,7 @@ impl GatewayState {
                 config_mtime,
                 shutdown: None,
                 running: false,
+                circuit_breaker: HashMap::new(),
             })),
             client,
             last_hit: Arc::new(RwLock::new(None)),
@@ -87,6 +98,30 @@ impl GatewayState {
 
     pub fn http_client(&self) -> &Client {
         &self.client
+    }
+
+    /// 检查 provider 是否处于熔断冷却期
+    async fn is_circuit_open(&self, provider_id: &str) -> bool {
+        let inner = self.inner.read().await;
+        inner
+            .circuit_breaker
+            .get(provider_id)
+            .map(|tripped_at| tripped_at.elapsed() < CIRCUIT_BREAKER_COOLDOWN)
+            .unwrap_or(false)
+    }
+
+    /// 将 provider 纳入熔断器
+    async fn trip_circuit(&self, provider_id: &str) {
+        let mut inner = self.inner.write().await;
+        inner
+            .circuit_breaker
+            .insert(provider_id.to_string(), Instant::now());
+    }
+
+    /// 请求成功时清除熔断状态
+    async fn reset_circuit(&self, provider_id: &str) {
+        let mut inner = self.inner.write().await;
+        inner.circuit_breaker.remove(provider_id);
     }
 
     pub async fn list_provider_models(
@@ -469,6 +504,13 @@ async fn proxy_anthropic_request(
     let mut last_error = None;
     let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
+        // 熔断器：跳过冷却期内的故障 provider
+        if state.is_circuit_open(&provider.id).await {
+            warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
+            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
+            continue;
+        }
+
         let result = if provider.protocol == ProviderProtocol::Anthropic {
             match proxy_anthropic_native(&state, &headers, body_bytes.clone(), &provider).await {
                 Ok(response) if response.status() == StatusCode::NOT_FOUND => {
@@ -487,6 +529,7 @@ async fn proxy_anthropic_request(
 
         match result {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                state.reset_circuit(&provider.id).await;
                 state
                     .record_proxy_hit(
                         provider,
@@ -501,10 +544,12 @@ async fn proxy_anthropic_request(
             Ok(response) => {
                 let status = response.status();
                 warn!(provider = %provider.name, %status, "provider returned retryable anthropic error");
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 返回 {}", provider.name, status));
             }
             Err(err) => {
                 warn!(provider = %provider.name, error = %err, "provider anthropic request error");
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
             }
         }
@@ -592,6 +637,16 @@ async fn proxy_request(
     let mut last_error = None;
     let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
+        // 熔断器：跳过冷却期内的故障 provider
+        if state.is_circuit_open(&provider.id).await {
+            warn!(
+                provider = %provider.name,
+                "provider 处于熔断冷却期，跳过"
+            );
+            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
+            continue;
+        }
+
         let target = build_target_url(&provider.base_url, &path, &query);
         let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
         let mut builder = state.client.request(method.clone(), &target);
@@ -606,6 +661,8 @@ async fn proxy_request(
         );
         match builder.body(payload).send().await {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                // 成功时清除熔断状态
+                state.reset_circuit(&provider.id).await;
                 state
                     .record_proxy_hit(
                         provider,
@@ -621,10 +678,12 @@ async fn proxy_request(
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 warn!(provider = %provider.name, %status, body = %text, "provider returned retryable error");
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 返回 {}", provider.name, status));
             }
             Err(err) => {
                 warn!(provider = %provider.name, error = %err, "provider request error");
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
             }
         }
@@ -653,6 +712,13 @@ async fn proxy_responses_via_chat(
     let mut last_error = None;
     let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
+        // 熔断器：跳过冷却期内的故障 provider
+        if state.is_circuit_open(&provider.id).await {
+            warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
+            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
+            continue;
+        }
+
         let try_native = crate::openai_responses_adapter::should_try_native_responses(
             &provider.base_url,
             &provider.model_name,
@@ -698,6 +764,7 @@ async fn proxy_responses_via_chat(
                 Ok(response)
                     if response.status().is_success() || response.status().as_u16() < 500 =>
                 {
+                    state.reset_circuit(&provider.id).await;
                     state
                         .record_proxy_hit(
                             provider,
@@ -751,6 +818,7 @@ async fn proxy_responses_via_chat(
         if stream {
             let response = builder.body(chat_body).send().await?;
             if response.status().is_success() || response.status().as_u16() < 500 {
+                state.reset_circuit(&provider.id).await;
                 state
                     .record_proxy_hit(
                         provider,
@@ -772,12 +840,14 @@ async fn proxy_responses_via_chat(
                     .header(http::header::CACHE_CONTROL, "no-cache")
                     .body(Body::from_stream(mapped))?);
             }
+            state.trip_circuit(&provider.id).await;
             last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
             continue;
         }
 
         match builder.body(chat_body).send().await {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                state.reset_circuit(&provider.id).await;
                 let status = response.status();
                 let body_text = response.text().await.unwrap_or_default();
                 if status.is_success()
@@ -815,9 +885,11 @@ async fn proxy_responses_via_chat(
                     .body(Body::from(bytes))?);
             }
             Ok(response) => {
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
             }
             Err(err) => {
+                state.trip_circuit(&provider.id).await;
                 last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
             }
         }
