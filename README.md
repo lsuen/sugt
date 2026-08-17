@@ -1,6 +1,5 @@
-# SUGT
-
-本地 AI 网关。把模型 Key、Agent 接管、Skills 挂载收拢到一个本机小工具里。
+# SUTAI
+朴素的 AI 时代中控台。把模型 Key、Agent 接管、Skills 挂载收拢到一个本机小工具里。
 
 用 Claude Code / Codex / OpenCode 的时候，不用在每个客户端里反复改 Base URL；上游可以换成国内服务商或自建模型，客户端仍走本地网关。完整版里我觉得更有用的，其实是 Skills 中控台：能下、能管、挂上卸下都不容易丢。
 
@@ -19,7 +18,7 @@ English: [README.en.md](README.en.md)
 - Agent 一堆：Claude Code、Codex、OpenCode、自己写的脚本，每个都要单独配
 - Skills 散养：没有统一发现和挂载，换机器又重来一遍
 
-SUGT 干的事很直接：本机起一个兼容网关，一键把 Agent 指过来；完整发行版还能管 Skills。
+SUTAI 干的事很直接：本机起一个兼容网关，一键把 Agent 指过来；完整发行版还能管 Skills。
 
 ## 说在前面（发版和开源节奏）
 
@@ -70,7 +69,7 @@ Windows x64 全功能试用（约 90 天，绑本机）：
 - 模型管理：预设、启用禁用、默认、测试
 - 一键接管：Claude Code、Codex、OpenCode 等
 - 技能中控台（发行版）：刷新仓库、入库、挂到各 Agent
-- GUI + `sugt-cli`
+- GUI + `sutai-cli`
 
 说明文档：[开源边界](docs/open-source.md) · [国内服务商](docs/provider-vendors.md) · [从源码构建](docs/build.md)
 
@@ -87,8 +86,8 @@ npm run dev:app
 更完整的构建步骤见 [docs/build.md](docs/build.md)。公开仓是功能版核心；不含作者侧打包脚本和试用注入。完整树里用自用/开发构建，可以打出无试用期的包。
 
 ```cmd
-sugt-cli status
-sugt-cli serve --host 127.0.0.1 --port 8787
+sutai-cli status
+sutai-cli serve --host 127.0.0.1 --port 8787
 ```
 
 ## License

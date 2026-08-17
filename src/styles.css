@@ -902,12 +902,6 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 
 .gateway-access-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.access-model-block {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.06);
-}
 .access-model-name {
   display: block;
   font-size: 15px;
@@ -933,12 +927,6 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 4px;
-}
-.access-value-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
 }
 .access-code {
   flex: 1;
@@ -1638,6 +1626,18 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 
 /* 中控台上游展示 & 模型列表 */
+.access-upstream-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.access-upstream-section > .access-model-block,
+.access-upstream-section > .access-model-select-block {
+  /* 避免子区块 margin 塌陷，同时保证整体稳定 */
+  margin: 0;
+  min-width: 0;
+}
 .access-model-block {
   display: flex;
   flex-direction: column;
@@ -1646,6 +1646,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   background: rgba(255,255,255,.03);
   border-radius: 10px;
   border: 1px solid rgba(142,232,255,.1);
+  min-width: 0;
 }
 .access-model-block .access-label { margin: 0; }
 .access-model-name {
@@ -1659,7 +1660,49 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   color: #7a8f9f;
 }
 .upstream-actions { display: flex; gap: 6px; }
-.access-model-select { flex: 1; min-width: 0; }
+.access-model-select { 
+  flex: 1 1 auto; 
+  min-width: 0; 
+  max-width: 100%;
+  /* 与 access-code 保持一致的高度和内边距，避免切换时行高变化 */
+  padding: 6px 28px 6px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* 模型 ID 选择区块：与当前上游区块保持一致的样式 */
+.access-model-select-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,.03);
+  border-radius: 10px;
+  border: 1px solid rgba(142,232,255,.1);
+  min-width: 0;
+}
+.access-model-select-block .access-label { margin: 0; }
+
+/* 确保 access-value-row 中按钮永不被挤压，且控件之间有固定顺序 */
+.access-value-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: nowrap;
+  width: 100%;
+}
+.access-value-row > .access-code,
+.access-value-row > .access-model-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.access-value-row > .tiny.icon-only {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  flex-grow: 0;
+}
 .model-tag {
   display: inline-block;
   padding: 3px 8px;

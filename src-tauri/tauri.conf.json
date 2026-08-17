@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SUGT",
+  "productName": "SUTAI",
   "version": "1.0.0",
   "identifier": "com.qmtech.sugt",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SUGT · 本地 AI 网关",
+        "title": "SUTAI · 朴素的 AI 时代中控台",
         "width": 1040,
         "height": 680,
         "minWidth": 960,
@@ -35,8 +35,8 @@
     "targets": "all",
     "copyright": "Copyright © 2026 孙文龙. All rights reserved.",
     "category": "DeveloperTool",
-    "shortDescription": "SUGT 本地 AI 网关",
-    "longDescription": "轻量本地网关：对接 Claude Code、Codex 与国内大模型，支持技能发现与 Agent 接管。",
+    "shortDescription": "SUTAI 朴素的 AI 时代中控台",
+    "longDescription": "朴素的 AI 时代中控台：一台本机工具，统一管理大模型接入、Agent 接管与技能发现。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

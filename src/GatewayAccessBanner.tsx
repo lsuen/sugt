@@ -242,52 +242,55 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
         </span>
       </div>
 
-      {/* 当前上游：从模型配置 tab 读取 enabled providers */}
-      <div className="access-model-block">
-        <span className="access-label">当前上游</span>
-        <select
-          className="app-select upstream-select"
-          value={upstreamProviderId}
-          disabled={busy || enabledProviders.length === 0}
-          onChange={(e) => void switchUpstream(e.target.value)}
-        >
-          {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
-          {enabledProviders.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} · {p.model_name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* 模型 ID：获取模型列表后切换为下拉，选中后实时同步到模型配置 */}
-      {upstreamProviderId && activeProvider && (
-        <div className="access-model-select-block">
-          <span className="access-label">模型 ID</span>
-          <div className="access-value-row">
-            {modelsLoaded ? (
-              <select
-                className="app-select"
-                value={activeProvider.model_name}
-                disabled={modelsBusy}
-                onChange={(e) => void selectModel(e.target.value)}
-              >
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            ) : (
-              <code className="access-code">{activeProvider.model_name}</code>
-            )}
-            <button type="button" className="tiny icon-only" disabled={modelsBusy} onClick={() => void fetchModels()} aria-label="获取模型列表">
-              <RefreshCw size={14} />
-            </button>
-            <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void testCurrent()} aria-label="测试">
-              <Play size={14} />
-            </button>
-          </div>
+      {/* 上游配置区：当前上游 + 模型 ID，统一容器避免布局跳动 */}
+      <div className="access-upstream-section">
+        {/* 当前上游：从模型配置 tab 读取 enabled providers */}
+        <div className="access-model-block">
+          <span className="access-label">当前上游</span>
+          <select
+            className="app-select upstream-select"
+            value={upstreamProviderId}
+            disabled={busy || enabledProviders.length === 0}
+            onChange={(e) => void switchUpstream(e.target.value)}
+          >
+            {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
+            {enabledProviders.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.model_name}
+              </option>
+            ))}
+          </select>
         </div>
-      )}
+
+        {/* 模型 ID：获取模型列表后切换为下拉，选中后实时同步到模型配置 */}
+        {upstreamProviderId && activeProvider && (
+          <div className="access-model-select-block">
+            <span className="access-label">模型 ID</span>
+            <div className="access-value-row">
+              {modelsLoaded ? (
+                <select
+                  className="app-select access-model-select"
+                  value={activeProvider.model_name}
+                  disabled={modelsBusy}
+                  onChange={(e) => void selectModel(e.target.value)}
+                >
+                  {models.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              ) : (
+                <code className="access-code">{activeProvider.model_name}</code>
+              )}
+              <button type="button" className="tiny icon-only" disabled={modelsBusy} onClick={() => void fetchModels()} aria-label="获取模型列表">
+                <RefreshCw size={14} />
+              </button>
+              <button type="button" className="tiny icon-only" disabled={busy} onClick={() => void testCurrent()} aria-label="测试">
+                <Play size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* 连接信息 */}
       <div className="access-fields">

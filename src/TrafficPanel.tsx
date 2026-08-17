@@ -74,6 +74,11 @@ function ClientsDetailModal({
   );
 }
 
+function formatToken(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}w`;
+  return n.toLocaleString();
+}
+
 type Props = {
   traffic?: TrafficStats;
   running?: boolean;
@@ -141,11 +146,11 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
             </div>
             <div className="traffic-metric">
               <span>Token 入</span>
-              <strong>{traffic.today_input_tokens.toLocaleString()}</strong>
+              <strong>{formatToken(traffic.today_input_tokens)}</strong>
             </div>
             <div className="traffic-metric">
               <span>Token 出</span>
-              <strong>{traffic.today_output_tokens.toLocaleString()}</strong>
+              <strong>{formatToken(traffic.today_output_tokens)}</strong>
             </div>
           </div>
           {(lastProvider || lastPath) && (
