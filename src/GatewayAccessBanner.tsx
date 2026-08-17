@@ -361,49 +361,56 @@ export function GatewayAccessBanner({ status, providers, busy, onRefresh, onActi
 
       {/* 代码范例弹窗 */}
       {codeOpen && (
-        <div className="modal-backdrop" onClick={() => setCodeOpen(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <strong>代码范例</strong>
+        <div className="modal-overlay" onClick={() => setCodeOpen(false)}>
+          <div className="modal modal-compact" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>代码范例</h3>
               <button type="button" className="tiny icon-only" onClick={() => setCodeOpen(false)}>
                 <X size={14} />
               </button>
             </div>
-            <pre className="code-block">{codeSample}</pre>
+            <div className="modal-body">
+              <pre className="code-sample">{codeSample}</pre>
+            </div>
           </div>
         </div>
       )}
 
       {/* 直接体验弹窗 */}
       {chatOpen && (
-        <div className="modal-backdrop" onClick={() => setChatOpen(false)}>
-          <div className="modal-card chat-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <strong>直接体验</strong>
+        <div className="modal-overlay" onClick={() => setChatOpen(false)}>
+          <div className="modal modal-compact quick-chat-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>直接体验</h3>
               <button type="button" className="tiny icon-only" onClick={() => setChatOpen(false)}>
                 <X size={14} />
               </button>
             </div>
-            <div className="chat-messages">
-              {messages.map((msg, i) => (
-                <div key={i} className={`chat-msg ${msg.role}`}>
-                  <div className="chat-msg-bubble">{msg.content}</div>
+            <div className="modal-body">
+              <div className="quick-chat-body">
+                <div className="quick-chat-messages">
+                  {messages.map((msg, i) => (
+                    <div key={i} className={`quick-chat-bubble ${msg.role}`}>
+                      <div className="quick-chat-role">{msg.role}</div>
+                      <div className="quick-chat-text">{msg.content}</div>
+                    </div>
+                  ))}
+                  <div ref={chatEndRef} />
                 </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="chat-input-row">
-              <input
-                className="app-input"
-                value={chatInput}
-                placeholder="发送消息测试…"
-                disabled={chatBusy}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat(); } }}
-              />
-              <button type="button" className="button primary" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendChat()}>
-                发送
-              </button>
+                <div className="quick-chat-input-row">
+                  <input
+                    className="app-input"
+                    value={chatInput}
+                    placeholder="发送消息测试…"
+                    disabled={chatBusy}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat(); } }}
+                  />
+                  <button type="button" className="button primary" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendChat()}>
+                    发送
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
