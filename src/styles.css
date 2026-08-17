@@ -1750,8 +1750,10 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   margin: 0;
   font-size: 11px;
   font-weight: 700;
-  color: #5f7a8f;
-  letter-spacing: 0.08em;
+  color: #8ee8ff;
+  letter-spacing: 0.06em;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(142, 232, 255, 0.18);
 }
 
 /* 上游选择行：select + 协议徽标 + 循环切换按钮，无 label（组标题兜住语义） */
@@ -1778,11 +1780,12 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   padding: 3px 8px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   white-space: nowrap;
-  background: rgba(56,189,248,.12);
-  border: 1px solid rgba(56,189,248,.35);
-  color: #7dd3fc;
+  background: rgba(142, 232, 255, 0.14);
+  border: 1px solid rgba(142, 232, 255, 0.4);
+  color: #d3f3ff;
 }
 .access-mode-toggle {
   flex: 0 0 auto;
