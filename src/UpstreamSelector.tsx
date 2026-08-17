@@ -22,10 +22,6 @@ type Props = {
   onRefresh: () => void
   run: (action: () => Promise<unknown>, ok?: string) => Promise<void>
   pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void
-  /** 当前上游行尾的接入协议状态徽标文本（如 auto / auto-openai） */
-  modeBadge: string
-  /** 徽标悬停说明 */
-  modeBadgeTitle: string
   /** 行尾右对齐的协议循环切换按钮回调（auto → openai → anthropic） */
   onCycleMode: () => void
 }
@@ -38,8 +34,6 @@ export function UpstreamSelector({
   onRefresh,
   run,
   pushToast,
-  modeBadge,
-  modeBadgeTitle,
   onCycleMode,
 }: Props) {
   const [upstreamProviderId, setUpstreamProviderId] = useState('')
@@ -126,28 +120,23 @@ export function UpstreamSelector({
 
   return (
     <>
-      {/* 上游选择：select + 协议徽标 + 循环切换按钮（无 label，组标题 LLM 上游 已兜住语义） */}
+      {/* 上游选择：select + 循环切换按钮（无 label，组标题 LLM 上游 + 协议徽标已兜住语义） */}
       <div className="access-mode-row">
-        <div className="access-mode-main">
-          <select
-            className="app-select upstream-select"
-            value={upstreamProviderId}
-            disabled={busy || enabledProviders.length === 0}
-            onChange={(e) => void switchUpstream(e.target.value)}
-          >
-            {enabledProviders.length === 0 && (
-              <option value="">暂无已启用模型</option>
-            )}
-            {enabledProviders.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <span className="access-mode-badge" title={modeBadgeTitle}>
-            {modeBadge}
-          </span>
-        </div>
+        <select
+          className="app-select upstream-select"
+          value={upstreamProviderId}
+          disabled={busy || enabledProviders.length === 0}
+          onChange={(e) => void switchUpstream(e.target.value)}
+        >
+          {enabledProviders.length === 0 && (
+            <option value="">暂无已启用模型</option>
+          )}
+          {enabledProviders.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           className="tiny icon-only access-mode-toggle"

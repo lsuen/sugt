@@ -236,14 +236,15 @@ impl GatewayState {
         latency_ms: u64,
         headers: &HeaderMap,
     ) {
+        let client = crate::gateway_stats::client_label_from_headers(headers);
         let hit = ProxyHit {
             provider_id: provider.id.clone(),
             provider_name: provider.name.clone(),
             path: path.to_string(),
+            client: client.clone(),
             failover: provider_index > 0,
             at: chrono::Utc::now(),
         };
-        let client = crate::gateway_stats::client_label_from_headers(headers);
         info!(
             client = %client,
             provider = %provider.name,

@@ -1754,9 +1754,29 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   letter-spacing: 0.06em;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(142, 232, 255, 0.18);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* 标题行同行小字副标：LLM 上游的协议徽标 / Agent 接入的最近调用来源 */
+.access-group-sub {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #d3f3ff;
+  background: rgba(142, 232, 255, 0.12);
+  border: 1px solid rgba(142, 232, 255, 0.28);
 }
 
-/* 上游选择行：select + 协议徽标 + 循环切换按钮，无 label（组标题兜住语义） */
+/* 上游选择行：select + 循环切换按钮，无 label（组标题 LLM 上游 + 协议徽标已兜住语义） */
 .access-mode-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1764,28 +1784,9 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   gap: 8px;
   min-width: 0;
 }
-.access-mode-main {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.access-mode-main .upstream-select {
-  flex: 1 1 auto;
+.access-mode-row .upstream-select {
   min-width: 0;
   margin-top: 0;
-}
-.access-mode-badge {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  background: rgba(142, 232, 255, 0.14);
-  border: 1px solid rgba(142, 232, 255, 0.4);
-  color: #d3f3ff;
 }
 .access-mode-toggle {
   flex: 0 0 auto;

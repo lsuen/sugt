@@ -40,6 +40,7 @@ type Props = {
     active_provider_id?: string | null
     allow_lan_access?: boolean
     anthropic_access_mode?: AccessMode
+    last_proxy_client?: string | null
   } | null
   providers: ProviderOption[]
   busy: boolean
@@ -113,6 +114,9 @@ export function GatewayAccessBanner({
       ? '接入协议：auto（自动，推荐）'
       : `接入协议：${MODE_LABEL[accessMode]}（强制）`
 
+  // 最近一次代理命中的客户端标签（如 claude-cli），后端无命中时为 null
+  const lastClient = status?.last_proxy_client ?? ''
+
   const copy = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -153,9 +157,14 @@ export function GatewayAccessBanner({
       </div>
 
       <div className="access-config-block">
-        {/* LLM 上游：服务商 / 模型 / 接入协议 */}
+        {/* LLM 上游：服务商 / 模型 / 接入协议（徽标为同行小字副标） */}
         <div className="access-group">
-          <div className="access-group-title">LLM 上游</div>
+          <div className="access-group-title">
+            <span>LLM 上游</span>
+            <span className="access-group-sub" title={modeBadgeTitle}>
+              {modeBadge}
+            </span>
+          </div>
           <UpstreamSelector
             providers={providers}
             activeProviderId={activeProviderId}
@@ -164,15 +173,20 @@ export function GatewayAccessBanner({
             onRefresh={onRefresh}
             run={run}
             pushToast={pushToast}
-            modeBadge={modeBadge}
-            modeBadgeTitle={modeBadgeTitle}
             onCycleMode={() => void cycleMode()}
           />
         </div>
 
-        {/* Agent 接入：客户端连接信息 */}
+        {/* Agent 接入：客户端连接信息（副标为最近调用来源，只显示最近一次） */}
         <div className="access-group">
-          <div className="access-group-title">Agent 接入</div>
+          <div className="access-group-title">
+            <span>Agent 接入</span>
+            {lastClient && (
+              <span className="access-group-sub" title="最近调用来源">
+                {lastClient}
+              </span>
+            )}
+          </div>
           <div className="access-field">
             <span className="access-label"> Model ID</span>
             <div className="access-value-row">

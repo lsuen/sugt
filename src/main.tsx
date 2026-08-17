@@ -34,6 +34,7 @@ type RuntimeStatus = {
   active_provider_id?: string | null;
   last_proxy_provider?: string | null;
   last_proxy_path?: string | null;
+  last_proxy_client?: string | null;
   last_proxy_failover?: boolean;
   last_proxy_at?: string | null;
   config_dir: string;

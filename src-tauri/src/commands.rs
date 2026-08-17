@@ -134,24 +134,31 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         runtime.gateway.traffic_stats().await
     };
     // 独立/detached 网关进程的命中在远程；本地 GatewayState 可能为空，用统计里的最近来源兜底
-    let (last_proxy_provider, last_proxy_path, last_proxy_failover, last_proxy_at) =
-        if let Some(hit) = local_hit {
-            (
-                Some(hit.provider_name),
-                Some(hit.path),
-                hit.failover,
-                Some(hit.at),
-            )
-        } else if let Some(client) = traffic.recent_clients.first() {
-            (
-                Some(client.provider_name.clone()),
-                Some(client.last_path.clone()),
-                false,
-                Some(client.last_at),
-            )
-        } else {
-            (None, None, false, None)
-        };
+    let (
+        last_proxy_provider,
+        last_proxy_path,
+        last_proxy_client,
+        last_proxy_failover,
+        last_proxy_at,
+    ) = if let Some(hit) = local_hit {
+        (
+            Some(hit.provider_name),
+            Some(hit.path),
+            Some(hit.client),
+            hit.failover,
+            Some(hit.at),
+        )
+    } else if let Some(client) = traffic.recent_clients.first() {
+        (
+            Some(client.provider_name.clone()),
+            Some(client.last_path.clone()),
+            Some(client.label.clone()),
+            false,
+            Some(client.last_at),
+        )
+    } else {
+        (None, None, None, false, None)
+    };
     let public_model_id = provider.as_ref().map(|p| p.public_model_id());
     Ok(RuntimeStatus {
         running: gateway_reachable,
@@ -169,6 +176,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         active_provider_id: provider.as_ref().map(|provider| provider.id.clone()),
         last_proxy_provider,
         last_proxy_path,
+        last_proxy_client,
         last_proxy_failover,
         last_proxy_at,
         config_dir: runtime.paths.config_dir.display().to_string(),
