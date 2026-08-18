@@ -59,3 +59,26 @@
   opacity: 0.5;
   cursor: default;
 }
+.overlay-grip {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #94a9bd;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: grab;
+}
+.overlay-grip::before {
+  content: '⠿';
+  font-size: 11px;
+  line-height: 1;
+}
+.overlay-grip:hover {
+  color: #edf7ff;
+}
+.overlay-grip:active {
+  cursor: grabbing;
+}

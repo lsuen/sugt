@@ -75,13 +75,21 @@ function Overlay() {
     ? MODE_LABEL[status.last_proxy_mode] ?? status.last_proxy_mode
     : '—';
 
+  // 抓手按住拖动窗口（比 data-tauri-drag-region 属性更可靠）
+  const startDrag = (e: React.MouseEvent<HTMLSpanElement>) => {
+    e.preventDefault();
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => undefined);
+  };
+
   return (
     <div
       className={cfg?.edit ? 'overlay-box editing' : 'overlay-box'}
       style={{ background: `rgba(7, 11, 20, ${cfg?.opacity ?? 0.7})` }}
     >
       {cfg?.show_tokens !== false && (
-        <div className="overlay-row" data-tauri-drag-region>
+        <div className="overlay-row">
           <span className="overlay-label">流量</span>
           <span className="overlay-tokens">
             ↑{traffic ? fmt(traffic.today_input_tokens) : '—'}
@@ -89,20 +97,27 @@ function Overlay() {
             ↓{traffic ? fmt(traffic.today_output_tokens) : '—'}
           </span>
           {cfg?.edit && (
-            <button
-              type="button"
-              className="overlay-save"
-              onClick={() => void savePos()}
-              disabled={busy}
-              data-tauri-no-drag
-            >
-              {busy ? '…' : '保存'}
-            </button>
+            <>
+              <button
+                type="button"
+                className="overlay-save"
+                onClick={() => void savePos()}
+                disabled={busy}
+              >
+                {busy ? '…' : '保存'}
+              </button>
+              <span
+                className="overlay-grip"
+                onMouseDown={startDrag}
+                title="按住拖动"
+                aria-label="拖动悬浮窗"
+              />
+            </>
           )}
         </div>
       )}
       {cfg?.show_client !== false && (
-        <div className="overlay-row" data-tauri-drag-region>
+        <div className="overlay-row">
           <span className="overlay-label">来源</span>
           <span className="overlay-client" title={`${client} · ${mode}`}>
             {client}
