@@ -29,6 +29,8 @@ pub fn run() {
             commands::set_quit_behavior,
             commands::read_logs,
             commands::get_config,
+            commands::get_overlay_config,
+            commands::set_overlay_config,
             commands::open_config_dir,
             commands::quick_gateway_chat,
             commands::get_clients_env_status,
@@ -84,6 +86,9 @@ pub fn run() {
                     let watchdog_runtime = runtime.inner().clone();
                     gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
                     commands::maybe_autostart_gateway(&runtime).await;
+                    // 启动后恢复流量悬浮窗（若上次开启过）
+                    let overlay_cfg = runtime.config.read().await.overlay.clone();
+                    let _ = crate::overlay::apply(&handle, &overlay_cfg);
                     let _ = handle.emit("sugt://status-changed", ());
 
                     // 启动后后台预热推荐技能仓（Gitee），不阻塞 UI

@@ -149,6 +149,60 @@ pub struct AppConfig {
     /// Anthropic 接入点的协议模式（auto / openai / anthropic）
     #[serde(default)]
     pub anthropic_access_mode: AnthropicAccessMode,
+    /// 流量悬浮窗（置顶穿透小窗）配置
+    #[serde(default)]
+    pub overlay: OverlayConfig,
+}
+
+/// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示 token 交互
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 窗口整体不透明度 0.1~1.0
+    #[serde(default = "default_overlay_opacity")]
+    pub opacity: f64,
+    /// 编辑模式：关闭鼠标穿透以便拖动窗口（会话性，异常退出后下次启动仍可交互）
+    #[serde(default)]
+    pub edit: bool,
+    #[serde(default = "default_true")]
+    pub show_tokens: bool,
+    #[serde(default = "default_true")]
+    pub show_client: bool,
+    #[serde(default = "default_overlay_x")]
+    pub x: i32,
+    #[serde(default = "default_overlay_y")]
+    pub y: i32,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            opacity: default_overlay_opacity(),
+            edit: false,
+            show_tokens: default_true(),
+            show_client: default_true(),
+            x: default_overlay_x(),
+            y: default_overlay_y(),
+        }
+    }
+}
+
+fn default_overlay_opacity() -> f64 {
+    0.7
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_overlay_x() -> i32 {
+    64
+}
+
+fn default_overlay_y() -> i32 {
+    64
 }
 
 fn default_gateway_client_api_key() -> String {
@@ -231,6 +285,7 @@ impl Default for AppConfig {
             active_takeover_ids: Vec::new(),
             experimental_zen_dismissed: false,
             anthropic_access_mode: AnthropicAccessMode::default(),
+            overlay: OverlayConfig::default(),
         }
     }
 }

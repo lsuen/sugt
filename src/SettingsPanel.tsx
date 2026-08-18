@@ -1,8 +1,29 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GithubProxyModal } from './store/GithubProxyModal';
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
+
+// 流量悬浮窗配置（与后端 model.rs OverlayConfig 对应）
+export type OverlayConfigView = {
+  enabled: boolean;
+  opacity: number;
+  edit: boolean;
+  show_tokens: boolean;
+  show_client: boolean;
+  x: number;
+  y: number;
+};
+
+const DEFAULT_OVERLAY: OverlayConfigView = {
+  enabled: false,
+  opacity: 0.7,
+  edit: false,
+  show_tokens: true,
+  show_client: true,
+  x: 64,
+  y: 64,
+};
 
 type AppConfigView = {
   autostart?: boolean;
@@ -12,6 +33,7 @@ type AppConfigView = {
   port_fallback_enabled?: boolean;
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
+  overlay?: OverlayConfigView;
 };
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'settings' | 'logs' | 'about';
@@ -35,6 +57,18 @@ export function SettingsPanel({
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
+  const [opacity, setOpacity] = useState(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
+
+  // 悬浮窗配置更新：合并当前配置 + 增量，持久化并即时应用
+  const setOverlay = (patch: Partial<OverlayConfigView>) => {
+    const base = config?.overlay ?? DEFAULT_OVERLAY;
+    run(() => invoke('set_overlay_config', { cfg: { ...base, ...patch } }), '已更新');
+  };
+
+  // 外部配置刷新后同步滑块显示值
+  useEffect(() => {
+    setOpacity(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
+  }, [config?.overlay?.opacity]);
 
   const openProxy = async () => {
     try {
@@ -76,6 +110,51 @@ export function SettingsPanel({
           <span>网关守护循环</span>
           <input type="checkbox" checked={Boolean(config?.gateway_watchdog_enabled ?? true)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { gatewayWatchdogEnabled: e.target.checked } }), '已更新')} />
         </label>
+      </div>
+
+      <div className="card settings-group switches">
+        <h4>流量悬浮窗</h4>
+        <p className="hint compact">置顶 + 半透明 + 鼠标穿透的小窗，实时显示 Token 交互</p>
+        <label className="switch-line">
+          <span>启用流量悬浮窗</span>
+          <input type="checkbox" checked={Boolean(config?.overlay?.enabled)} onChange={(e) => setOverlay({ enabled: e.target.checked })} />
+        </label>
+        {config?.overlay?.enabled && (
+          <>
+            <label className="switch-line">
+              <span>显示 Token</span>
+              <input type="checkbox" checked={config.overlay.show_tokens} onChange={(e) => setOverlay({ show_tokens: e.target.checked })} />
+            </label>
+            <label className="switch-line">
+              <span>显示调用来源</span>
+              <input type="checkbox" checked={config.overlay.show_client} onChange={(e) => setOverlay({ show_client: e.target.checked })} />
+            </label>
+            <div className="switch-line">
+              <span>透明度 {Math.round(config.overlay.opacity * 100)}%</span>
+              <input
+                type="range"
+                min={0.1}
+                max={1}
+                step={0.05}
+                value={opacity}
+                onChange={(e) => setOpacity(Number(e.target.value))}
+                onMouseUp={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
+                onTouchEnd={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
+                onKeyUp={(e) => {
+                  if (e.key.startsWith('Arrow')) setOverlay({ opacity: Number(e.currentTarget.value) });
+                }}
+              />
+            </div>
+            <div className="settings-actions-row">
+              <button type="button" className="ghost tiny-btn" onClick={() => setOverlay({ edit: true })}>
+                移动悬浮窗
+              </button>
+              <span className="hint compact">
+                当前位置 ({config.overlay.x}, {config.overlay.y})；进入后窗口可拖动，拖到目标位置再点悬浮窗上的「保存位置」。
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="card settings-group settings-group-wide switches">

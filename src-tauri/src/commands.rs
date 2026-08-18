@@ -6,8 +6,8 @@ use crate::{
     gateway::{self, GatewayState},
     gateway_daemon,
     model::{
-        AnthropicAccessMode, AppConfig, ProviderConfig, ProviderInput, ProviderProtocol,
-        ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
+        AnthropicAccessMode, AppConfig, OverlayConfig, ProviderConfig, ProviderInput,
+        ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
     },
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
@@ -1065,6 +1065,32 @@ pub async fn set_takeover_settings_path(
 #[tauri::command]
 pub async fn get_config(runtime: State<'_, AppRuntime>) -> Result<AppConfig, String> {
     Ok(runtime.config.read().await.clone())
+}
+
+/// 流量悬浮窗配置（悬浮窗页面初始化时读取）。
+#[tauri::command]
+pub async fn get_overlay_config(runtime: State<'_, AppRuntime>) -> Result<OverlayConfig, String> {
+    Ok(runtime.config.read().await.overlay.clone())
+}
+
+/// 更新流量悬浮窗配置：持久化并即时应用（创建/更新/关闭窗口）。
+#[tauri::command]
+pub async fn set_overlay_config(
+    runtime: State<'_, AppRuntime>,
+    app: tauri::AppHandle,
+    cfg: OverlayConfig,
+) -> Result<(), String> {
+    if !(0.1..=1.0).contains(&cfg.opacity) {
+        return Err("悬浮窗不透明度需在 0.1~1.0 之间".to_string());
+    }
+    {
+        let mut config = runtime.config.write().await;
+        config.overlay = cfg.clone();
+    }
+    crate::overlay::apply(&app, &cfg)?;
+    // 通知悬浮窗页面刷新编辑态/显示项（无需轮询 get_config）
+    let _ = app.emit("sugt://overlay-config-changed", &cfg);
+    runtime.persist().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]

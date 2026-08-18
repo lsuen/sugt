@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
-import { SettingsPanel } from './SettingsPanel';
+import { SettingsPanel, type OverlayConfigView } from './SettingsPanel';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 import { SkillsPanel } from './SkillsPanel';
 import { TrafficPanel } from './TrafficPanel';
@@ -91,6 +91,7 @@ type AppConfig = {
   allow_lan_access?: boolean;
   port_fallback_ports?: number[];
   providers: unknown[];
+  overlay?: OverlayConfigView;
 };
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';

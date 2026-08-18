@@ -1,0 +1,61 @@
+/* 流量悬浮窗：半透明小窗，透明度 = 配置 opacity（inline 背景色驱动） */
+.overlay-box {
+  width: 100%;
+  height: 100%;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  background: rgba(7, 11, 20, 0.7);
+  border: 1px solid rgba(142, 232, 255, 0.28);
+  border-radius: 12px;
+  color: #edf7ff;
+  user-select: none;
+}
+.overlay-box.editing {
+  border-color: #16f1ff;
+  box-shadow: 0 0 12px rgba(22, 241, 255, 0.35);
+}
+.overlay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 18px;
+}
+.overlay-label {
+  flex: 0 0 auto;
+  color: #94a9bd;
+}
+.overlay-tokens {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.overlay-client {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overlay-dim {
+  margin-left: 6px;
+  color: #94a9bd;
+  font-weight: 400;
+}
+.overlay-save {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #06121f;
+  background: linear-gradient(135deg, #12dfff, #6d5cff);
+}
+.overlay-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
