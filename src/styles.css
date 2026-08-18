@@ -1565,9 +1565,15 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   gap: 8px;
   align-items: center;
 }
-.settings-tabs .tiny-btn.active {
+.settings-tabs .tiny-btn.active,
+.overlay-layout-switch .tiny-btn.active {
   color: #7dffc8;
   border-color: rgba(10, 255, 157, 0.35);
+}
+.overlay-layout-switch {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 .settings-layout {
   display: grid;

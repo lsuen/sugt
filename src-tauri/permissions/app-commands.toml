@@ -131,7 +131,7 @@ commands.allow = ["quick_gateway_chat"]
 [[permission]]
 identifier = "allow-overlay-commands"
 description = "Enables traffic overlay commands"
-commands.allow = ["get_overlay_config", "set_overlay_config"]
+commands.allow = ["get_overlay_config", "set_overlay_config", "overlay_start_drag"]
 
 [[permission]]
 identifier = "allow-takeover-commands"

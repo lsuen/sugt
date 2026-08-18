@@ -1,24 +1,25 @@
 //! 流量悬浮窗：置顶 + 半透明 + 鼠标穿透的小窗，实时展示 token 交互。
 //! 位置策略：未定位（x/y < 0）时按主屏右上角创建；启动恢复时若坐标不在任何
 //! monitor 范围内（如副屏已拔），自动回主屏右上角并写回配置。
+//! 尺寸/布局方向由配置驱动（width/height/layout），前端按 layout 渲染横竖排。
 
 use crate::commands::AppRuntime;
 use crate::model::OverlayConfig;
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
+};
 
 const LABEL: &str = "overlay";
-const WIDTH: f64 = 260.0;
-const HEIGHT: f64 = 76.0;
 const MARGIN: f64 = 16.0;
 
 /// 主屏右上角逻辑坐标（取不到主屏时兜左上）
-fn top_right(app: &AppHandle) -> (i32, i32) {
+fn top_right(app: &AppHandle, width: f64) -> (i32, i32) {
     let Some(m) = app.primary_monitor().ok().flatten() else {
         return (MARGIN as i32, MARGIN as i32);
     };
     let scale = m.scale_factor().max(1.0);
     let s = m.size();
-    let x = ((s.width as f64 / scale) - WIDTH - MARGIN).max(MARGIN) as i32;
+    let x = ((s.width as f64 / scale) - width - MARGIN).max(MARGIN) as i32;
     (x, MARGIN as i32)
 }
 
@@ -37,7 +38,7 @@ async fn ensure_on_screen(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<()
     if on {
         return Ok(());
     }
-    let (x, y) = top_right(app);
+    let (x, y) = top_right(app, cfg.width);
     cfg.x = x;
     cfg.y = y;
     Ok(())
@@ -62,6 +63,8 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
+            w.set_size(LogicalSize::new(cfg.width, cfg.height))
+                .map_err(|e| format!("调整悬浮窗尺寸失败: {e}"))?;
             let prev = (cfg.x, cfg.y);
             ensure_on_screen(app, cfg).await?;
             if (cfg.x, cfg.y) != prev {
@@ -71,7 +74,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             }
         }
         None if cfg.enabled => {
-            let (x, y) = top_right(app);
+            let (x, y) = top_right(app, cfg.width);
             cfg.x = x;
             cfg.y = y;
             let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("overlay.html".into()))
@@ -81,7 +84,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .resizable(false)
-                .inner_size(WIDTH, HEIGHT)
+                .inner_size(cfg.width, cfg.height)
                 .position(x as f64, y as f64)
                 .build()
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;

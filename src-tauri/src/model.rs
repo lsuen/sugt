@@ -173,6 +173,13 @@ pub struct OverlayConfig {
     pub x: i32,
     #[serde(default = "default_overlay_y")]
     pub y: i32,
+    /// 布局方向：row（横排单行）/ column（竖排两行）
+    #[serde(default = "default_overlay_layout")]
+    pub layout: String,
+    #[serde(default = "default_overlay_width")]
+    pub width: f64,
+    #[serde(default = "default_overlay_height")]
+    pub height: f64,
 }
 
 impl Default for OverlayConfig {
@@ -186,6 +193,9 @@ impl Default for OverlayConfig {
             // -1 表示「未定位」，由 overlay::apply 创建窗口时按主屏右上角初始化
             x: -1,
             y: -1,
+            layout: default_overlay_layout(),
+            width: default_overlay_width(),
+            height: default_overlay_height(),
         }
     }
 }
@@ -204,6 +214,18 @@ fn default_overlay_x() -> i32 {
 
 fn default_overlay_y() -> i32 {
     -1
+}
+
+fn default_overlay_layout() -> String {
+    "column".to_string()
+}
+
+fn default_overlay_width() -> f64 {
+    260.0
+}
+
+fn default_overlay_height() -> f64 {
+    76.0
 }
 
 fn default_gateway_client_api_key() -> String {

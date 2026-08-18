@@ -31,6 +31,7 @@ pub fn run() {
             commands::get_config,
             commands::get_overlay_config,
             commands::set_overlay_config,
+            commands::overlay_start_drag,
             commands::open_config_dir,
             commands::quick_gateway_chat,
             commands::get_clients_env_status,

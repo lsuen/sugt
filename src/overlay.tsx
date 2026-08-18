@@ -15,6 +15,9 @@ type OverlayConfigView = {
   show_client: boolean;
   x: number;
   y: number;
+  layout: 'column' | 'row';
+  width: number;
+  height: number;
 };
 
 type Status = {
@@ -75,56 +78,59 @@ function Overlay() {
     ? MODE_LABEL[status.last_proxy_mode] ?? status.last_proxy_mode
     : '—';
 
-  // 抓手按住拖动窗口（比 data-tauri-drag-region 属性更可靠）
+  // 抓手按住拖动窗口：后端直调 window.start_dragging()（前端 startDragging 受 ACL 限制）
   const startDrag = (e: React.MouseEvent<HTMLSpanElement>) => {
     e.preventDefault();
-    void getCurrentWindow()
-      .startDragging()
-      .catch(() => undefined);
+    void invoke('overlay_start_drag').catch(() => undefined);
   };
+
+  // 布局方向：横排(row)时两行内容并排单行；竖排(column)时上下两行
+  const isRow = cfg?.layout === 'row';
 
   return (
     <div
       className={cfg?.edit ? 'overlay-box editing' : 'overlay-box'}
       style={{ background: `rgba(7, 11, 20, ${cfg?.opacity ?? 0.7})` }}
     >
-      {cfg?.show_tokens !== false && (
-        <div className="overlay-row">
-          <span className="overlay-label">流量</span>
-          <span className="overlay-tokens">
-            ↑{traffic ? fmt(traffic.today_input_tokens) : '—'}
-            <span className="overlay-dim">/</span>
-            ↓{traffic ? fmt(traffic.today_output_tokens) : '—'}
-          </span>
-          {cfg?.edit && (
-            <>
-              <button
-                type="button"
-                className="overlay-save"
-                onClick={() => void savePos()}
-                disabled={busy}
-              >
-                {busy ? '…' : '保存'}
-              </button>
-              <span
-                className="overlay-grip"
-                onMouseDown={startDrag}
-                title="按住拖动"
-                aria-label="拖动悬浮窗"
-              />
-            </>
-          )}
-        </div>
-      )}
-      {cfg?.show_client !== false && (
-        <div className="overlay-row">
-          <span className="overlay-label">来源</span>
-          <span className="overlay-client" title={`${client} · ${mode}`}>
-            {client}
-            <span className="overlay-dim">{mode}</span>
-          </span>
-        </div>
-      )}
+      <div className={isRow ? 'overlay-rows-h' : 'overlay-rows'}>
+        {cfg?.show_tokens !== false && (
+          <div className="overlay-row">
+            <span className="overlay-label">流量</span>
+            <span className="overlay-tokens">
+              ↑{traffic ? fmt(traffic.today_input_tokens) : '—'}
+              <span className="overlay-dim">/</span>
+              ↓{traffic ? fmt(traffic.today_output_tokens) : '—'}
+            </span>
+            {cfg?.edit && (
+              <>
+                <button
+                  type="button"
+                  className="overlay-save"
+                  onClick={() => void savePos()}
+                  disabled={busy}
+                >
+                  {busy ? '…' : '保存'}
+                </button>
+                <span
+                  className="overlay-grip"
+                  onMouseDown={startDrag}
+                  title="按住拖动"
+                  aria-label="拖动悬浮窗"
+                />
+              </>
+            )}
+          </div>
+        )}
+        {cfg?.show_client !== false && (
+          <div className="overlay-row">
+            <span className="overlay-label">来源</span>
+            <span className="overlay-client" title={`${client} · ${mode}`}>
+              {client}
+              <span className="overlay-dim">{mode}</span>
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

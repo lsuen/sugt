@@ -15,7 +15,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -1073,6 +1073,18 @@ pub async fn get_overlay_config(runtime: State<'_, AppRuntime>) -> Result<Overla
     Ok(runtime.config.read().await.overlay.clone())
 }
 
+/// 悬浮窗开始拖动：Rust 直调 window.start_dragging()。
+/// 前端 IPC 的 startDragging 受 ACL（core:window:allow-start-dragging）限制，后端直调不受影响。
+#[tauri::command]
+pub async fn overlay_start_drag(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "悬浮窗不存在".to_string())?;
+    window
+        .start_dragging()
+        .map_err(|e| format!("开始拖动失败: {e}"))
+}
+
 /// 更新流量悬浮窗配置：持久化并即时应用（创建/更新/关闭窗口）。
 #[tauri::command]
 pub async fn set_overlay_config(
@@ -1082,6 +1094,12 @@ pub async fn set_overlay_config(
 ) -> Result<(), String> {
     if !(0.1..=1.0).contains(&cfg.opacity) {
         return Err("悬浮窗不透明度需在 0.1~1.0 之间".to_string());
+    }
+    if !matches!(cfg.layout.as_str(), "column" | "row") {
+        return Err("悬浮窗布局方向需为 column 或 row".to_string());
+    }
+    if !(120.0..=800.0).contains(&cfg.width) || !(40.0..=300.0).contains(&cfg.height) {
+        return Err("悬浮窗尺寸超出合理范围".to_string());
     }
     crate::overlay::apply(&app, &mut cfg).await?;
     {
