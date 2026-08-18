@@ -1,6 +1,6 @@
 [package]
 name = "sugt"
-version = "1.1.0"
+version = "1.1.1"
 description = "SUGT - su gateway"
 authors = ["孙文龙"]
 edition = "2021"
