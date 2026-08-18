@@ -435,6 +435,12 @@
           "markdownDescription": "Enables the open_config_dir command"
         },
         {
+          "description": "Enables traffic overlay commands",
+          "type": "string",
+          "const": "allow-overlay-commands",
+          "markdownDescription": "Enables traffic overlay commands"
+        },
+        {
           "description": "Enables the quick_gateway_chat command",
           "type": "string",
           "const": "allow-quick-gateway-chat",
