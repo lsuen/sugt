@@ -129,6 +129,11 @@ description = "Enables the quick_gateway_chat command"
 commands.allow = ["quick_gateway_chat"]
 
 [[permission]]
+identifier = "allow-overlay-commands"
+description = "Enables traffic overlay commands"
+commands.allow = ["get_overlay_config", "set_overlay_config"]
+
+[[permission]]
 identifier = "allow-takeover-commands"
 description = "Enables takeover profile commands"
 commands.allow = [

@@ -36,6 +36,7 @@
     "allow-update-gateway-settings",
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
+    "allow-overlay-commands",
     "allow-takeover-commands",
     "allow-store-commands"
   ]

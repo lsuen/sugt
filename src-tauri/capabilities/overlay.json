@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "流量悬浮窗最小权限（轮询状态 + 读写自身配置）",
+  "windows": ["overlay"],
+  "permissions": [
+    "core:default",
+    "allow-get-status",
+    "allow-overlay-commands"
+  ]
+}
