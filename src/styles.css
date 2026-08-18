@@ -1554,6 +1554,21 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 
 /* 设置页分组 */
+.settings-layout-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 900px;
+}
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.settings-tabs .tiny-btn.active {
+  color: #7dffc8;
+  border-color: rgba(10, 255, 157, 0.35);
+}
 .settings-layout {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

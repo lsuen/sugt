@@ -87,8 +87,14 @@ pub fn run() {
                     gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
                     commands::maybe_autostart_gateway(&runtime).await;
                     // 启动后恢复流量悬浮窗（若上次开启过）
-                    let overlay_cfg = runtime.config.read().await.overlay.clone();
-                    let _ = crate::overlay::apply(&handle, &overlay_cfg);
+                    let mut overlay_cfg = runtime.config.read().await.overlay.clone();
+                    if let Err(err) = crate::overlay::apply(&handle, &mut overlay_cfg).await {
+                        tracing::warn!(error = %err, "恢复流量悬浮窗失败");
+                    }
+                    if let Some(rt) = handle.try_state::<AppRuntime>() {
+                        let mut guard = rt.config.write().await;
+                        guard.overlay = overlay_cfg;
+                    }
                     let _ = handle.emit("sugt://status-changed", ());
 
                     // 启动后后台预热推荐技能仓（Gitee），不阻塞 UI

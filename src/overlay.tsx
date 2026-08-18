@@ -78,25 +78,15 @@ function Overlay() {
   return (
     <div
       className={cfg?.edit ? 'overlay-box editing' : 'overlay-box'}
-      data-tauri-drag-region
       style={{ background: `rgba(7, 11, 20, ${cfg?.opacity ?? 0.7})` }}
     >
       {cfg?.show_tokens !== false && (
-        <div className="overlay-row">
+        <div className="overlay-row" data-tauri-drag-region>
           <span className="overlay-label">流量</span>
           <span className="overlay-tokens">
             ↑{traffic ? fmt(traffic.today_input_tokens) : '—'}
             <span className="overlay-dim">/</span>
             ↓{traffic ? fmt(traffic.today_output_tokens) : '—'}
-          </span>
-        </div>
-      )}
-      {cfg?.show_client !== false && (
-        <div className="overlay-row">
-          <span className="overlay-label">来源</span>
-          <span className="overlay-client" title={`${client} · ${mode}`}>
-            {client}
-            <span className="overlay-dim">{mode}</span>
           </span>
           {cfg?.edit && (
             <button
@@ -104,10 +94,20 @@ function Overlay() {
               className="overlay-save"
               onClick={() => void savePos()}
               disabled={busy}
+              data-tauri-no-drag
             >
-              {busy ? '…' : '保存位置'}
+              {busy ? '…' : '保存'}
             </button>
           )}
+        </div>
+      )}
+      {cfg?.show_client !== false && (
+        <div className="overlay-row" data-tauri-drag-region>
+          <span className="overlay-label">来源</span>
+          <span className="overlay-client" title={`${client} · ${mode}`}>
+            {client}
+            <span className="overlay-dim">{mode}</span>
+          </span>
         </div>
       )}
     </div>

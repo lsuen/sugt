@@ -1078,16 +1078,16 @@ pub async fn get_overlay_config(runtime: State<'_, AppRuntime>) -> Result<Overla
 pub async fn set_overlay_config(
     runtime: State<'_, AppRuntime>,
     app: tauri::AppHandle,
-    cfg: OverlayConfig,
+    mut cfg: OverlayConfig,
 ) -> Result<(), String> {
     if !(0.1..=1.0).contains(&cfg.opacity) {
         return Err("悬浮窗不透明度需在 0.1~1.0 之间".to_string());
     }
+    crate::overlay::apply(&app, &mut cfg).await?;
     {
         let mut config = runtime.config.write().await;
         config.overlay = cfg.clone();
     }
-    crate::overlay::apply(&app, &cfg)?;
     // 通知悬浮窗页面刷新编辑态/显示项（无需轮询 get_config）
     let _ = app.emit("sugt://overlay-config-changed", &cfg);
     runtime.persist().await.map_err(|err| err.to_string())

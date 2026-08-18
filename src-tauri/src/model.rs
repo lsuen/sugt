@@ -183,8 +183,9 @@ impl Default for OverlayConfig {
             edit: false,
             show_tokens: default_true(),
             show_client: default_true(),
-            x: default_overlay_x(),
-            y: default_overlay_y(),
+            // -1 表示「未定位」，由 overlay::apply 创建窗口时按主屏右上角初始化
+            x: -1,
+            y: -1,
         }
     }
 }
@@ -198,11 +199,11 @@ fn default_true() -> bool {
 }
 
 fn default_overlay_x() -> i32 {
-    64
+    -1
 }
 
 fn default_overlay_y() -> i32 {
-    64
+    -1
 }
 
 fn default_gateway_client_api_key() -> String {
