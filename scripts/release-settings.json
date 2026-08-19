@@ -1,9 +1,0 @@
-{
-  "defaultTrialDays": 90,
-  "defaultTrialExpiresAt": null,
-  "buildTrialByDefault": true,
-  "buildSelfByDefault": true,
-  "buildStoreByDefault": false,
-  "defaultTarget": "all",
-  "createZipByDefault": true
-}
