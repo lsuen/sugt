@@ -1,9 +1,9 @@
 # SUGT — Local AI Gateway & LLM Skill Console
 
-**SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
+**SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, DashScope, and self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
 
 - **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
-- **Swap upstreams freely**: OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, or your own models — no client-side reconfiguration.
+- **Swap upstreams freely**: OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, or your own models — no client-side reconfiguration.
 - **Skills that stick**: discover, install, and mount Skills; unmounting never loses your library.
 
 |                |                                                                       |
@@ -26,7 +26,7 @@ The Public edition is the full-featured build: local AI gateway, protocol transl
 
 ## Why
 
-- **API keys scattered** across OpenAI, Anthropic, ModelScope, Volcengine, local models...
+- **API keys scattered** across OpenAI, Anthropic, ModelScope, Volcengine, Moonshot Kimi, DeepSeek, local models...
 - **Every agent wants its own Base URL and auth setup** — re-editing configs in each client is tedious and error-prone
 - **Skills live in different folders** with no shared discover / mount / keep flow; switching machines means redoing everything
 
@@ -45,7 +45,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 ### Model Management
 
-- Built-in catalog of Chinese providers (ModelScope, Volcengine, SiliconFlow, and more) with standard Base URLs and model lists
+- Built-in catalog of Chinese providers (ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, and more) with standard Base URLs and model lists
 - Enable / disable providers, switch the default model, and test connectivity from one panel
 
 ### One-Click Agent Takeover

@@ -1,9 +1,9 @@
 # SUTAI — 本地 AI 网关 & 大模型技能中控台
 
-朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
+朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
 
 - **一套 Key，处处可用**：所有 AI 客户端的 Base URL 与鉴权，收拢到本机一个网关。
-- **上游随意换**：官方 API、国内服务商（魔搭、火山引擎、硅基流动等）、自建模型，切换无需改动任何客户端。
+- **上游随意换**：官方 API、国内服务商（魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 等）、自建模型，切换无需改动任何客户端。
 - **技能不乱丢**：统一发现、安装、挂载，换机器也不重来。
 
 | | |
@@ -26,7 +26,7 @@ English: [README.md](README.md)
 
 ## 为什么需要
 
-- **Key 分散**：OpenAI、Anthropic、魔搭、火山引擎、本地模型散落在各客户端，泄漏后只能逐一失效，难以管控。
+- **Key 分散**：OpenAI、Anthropic、魔搭、火山引擎、Moonshot Kimi、DeepSeek、本地模型散落在各客户端，泄漏后只能逐一失效，难以管控。
 - **Agent 一个接一个**：Claude Code、Codex、OpenCode 各自都要写 Base URL 和鉴权，每次配一套，繁琐易错。
 - **Skills 散落**：没有统一发现/挂载/保留机制，换机器就要全部重来。
 
@@ -45,7 +45,7 @@ SUTAI 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 ### 模型管理
 
-- 内置国内服务商目录（魔搭、火山引擎、硅基流动等），提供标准 Base URL 与模型列表
+- 内置国内服务商目录（魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 等），提供标准 Base URL 与模型列表
 - 启停服务商、切换默认模型、一键测连通性
 
 ### 客户端一键接管
