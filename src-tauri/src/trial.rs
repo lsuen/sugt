@@ -8,11 +8,11 @@ use std::{fs, path::Path};
 const STATE_FILE: &str = "trial-state.json";
 const CLOCK_ROLLBACK_TOLERANCE_MINUTES: i64 = 10;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrialMode {
     Dev,
     SelfUse,
-    Trial,
+    Public,
 }
 
 #[derive(Debug, Clone)]
