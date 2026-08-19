@@ -12,7 +12,7 @@ use crate::{
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1211,29 +1211,7 @@ fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {
 }
 
 fn open_path(path: &std::path::Path) -> Result<()> {
-    #[cfg(windows)]
-    {
-        crate::process_util::hidden_command("explorer")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        crate::process_util::hidden_command("open")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        crate::process_util::hidden_command("xdg-open")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err(anyhow!("当前平台不支持打开目录"))
+    crate::platform::open_path(path).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 #[tauri::command]

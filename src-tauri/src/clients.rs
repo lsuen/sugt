@@ -1,5 +1,5 @@
 use crate::{config::AppPaths, model::AppConfig};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -258,7 +258,7 @@ pub fn uninstall_for(
     Ok(status(config_dir, config))
 }
 
-fn should_clear_takeover_env(actual: &str, expected: &str, listen_url: &str, key: &str) -> bool {
+pub(crate) fn should_clear_takeover_env(actual: &str, expected: &str, listen_url: &str, key: &str) -> bool {
     if actual.is_empty() {
         return false;
     }
@@ -272,63 +272,15 @@ fn should_clear_takeover_env(actual: &str, expected: &str, listen_url: &str, key
 }
 
 pub fn print_launch_script(config: &AppConfig) -> String {
-    let listen_url = listen_url(config);
-    let key = client_api_key(config);
-    #[cfg(windows)]
-    {
-        format!(
-            "set ANTHROPIC_BASE_URL={}\r\nset ANTHROPIC_AUTH_TOKEN={}\r\nset OPENAI_BASE_URL={}/v1\r\nset OPENAI_API_BASE={}/v1\r\nset OPENAI_API_KEY={}\r\n",
-            listen_url, key, listen_url, listen_url, key
-        )
-    }
-    #[cfg(unix)]
-    {
-        format!(
-            "export ANTHROPIC_BASE_URL={}\nexport ANTHROPIC_AUTH_TOKEN={}\nexport OPENAI_BASE_URL={}/v1\nexport OPENAI_API_BASE={}/v1\nexport OPENAI_API_KEY={}\n",
-            listen_url, key, listen_url, listen_url, key
-        )
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = (listen_url, key);
-        String::new()
-    }
+    crate::platform::print_launch_script(&listen_url(config), &client_api_key(config))
 }
 
 pub fn write_launch_scripts(paths: &AppPaths, config: &AppConfig) -> Result<()> {
-    let listen_url = listen_url(config);
-    let key = client_api_key(config);
-    #[cfg(windows)]
-    {
-        let claude = format!(
-            "@echo off\r\nset ANTHROPIC_BASE_URL={}\r\nset ANTHROPIC_AUTH_TOKEN={}\r\nset ANTHROPIC_API_KEY=\r\nset CLAUDE_CODE_API_KEY=\r\nclaude %*\r\n",
-            listen_url, key
-        );
-        let codex = format!(
-            "@echo off\r\nset OPENAI_BASE_URL={}/v1\r\nset OPENAI_API_BASE={}/v1\r\nset OPENAI_API_KEY={}\r\ncodex %*\r\n",
-            listen_url, listen_url, key
-        );
-        std::fs::write(paths.config_dir.join("claude-sugt.cmd"), claude)?;
-        std::fs::write(paths.config_dir.join("codex-sugt.cmd"), codex)?;
-    }
-    #[cfg(unix)]
-    {
-        // macOS/Linux 使用 .sh 启动脚本，source 后执行对应客户端
-        let claude = format!(
-            "#!/bin/sh\nexport ANTHROPIC_BASE_URL={}\nexport ANTHROPIC_AUTH_TOKEN={}\nexport ANTHROPIC_API_KEY=\nexport CLAUDE_CODE_API_KEY=\nexec claude \"$@\"\n",
-            listen_url, key
-        );
-        let codex = format!(
-            "#!/bin/sh\nexport OPENAI_BASE_URL={}/v1\nexport OPENAI_API_BASE={}/v1\nexport OPENAI_API_KEY={}\nexec codex \"$@\"\n",
-            listen_url, listen_url, key
-        );
-        std::fs::write(paths.config_dir.join("claude-sugt.sh"), claude)?;
-        std::fs::write(paths.config_dir.join("codex-sugt.sh"), codex)?;
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = (listen_url, key);
-    }
+    crate::platform::write_launch_scripts(
+        &paths.config_dir,
+        &listen_url(config),
+        &client_api_key(config),
+    )?;
     if config.codex_takeover_enabled {
         let _ = crate::codex_config::apply_codex_config(config);
     }
@@ -339,14 +291,14 @@ fn listen_url(config: &AppConfig) -> String {
     config.listen_url()
 }
 
-fn claude_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
+pub(crate) fn claude_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("ANTHROPIC_BASE_URL".to_string(), listen_url.to_string()),
         ("ANTHROPIC_AUTH_TOKEN".to_string(), client_key.to_string()),
     ])
 }
 
-fn codex_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
+pub(crate) fn codex_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("OPENAI_BASE_URL".to_string(), format!("{}/v1", listen_url)),
         ("OPENAI_API_BASE".to_string(), format!("{}/v1", listen_url)),
@@ -491,100 +443,7 @@ fn effective_env_value(name: &str) -> String {
 }
 
 fn read_user_env(name: &str) -> Option<String> {
-    #[cfg(windows)]
-    {
-        read_user_env_windows(name)
-    }
-    #[cfg(unix)]
-    {
-        read_user_env_unix(name)
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = name;
-        None
-    }
-}
-
-/// macOS/Linux：从 `~/.zshrc` 解析 `export NAME=...` 行（接管写入的持久化变量）
-#[cfg(unix)]
-fn read_user_env_unix(name: &str) -> Option<String> {
-    let rc = std::fs::read_to_string(shell_rc_path()).ok()?;
-    for line in rc.lines() {
-        let line = line.trim_start();
-        let Some(rest) = line.strip_prefix("export ") else {
-            continue;
-        };
-        let Some((key, value)) = rest.split_once('=') else {
-            continue;
-        };
-        if key.trim() == name {
-            return Some(unquote(value.trim()));
-        }
-    }
-    None
-}
-
-/// `~/.zshrc` 路径（macOS 默认 shell 配置）
-#[cfg(unix)]
-fn shell_rc_path() -> std::path::PathBuf {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".zshrc"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".zshrc"))
-}
-
-/// 去掉 shell 引号包裹（支持单引号与双引号）
-#[cfg(unix)]
-fn unquote(value: &str) -> String {
-    let value = value.trim();
-    if value.len() >= 2 {
-        let bytes = value.as_bytes();
-        let (head, tail) = (bytes[0], bytes[value.len() - 1]);
-        if (head == b'\'' && tail == b'\'') || (head == b'"' && tail == b'"') {
-            return value[1..value.len() - 1].to_string();
-        }
-    }
-    value.to_string()
-}
-
-/// 判断一行是否为 `export <name>=...`（用于删除接管写入的行）
-#[cfg(unix)]
-fn is_export_line(line: &str, name: &str) -> bool {
-    let Some(rest) = line.trim_start().strip_prefix("export ") else {
-        return false;
-    };
-    rest.split('=').next().map(|key| key.trim() == name).unwrap_or(false)
-}
-
-/// shell 单引号转义，值内单引号以 `'\''` 形式安全写出
-#[cfg(unix)]
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-#[cfg(windows)]
-fn read_user_env_windows(name: &str) -> Option<String> {
-    use std::process::Stdio;
-    let output = crate::process_util::hidden_command("reg")
-        .args(["query", r"HKCU\Environment", "/v", name])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let line = line.trim();
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 && parts[0].eq_ignore_ascii_case(name) {
-            if parts[1] == "REG_SZ" || parts[1] == "REG_EXPAND_SZ" {
-                return Some(parts[2..].join(" "));
-            }
-        }
-    }
-    None
+    crate::platform::read_user_env(name)
 }
 
 fn is_claude_takeover_active(config: &AppConfig) -> bool {
@@ -630,7 +489,7 @@ fn detect_claude_issues(config: &AppConfig) -> Vec<String> {
     issues
 }
 
-fn urls_point_to_gateway(actual: &str, listen: &str) -> bool {
+pub(crate) fn urls_point_to_gateway(actual: &str, listen: &str) -> bool {
     let a = actual.trim().trim_end_matches('/');
     let l = listen.trim().trim_end_matches('/');
     if a.is_empty() || l.is_empty() {
@@ -686,7 +545,7 @@ fn client_status(
     }
 }
 
-fn mask_env_value(name: &str, value: &str) -> String {
+pub(crate) fn mask_env_value(name: &str, value: &str) -> String {
     if value.is_empty() {
         return "未设置".to_string();
     }
@@ -696,116 +555,20 @@ fn mask_env_value(name: &str, value: &str) -> String {
     value.to_string()
 }
 
-#[cfg(windows)]
 fn set_user_env(name: &str, value: &str) -> Result<()> {
-    use std::process::Stdio;
-    let status = crate::process_util::hidden_command("setx")
-        .arg(name)
-        .arg(value)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        std::env::set_var(name, value);
-        Ok(())
-    } else {
-        Err(anyhow!("setx 写入 {} 失败", name))
-    }
+    crate::platform::set_user_env(name, value)
 }
 
-#[cfg(windows)]
 fn unset_user_env(name: &str) -> Result<()> {
-    use std::process::Stdio;
-    let status = crate::process_util::hidden_command("reg")
-        .args(["delete", r"HKCU\Environment", "/v", name, "/f"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    std::env::remove_var(name);
-    if status.success() {
-        Ok(())
-    } else {
-        // 变量不存在时 reg delete 也会失败，清理场景视为成功
-        Ok(())
-    }
+    crate::platform::unset_user_env(name)
 }
 
-#[cfg(unix)]
-fn set_user_env(name: &str, value: &str) -> Result<()> {
-    let path = shell_rc_path();
-    let rc = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<String> = rc
-        .lines()
-        .filter(|line| !is_export_line(line, name))
-        .map(str::to_string)
-        .collect();
-    lines.push(format!("export {}={}", name, shell_quote(value)));
-    std::fs::write(&path, lines.join("\n") + "\n")?;
-    std::env::set_var(name, value);
-    Ok(())
-}
-
-#[cfg(unix)]
-fn unset_user_env(name: &str) -> Result<()> {
-    let path = shell_rc_path();
-    let rc = std::fs::read_to_string(&path).unwrap_or_default();
-    if rc.is_empty() {
-        return Ok(());
-    }
-    let mut lines: Vec<String> = rc
-        .lines()
-        .filter(|line| !is_export_line(line, name))
-        .map(str::to_string)
-        .collect();
-    // 无改动时避免无谓写盘（防止创建不存在的文件）
-    if lines.len() == rc.lines().count() {
-        return Ok(());
-    }
-    std::fs::write(&path, lines.join("\n") + "\n")?;
-    std::env::remove_var(name);
-    Ok(())
-}
-
-#[cfg(not(any(windows, unix)))]
-fn set_user_env(_name: &str, _value: &str) -> Result<()> {
-    Err(anyhow!(
-        "当前平台暂不支持自动写入用户环境变量，请使用 sugt-cli env print 输出临时启动变量"
-    ))
-}
-
-#[cfg(not(any(windows, unix)))]
-fn unset_user_env(_name: &str) -> Result<()> {
-    Err(anyhow!("当前平台暂不支持自动删除用户环境变量"))
-}
-
-#[cfg(windows)]
 pub fn set_user_env_public(name: &str, value: &str) -> Result<()> {
-    set_user_env(name, value)
+    crate::platform::set_user_env(name, value)
 }
 
-#[cfg(windows)]
 pub fn unset_user_env_public(name: &str) -> Result<()> {
-    unset_user_env(name)
-}
-
-#[cfg(unix)]
-pub fn set_user_env_public(name: &str, value: &str) -> Result<()> {
-    set_user_env(name, value)
-}
-
-#[cfg(unix)]
-pub fn unset_user_env_public(name: &str) -> Result<()> {
-    unset_user_env(name)
-}
-
-#[cfg(not(any(windows, unix)))]
-pub fn set_user_env_public(name: &str, value: &str) -> Result<()> {
-    set_user_env(name, value)
-}
-
-#[cfg(not(any(windows, unix)))]
-pub fn unset_user_env_public(name: &str) -> Result<()> {
-    unset_user_env(name)
+    crate::platform::unset_user_env(name)
 }
 
 #[cfg(test)]

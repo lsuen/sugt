@@ -238,15 +238,7 @@ async fn update_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.set_skip_taskbar(false);
-        let _ = window.show();
-        let _ = window.set_focus();
-        #[cfg(windows)]
-        {
-            let _ = window.set_always_on_top(true);
-            let _ = window.set_always_on_top(false);
-        }
+        crate::platform::activate_window(&window);
     }
 }
 
@@ -258,27 +250,5 @@ pub fn hide_main_window(app: &tauri::AppHandle) {
 }
 
 fn open_path(path: &std::path::Path) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    {
-        crate::process_util::hidden_command("explorer")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        crate::process_util::hidden_command("open")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        crate::process_util::hidden_command("xdg-open")
-            .arg(path)
-            .spawn()?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Ok(())
+    crate::platform::open_path(path)
 }

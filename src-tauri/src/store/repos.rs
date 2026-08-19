@@ -424,14 +424,7 @@ pub fn git_available() -> bool {
 
 /// 按平台给出安装 Git 的指引文案
 pub fn git_missing_hint() -> String {
-    #[cfg(windows)]
-    {
-        "未检测到 git，请先安装 Git for Windows".to_string()
-    }
-    #[cfg(not(windows))]
-    {
-        "未检测到 git，macOS 可在终端执行 xcode-select --install 安装".to_string()
-    }
+    crate::platform::git_missing_hint().to_string()
 }
 
 pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()> {

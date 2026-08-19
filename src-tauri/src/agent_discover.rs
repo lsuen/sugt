@@ -438,24 +438,8 @@ fn list_path_binaries(name_contains: Option<&str>) -> Vec<PathBuf> {
                     continue;
                 }
             }
-            #[cfg(windows)]
-            {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if !matches!(ext.as_str(), "exe" | "cmd" | "bat" | "ps1") {
-                    continue;
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let Ok(meta) = entry.metadata() else { continue };
-                if meta.permissions().mode() & 0o111 == 0 {
-                    continue;
-                }
+            if !crate::platform::is_executable(&path) {
+                continue;
             }
             out.push(path);
         }
@@ -470,45 +454,16 @@ fn collect_env_map() -> BTreeMap<String, String> {
     }
     #[cfg(windows)]
     {
-        for (k, v) in read_reg_env(r"HKCU\Environment") {
+        for (k, v) in crate::platform::windows::read_reg_env(r"HKCU\Environment") {
             map.entry(k).or_insert(v);
         }
-        for (k, v) in read_reg_env(
+        for (k, v) in crate::platform::windows::read_reg_env(
             r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
         ) {
             map.entry(k).or_insert(v);
         }
     }
     map
-}
-
-#[cfg(windows)]
-fn read_reg_env(key: &str) -> Vec<(String, String)> {
-    use std::process::Stdio;
-    let output = crate::process_util::hidden_command("reg")
-        .args(["query", key])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut pairs = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        // NAME    REG_SZ    value
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 && (parts[1] == "REG_SZ" || parts[1] == "REG_EXPAND_SZ") {
-            let name = parts[0].to_string();
-            let value = parts[2..].join(" ");
-            pairs.push((name, value));
-        }
-    }
-    pairs
 }
 
 /// 将发现结果转为可保存的模板（可带用户补的路径）。

@@ -329,18 +329,7 @@ pub async fn store_launch_client(
     let config = runtime.config.read().await.clone();
     clients::write_launch_scripts(&runtime.paths, &config).map_err(|e| e.to_string())?;
 
-    #[cfg(windows)]
-    let script_name = if client.trim().eq_ignore_ascii_case("codex") {
-        "codex-sugt.cmd"
-    } else {
-        "claude-sugt.cmd"
-    };
-    #[cfg(unix)]
-    let script_name = if client.trim().eq_ignore_ascii_case("codex") {
-        "codex-sugt.sh"
-    } else {
-        "claude-sugt.sh"
-    };
+    let script_name = crate::platform::launch_script_basename(client.trim());
     let script = runtime.paths.config_dir.join(script_name);
     if !script.exists() {
         return Err(format!("启动脚本不存在：{}", script.display()));
@@ -357,53 +346,9 @@ pub async fn store_launch_client(
         return Err(format!("工作目录无效：{}", work_dir.display()));
     }
 
-    #[cfg(windows)]
-    {
-        use std::process::Stdio;
-        // CREATE_NO_WINDOW 仅作用于本进程；start 仍会打开用户可见的新终端
-        crate::process_util::hidden_command("cmd")
-            .args([
-                "/c",
-                "start",
-                "",
-                "/D",
-                work_dir.as_os_str().to_string_lossy().as_ref(),
-                script.as_os_str().to_string_lossy().as_ref(),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Stdio;
-        // 通过 osascript 让 Terminal 在指定目录执行启动脚本
-        let command = format!(
-            "cd '{}' && '{}'",
-            work_dir.as_os_str().to_string_lossy(),
-            script.as_os_str().to_string_lossy()
-        );
-        let escaped = command.replace('\\', "\\\\").replace('"', "\\\"");
-        crate::process_util::hidden_command("osascript")
-            .arg("-e")
-            .arg(format!(
-                "tell application \"Terminal\" to do script \"{}\"",
-                escaped
-            ))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Err("当前平台暂不支持从新终端启动客户端".to_string())
-    }
+    crate::platform::launch_client_in_terminal(&script, &work_dir)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

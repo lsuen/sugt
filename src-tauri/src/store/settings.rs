@@ -89,21 +89,7 @@ pub fn save_settings(store_paths: &StorePaths, settings: &StoreSettings) -> Resu
 
 pub fn open_with_editor(editor_command: &str, path: &std::path::Path) -> Result<()> {
     if editor_command.trim().is_empty() {
-        #[cfg(windows)]
-        {
-            hidden_command("explorer").arg(path).spawn()?;
-            return Ok(());
-        }
-        #[cfg(target_os = "macos")]
-        {
-            hidden_command("open").arg(path).spawn()?;
-            return Ok(());
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            hidden_command("xdg-open").arg(path).spawn()?;
-            return Ok(());
-        }
+        return crate::platform::open_path(path);
     }
 
     let mut parts = editor_command.split_whitespace();

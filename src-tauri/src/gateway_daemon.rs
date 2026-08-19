@@ -1,6 +1,11 @@
+//! 网关守护进程：后台启动 / 停止 `sugt-cli serve`，PID 文件管理，
+//! 健康检查与进程查杀。
+
 use anyhow::{Context, Result};
 use std::{fs, path::Path, time::Duration};
 use tokio::time::sleep;
+
+use crate::platform::{self, CommandPlatformExt};
 
 const GATEWAY_PID_FILE: &str = "gateway.pid";
 
@@ -17,13 +22,10 @@ pub async fn is_health_url_ok(url: &str) -> bool {
         .timeout(Duration::from_secs(2))
         .build()
     {
-        Ok(client) => client,
+        Ok(c) => c,
         Err(_) => return false,
     };
-    match client.get(url).send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
-    }
+    client.get(url).send().await.map(|r| r.status().is_success()).unwrap_or(false)
 }
 
 pub async fn wait_reachable(host: &str, port: u16, attempts: u32) -> bool {
@@ -36,22 +38,14 @@ pub async fn wait_reachable(host: &str, port: u16, attempts: u32) -> bool {
     false
 }
 
+/// 定位 CLI 可执行文件。主程序同目录下找，找不到则返回当前 exe（即 CLI 本身）。
 pub fn locate_cli_exe() -> Result<std::path::PathBuf> {
     let current = std::env::current_exe().context("无法定位当前可执行文件")?;
-    #[cfg(windows)]
-    let cli_name = "sugt-cli.exe";
-    #[cfg(not(windows))]
-    let cli_name = "sugt-cli";
-    let name = current
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    #[cfg(windows)]
-    let is_app = name.eq_ignore_ascii_case("sugt.exe");
-    #[cfg(not(windows))]
-    let is_app = name == "sugt";
-    if is_app {
-        let cli = current.with_file_name(cli_name);
+    let name = current.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let cli_name = platform::cli_exe_name("sugt-cli");
+
+    if platform::is_app_exe(name, "sugt") {
+        let cli = current.with_file_name(&cli_name);
         if cli.exists() {
             return Ok(cli);
         }
@@ -63,40 +57,25 @@ pub fn locate_cli_exe() -> Result<std::path::PathBuf> {
     Ok(current)
 }
 
+/// 后台启动 `sugt-cli serve`（如已运行则跳过）。
 pub fn spawn_detached(config_dir: &Path) -> Result<()> {
     if is_pid_file_alive(config_dir) {
         return Ok(());
     }
     let exe = locate_cli_exe()?;
     let mut cmd = crate::process_util::hidden_command(&exe);
-    cmd.arg("serve");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        // 覆盖 hidden_command 的 flags，额外分离进程
-        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // 独立进程组，避免随父进程退出被 SIGHUP 终止
-        cmd.process_group(0);
-    }
+    cmd.arg("serve").detached();
     let child = cmd.spawn().context("后台启动 sugt-cli serve 失败")?;
-    fs::write(
-        config_dir.join(GATEWAY_PID_FILE),
-        child.id().to_string(),
-    )?;
+    fs::write(config_dir.join(GATEWAY_PID_FILE), child.id().to_string())?;
     Ok(())
 }
 
+/// 停止后台守护进程。
 pub fn stop_detached(config_dir: &Path) -> Result<()> {
     let pid_path = config_dir.join(GATEWAY_PID_FILE);
     if let Ok(content) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = content.trim().parse::<u32>() {
-            kill_pid(pid);
+            platform::kill_pid(pid);
         }
         let _ = fs::remove_file(&pid_path);
     }
@@ -105,92 +84,24 @@ pub fn stop_detached(config_dir: &Path) -> Result<()> {
 
 /// 强制结束残留的独立网关进程（pid 文件丢失时的兜底）。
 pub fn kill_sugt_cli_processes() {
-    #[cfg(windows)]
-    {
-        use std::process::Stdio;
-        let _ = crate::process_util::hidden_command("taskkill")
-            .args(["/IM", "sugt-cli.exe", "/F"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    #[cfg(unix)]
-    {
-        use std::process::Stdio;
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", "sugt-cli"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    platform::kill_process_by_name("sugt-cli");
 }
+
+// ---------- 内部 ----------
 
 fn is_pid_file_alive(config_dir: &Path) -> bool {
     let pid_path = config_dir.join(GATEWAY_PID_FILE);
     let content = match fs::read_to_string(&pid_path) {
-        Ok(content) => content,
+        Ok(c) => c,
         Err(_) => return false,
     };
     let pid = match content.trim().parse::<u32>() {
-        Ok(pid) => pid,
+        Ok(p) => p,
         Err(_) => return false,
     };
-    if is_pid_running(pid) {
+    if platform::is_pid_running(pid) {
         return true;
     }
     let _ = fs::remove_file(&pid_path);
     false
 }
-
-#[cfg(windows)]
-fn is_pid_running(pid: u32) -> bool {
-    use std::process::Stdio;
-    crate::process_util::hidden_command("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid)])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map(|output| {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.contains(&pid.to_string())
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(unix)]
-fn is_pid_running(pid: u32) -> bool {
-    // kill -0 不发送信号，仅探测进程是否存在
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(any(windows, unix)))]
-fn is_pid_running(_pid: u32) -> bool {
-    false
-}
-
-#[cfg(windows)]
-fn kill_pid(pid: u32) {
-    use std::process::Stdio;
-    let _ = crate::process_util::hidden_command("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-#[cfg(unix)]
-fn kill_pid(pid: u32) {
-    use std::process::Stdio;
-    let _ = std::process::Command::new("kill")
-        .args([&pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-#[cfg(not(any(windows, unix)))]
-fn kill_pid(_pid: u32) {}

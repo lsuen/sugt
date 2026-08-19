@@ -278,56 +278,13 @@ fn machine_hash() -> String {
 
 #[cfg(windows)]
 fn machine_guid() -> Option<String> {
-    use std::process::Stdio;
-
-    let output = crate::process_util::hidden_command("reg")
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Cryptography",
-            "/v",
-            "MachineGuid",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .find(|line| line.contains("MachineGuid"))
-        .and_then(|line| line.split_whitespace().last())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    crate::platform::windows::machine_guid()
 }
 
-/// macOS 通过 IOPlatformUUID 获取唯一机器标识（Windows 用注册表 MachineGuid）
+/// macOS 通过 IOPlatformUUID 获取唯一机器标识
 #[cfg(target_os = "macos")]
 fn machine_guid() -> Option<String> {
-    use std::process::Stdio;
-    let output = std::process::Command::new("ioreg")
-        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines().find_map(|line| {
-        let idx = line.find("\"IOPlatformUUID\"")?;
-        let rest = &line[idx..];
-        let eq = rest.find('=')?;
-        let value = rest[eq + 1..].trim().trim_matches('"');
-        if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        }
-    })
+    crate::platform::macos::machine_guid()
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
