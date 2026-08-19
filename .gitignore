@@ -41,6 +41,11 @@ scripts/.notify-*.json
 
 # Dev-process documents (task breakdowns, local notes)
 /.task/
+/运行调试.md
+
+# Editor / AI-agent guidance (local, not part of the product)
+/CLAUDE.md
+/AGENTS.md
 
 # Author-side packaging / release scripts (not shipped)
 /scripts/
