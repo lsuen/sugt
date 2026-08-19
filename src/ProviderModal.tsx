@@ -11,6 +11,7 @@ import {
   type ProviderForm,
   type ProviderProtocol,
 } from './providerPresets';
+import { t } from './i18n';
 
 type ProviderModalProps = {
   form: ProviderForm;
@@ -84,12 +85,12 @@ export function ProviderModal({
   const fetchModels = async () => {
     const key = form.api_key.trim();
     if (!key) {
-      onError('请先填写 API Key');
+      onError(t('pm.errorApiKey'));
       return;
     }
     const vendor = vendorId ? findVendorById(vendorId) : undefined;
     if (vendor && !vendorSupportsModelList(vendor)) {
-      onError('该服务商需手动填写 Model Name，暂无公开模型列表接口');
+      onError(t('pm.errorModelList'));
       return;
     }
     setModelsLoading(true);
@@ -100,7 +101,7 @@ export function ProviderModal({
       if (models.length > 0 && !form.model_name) {
         onChange({ ...form, model_name: models[0] });
       }
-      onInfo?.(`已获取 ${models.length} 个模型`);
+      onInfo?.(t('pm.fetchedModels', { n: models.length }));
     } catch (error) {
       setFetchedModels([]);
       setUseModelSelect(false);
@@ -112,15 +113,15 @@ export function ProviderModal({
 
   const testConnection = async () => {
     if (!form.api_key.trim()) {
-      onError('请先填写 API Key');
+      onError(t('pm.errorApiKey'));
       return;
     }
     if (!form.base_url.trim()) {
-      onError('请先填写 Base URL');
+      onError(t('pm.errorBaseUrl'));
       return;
     }
     if (!form.model_name.trim()) {
-      onError('请先填写 Model Name');
+      onError(t('pm.errorModelName'));
       return;
     }
     setTesting(true);
@@ -140,27 +141,27 @@ export function ProviderModal({
   const vendor = vendorId ? findVendorById(vendorId) : undefined;
   const anthropicHint =
     form.protocol === 'anthropic' && vendor && !vendor.anthropicBaseUrl
-      ? '该服务商未收录 Anthropic Base URL，请查阅官方文档手填'
+      ? t('pm.anthropicHint')
       : undefined;
 
   return (
     <div className="modal-overlay">
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>{isEdit ? '编辑模型' : '添加模型'}</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
+          <h3>{isEdit ? t('pm.editTitle') : t('pm.addTitle')}</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('common.close')}>
             ×
           </button>
         </div>
         <div className="modal-body">
           <label className="field-label">
-            服务商预设
+            {t('pm.vendorPreset')}
             <select
               className="app-select"
               value={vendorId}
               onChange={(e) => onVendorChange(e.target.value)}
             >
-              <option value="">自定义 / 手动填写…</option>
+              <option value="">{t('pm.customManual')}</option>
               {VENDOR_DEFINITIONS.map((v) => (
                 <option key={v.id} value={v.id}>{v.label}</option>
               ))}
@@ -172,32 +173,32 @@ export function ProviderModal({
           )}
 
           <label className="field-label">
-            配置名称
+            {t('pm.nameLabel')}
             <input
               value={form.name}
               onChange={(e) => onChange({ ...form, name: e.target.value })}
-              placeholder="例如：魔搭 DeepSeek"
+              placeholder={t('pm.namePlaceholder')}
             />
           </label>
 
           <label className="field-label">
-            服务商标识
+            {t('pm.providerLabel')}
             <input
               value={form.provider}
               onChange={(e) => onChange({ ...form, provider: e.target.value })}
-              placeholder="ModelScope"
+              placeholder={t('pm.providerPlaceholder')}
             />
           </label>
 
           <label className="field-label">
-            协议类型
+            {t('pm.protocolLabel')}
             <select
               className="app-select"
               value={form.protocol}
               onChange={(e) => onProtocolChange(e.target.value as ProviderProtocol)}
             >
-              <option value="openai">OpenAI 兼容（Claude 自动转换，推荐）</option>
-              <option value="anthropic">Anthropic 原生（base 通常不带 /v1）</option>
+              <option value="openai">{t('pm.openaiCompatDesc')}</option>
+              <option value="anthropic">{t('pm.anthropicNativeDesc')}</option>
             </select>
             {anthropicHint && <span className="hint compact">{anthropicHint}</span>}
           </label>
@@ -215,13 +216,13 @@ export function ProviderModal({
             />
             <span className="hint compact">
               {form.auto_adapt_base_url
-                ? '已开启自适配：保存时自动补 /v1 或识别火山 /api/coding/v3 等路径'
-                : '已关闭自适配：将按输入原样保存 Base URL'}
+                ? t('pm.autoAdaptOn')
+                : t('pm.autoAdaptOff')}
             </span>
           </label>
 
           <label className="switch-line">
-            <span>Base URL 自适配</span>
+            <span>{t('pm.baseUrlAutoAdapt')}</span>
             <input
               type="checkbox"
               checked={form.auto_adapt_base_url}
@@ -235,7 +236,7 @@ export function ProviderModal({
               type="text"
               value={form.api_key}
               onChange={(e) => onChange({ ...form, api_key: e.target.value })}
-              placeholder="ms-... / sk-..."
+              placeholder={t('pm.apiKeyPlaceholder')}
               autoComplete="off"
               spellCheck={false}
             />
@@ -258,7 +259,7 @@ export function ProviderModal({
                 <input
                   value={form.model_name}
                   onChange={(e) => onChange({ ...form, model_name: e.target.value })}
-                  placeholder="手填或点击获取模型列表"
+                  placeholder={t('pm.modelNamePlaceholder')}
                 />
               )}
               <button
@@ -272,19 +273,19 @@ export function ProviderModal({
                 }
                 title={
                   vendor && !vendorSupportsModelList(vendor)
-                    ? '该服务商需手填 Model Name'
-                    : '调用官方模型列表接口'
+                    ? t('pm.modelListTitle')
+                    : t('pm.fetchModelListTitle')
                 }
                 onClick={() => fetchModels().catch((err) => onError(String(err)))}
               >
                 <Download size={14} />
-                {modelsLoading ? '获取中…' : '获取模型'}
+                {modelsLoading ? t('pm.fetchingModels') : t('pm.fetchModels')}
               </button>
             </div>
           </div>
 
           <label className="switch-line">
-            <span>启用</span>
+            <span>{t('pm.enabled')}</span>
             <input
               type="checkbox"
               checked={form.enabled}
@@ -300,12 +301,12 @@ export function ProviderModal({
               onClick={() => void testConnection()}
             >
               <PlugZap size={16} />
-              {testing ? '测试中…' : '测试连接'}
+              {testing ? t('common.testing') : t('common.testConnection')}
             </button>
             <div className="modal-actions-right">
-              <button type="button" className="ghost" onClick={onClose}>取消</button>
+              <button type="button" className="ghost" onClick={onClose}>{t('common.cancel')}</button>
               <button type="button" className="primary" disabled={busy} onClick={onSave}>
-                <Save size={16} />保存
+                <Save size={16} />{t('common.save')}
               </button>
             </div>
           </div>

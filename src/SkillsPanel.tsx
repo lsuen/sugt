@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { GithubProxyModal } from './store/GithubProxyModal';
 import type { ParsedGitRepo, SkillCatalogItem, SkillRepoView, StoreSettings } from './store/types';
+import { t } from './i18n';
 
 export type MountedAgentRef = { id: string; name: string };
 
@@ -179,7 +180,7 @@ export function SkillsPanel({
 
   const openMount = (mode: 'mount' | 'unmount') => {
     if (selected.size === 0) {
-      pushToast('请先勾选技能', 'info');
+      pushToast(t('skill.selectSkillsFirst'), 'info');
       return;
     }
     setMountMode(mode);
@@ -194,7 +195,7 @@ export function SkillsPanel({
       const agentIds = Array.from(pickedAgents);
       const path = customPath.trim();
       if (agentIds.length === 0 && !path) {
-        throw new Error('请选择 Agent，或填写项目/自定义目录');
+        throw new Error(t('skill.errorMountTarget'));
       }
       const payload = { skillIds, agentIds, customPath: path || null };
       if (mountMode === 'mount') {
@@ -206,20 +207,20 @@ export function SkillsPanel({
       setSelected(new Set());
       setCustomPath('');
       await reloadLocal();
-    }, mountMode === 'mount' ? '挂载完成' : '已取消挂载');
+    }, mountMode === 'mount' ? t('skill.mountDone') : t('skill.unmountDone'));
 
   const createSkill = () =>
     run(async () => {
       await invoke('store_create_local_skill', { name: newSkillName });
       setNewSkillName('');
       await reloadLocal();
-    }, '已创建本地技能');
+    }, t('skill.createdLocal'));
 
   const installSkill = (id: string) =>
     run(async () => {
       await invoke('store_install_skill', { skillId: id });
       await Promise.all([reloadLocal(), reloadDiscover()]);
-    }, '已入库');
+    }, t('skill.installed'));
 
   const uninstallSkill = (id: string) =>
     run(async () => {
@@ -230,7 +231,7 @@ export function SkillsPanel({
         return next;
       });
       await reloadLocal();
-    }, '已从本地删除');
+    }, t('skill.deletedLocal'));
 
   if (subview === 'repos') {
     return (
@@ -239,13 +240,13 @@ export function SkillsPanel({
           <div className="section-title">
             <div className="store-title-row">
               <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('main')}>
-                <ArrowLeft size={14} />返回
+                <ArrowLeft size={14} />{t('agent.back')}
               </button>
-              <h3>技能库配置</h3>
+              <h3>{t('skill.reposConfig')}</h3>
             </div>
             <div className="title-actions">
               <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setProxyModalOpen(true)}>
-                GitHub 代理
+                {t('skill.gitHubProxy')}
               </button>
               <button
                 type="button"
@@ -255,9 +256,9 @@ export function SkillsPanel({
                   const next = await invoke<SkillRepoView[]>('store_refresh_all_repos');
                   setRepos(next);
                   await reloadDiscover();
-                }, '仓库已刷新')}
+                }, t('skill.reposRefreshed'))}
               >
-                <RefreshCw size={14} />刷新全部
+                <RefreshCw size={14} />{t('skill.refreshAll')}
               </button>
             </div>
           </div>
@@ -265,7 +266,7 @@ export function SkillsPanel({
           <div className="store-repo-form store-repo-form-grid">
             <input
               className="store-repo-url"
-              placeholder="完整 git 地址"
+              placeholder={t('skill.gitUrlPlaceholder')}
               value={newRepo.url}
               onChange={(e) => {
                 setNewRepo({ ...newRepo, url: e.target.value });
@@ -273,8 +274,8 @@ export function SkillsPanel({
                 setParsedPreview(null);
               }}
             />
-            <input placeholder="branch" value={newRepo.branch} onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })} />
-            <input placeholder="权重" value={newRepo.weight} onChange={(e) => setNewRepo({ ...newRepo, weight: e.target.value })} />
+            <input placeholder={t('skill.branchPlaceholder')} value={newRepo.branch} onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })} />
+            <input placeholder={t('skill.weightPlaceholder')} value={newRepo.weight} onChange={(e) => setNewRepo({ ...newRepo, weight: e.target.value })} />
             <button
               type="button"
               className="ghost tiny-btn"
@@ -286,7 +287,7 @@ export function SkillsPanel({
                 setRepoTestHint(hint);
               })}
             >
-              测试
+              {t('common.test')}
             </button>
             <button
               type="button"
@@ -302,12 +303,12 @@ export function SkillsPanel({
                 setNewRepo({ url: '', branch: 'main', weight: '100' });
                 setParsedPreview(null);
                 setRepoTestHint(null);
-              }, '仓库已添加')}
+              }, t('skill.repoAdded'))}
             >
-              保存
+              {t('common.save')}
             </button>
           </div>
-          {parsedPreview && <p className="hint compact">解析：{parsedPreview.label} · {parsedPreview.clone_url}</p>}
+          {parsedPreview && <p className="hint compact">{t('skill.parsed', { label: parsedPreview.label, url: parsedPreview.clone_url })}</p>}
           {repoTestHint && <p className="hint compact">{repoTestHint}</p>}
 
           <div className="takeover-profile-list" style={{ marginTop: 12 }}>
@@ -316,25 +317,25 @@ export function SkillsPanel({
                 <div className="takeover-profile-row-main">
                   <div className="takeover-profile-row-title">
                     <strong>{repo.label}</strong>
-                    <span className="badge inline">{repo.skill_count} 技能</span>
-                    {!repo.enabled && <span className="badge stop inline">禁用</span>}
+                    <span className="badge inline">{t('skill.skillCount', { n: repo.skill_count })}</span>
+                    {!repo.enabled && <span className="badge stop inline">{t('common.disabled')}</span>}
                   </div>
-                  <span className="hint compact takeover-profile-row-meta">{repo.clone_url} · {repo.branch} · 权重 {repo.weight}</span>
+                  <span className="hint compact takeover-profile-row-meta">{t('skill.weightMeta', { url: repo.clone_url, branch: repo.branch, weight: repo.weight })}</span>
                   {repo.last_error && <span className="error-text">{repo.last_error}</span>}
                 </div>
                 <div className="takeover-profile-row-actions">
                   <button type="button" className="tiny ghost" disabled={busy} onClick={() => run(async () => {
                     const next = await invoke<SkillRepoView[]>('store_refresh_repo', { repoId: repo.id });
                     setRepos(next);
-                  }, '已刷新')}>刷新</button>
+                  }, t('skill.toastRefreshed'))}>{t('common.refresh')}</button>
                   <button type="button" className="tiny ghost danger-link" disabled={busy} onClick={() => run(async () => {
                     const next = await invoke<SkillRepoView[]>('store_remove_repo', { repoId: repo.id });
                     setRepos(next);
-                  }, '已删除')}>删除</button>
+                  }, t('skill.toastDeleted'))}>{t('common.delete')}</button>
                 </div>
               </div>
             ))}
-            {repos.length === 0 && <p className="hint compact">暂无仓库，添加后可在「发现技能」浏览。</p>}
+            {repos.length === 0 && <p className="hint compact">{t('skill.noRepos')}</p>}
           </div>
         </div>
         {proxyModalOpen && (
@@ -344,7 +345,7 @@ export function SkillsPanel({
             onSaved={() => {
               setProxyModalOpen(false);
               reloadDiscover().catch(() => undefined);
-              pushToast('代理已保存', 'ok');
+              pushToast(t('skill.proxySaved'), 'ok');
             }}
             pushToast={pushToast}
             formatError={formatInvokeError}
@@ -358,36 +359,36 @@ export function SkillsPanel({
     <div className="skills-panel">
       <div className="card">
         <div className="section-title">
-          <h3>技能</h3>
+          <h3>{t('skill.title')}</h3>
           <div className="title-actions">
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('repos')}>
-              <Settings2 size={14} />技能库配置
+              <Settings2 size={14} />{t('skill.reposConfig')}
             </button>
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
               await invoke('store_open_staging_dir');
             })}>
-              <FolderOpen size={14} />本地库目录
+              <FolderOpen size={14} />{t('skill.localDir')}
             </button>
           </div>
         </div>
 
         <div className="skills-tabs">
-          <button type="button" className={tab === 'local' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('local')}>本地技能</button>
-          <button type="button" className={tab === 'discover' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('discover')}>发现技能</button>
+          <button type="button" className={tab === 'local' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('local')}>{t('skill.tabLocal')}</button>
+          <button type="button" className={tab === 'discover' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('discover')}>{t('skill.tabDiscover')}</button>
         </div>
 
         <div className="skills-toolbar">
           <div className="store-search">
             <Search size={16} />
-            <input placeholder="搜索技能" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input placeholder={t('skill.searchPlaceholder')} value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           {tab === 'local' && (
             <select
               value={agentFilter}
               onChange={(e) => onAgentFilterChange?.(e.target.value)}
-              title="按已挂载 Agent 筛选"
+              title={t('skill.filterMountedTitle')}
             >
-              <option value="">挂载到：全部</option>
+              <option value="">{t('skill.mountedAll')}</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
@@ -395,7 +396,7 @@ export function SkillsPanel({
           )}
           {tab === 'discover' && (
             <select value={repoFilter} onChange={(e) => setRepoFilter(e.target.value)}>
-              <option value="">全部仓库</option>
+              <option value="">{t('skill.allRepos')}</option>
               {repos.map((repo) => (
                 <option key={repo.id} value={repo.id}>{repo.label}</option>
               ))}
@@ -404,10 +405,10 @@ export function SkillsPanel({
           {tab === 'local' && (
             <>
               <button type="button" className="primary tiny-btn" disabled={busy || selected.size === 0} onClick={() => openMount('mount')}>
-                <PlugZap size={14} />挂载
+                <PlugZap size={14} />{t('skill.mount')}
               </button>
               <button type="button" className="ghost tiny-btn" disabled={busy || selected.size === 0} onClick={() => openMount('unmount')}>
-                <Unplug size={14} />取消挂载
+                <Unplug size={14} />{t('skill.unmount')}
               </button>
             </>
           )}
@@ -417,7 +418,7 @@ export function SkillsPanel({
           <>
             <div className="skills-create-row">
               <input
-                placeholder="新建本地技能名称"
+                placeholder={t('skill.newNamePlaceholder')}
                 value={newSkillName}
                 disabled={busy}
                 onChange={(e) => setNewSkillName(e.target.value)}
@@ -426,7 +427,7 @@ export function SkillsPanel({
                 }}
               />
               <button type="button" className="primary tiny-btn" disabled={busy || !newSkillName.trim()} onClick={() => createSkill()}>
-                <Plus size={14} />新建
+                <Plus size={14} />{t('skill.new')}
               </button>
             </div>
             <div className="skills-list">
@@ -441,21 +442,21 @@ export function SkillsPanel({
                   <div className="skills-row-main">
                     <div className="skills-row-title">
                       <strong>{skill.name}</strong>
-                      {skill.is_local && <span className="badge inline">自建</span>}
+                      {skill.is_local && <span className="badge inline">{t('skill.selfBuilt')}</span>}
                       {skill.mounted_agents.map((a) => (
                         <span key={a.id} className="badge ok inline skills-pill">{a.name}</span>
                       ))}
                       {(skill.mounted_paths ?? []).map((p) => (
-                        <span key={p} className="badge inline skills-pill" title={p}>项目</span>
+                        <span key={p} className="badge inline skills-pill" title={p}>{t('skill.project')}</span>
                       ))}
                       {skill.mounted_agents.length === 0 && !(skill.mounted_paths?.length) && (
-                        <span className="badge inline">未挂载</span>
+                        <span className="badge inline">{t('skill.notMounted')}</span>
                       )}
                     </div>
                     <span className="hint compact">{skill.repo_label}</span>
                     {clipTriggerHint(skill.description) && (
                       <span className="hint compact skills-trigger-hint" title={skill.description ?? undefined}>
-                        适用：{clipTriggerHint(skill.description)}
+                        {t('skill.applicable', { hint: clipTriggerHint(skill.description) ?? '' })}
                       </span>
                     )}
                   </div>
@@ -463,17 +464,17 @@ export function SkillsPanel({
                     <button type="button" className="tiny ghost" disabled={busy} onClick={(e) => {
                       e.preventDefault();
                       run(async () => { await invoke('store_open_skill', { skillId: skill.id, staged: true }); });
-                    }}>打开</button>
+                    }}>{t('common.open')}</button>
                     <button type="button" className="tiny ghost danger-link" disabled={busy} onClick={(e) => {
                       e.preventDefault();
-                      if (window.confirm(`删除本地技能「${skill.name}」？`)) uninstallSkill(skill.id);
+                      if (window.confirm(t('skill.confirmDeleteLocal', { name: skill.name }))) uninstallSkill(skill.id);
                     }}>
                       <Trash2 size={14} />
                     </button>
                   </div>
                 </label>
               ))}
-              {filteredLocal.length === 0 && <p className="hint compact">本地暂无技能。可在「发现技能」安装，或上方新建。</p>}
+              {filteredLocal.length === 0 && <p className="hint compact">{t('skill.localEmpty')}</p>}
             </div>
           </>
         )}
@@ -499,9 +500,9 @@ export function SkillsPanel({
                     setRepos(next);
                   }
                   await reloadDiscover();
-                }, '推荐技能库已刷新')}
+                }, t('skill.toastRecommendedRefreshed'))}
               >
-                <RefreshCw size={14} />刷新推荐库
+                <RefreshCw size={14} />{t('skill.refreshRecommended')}
               </button>
               <button
                 type="button"
@@ -511,16 +512,16 @@ export function SkillsPanel({
                   const next = await invoke<SkillRepoView[]>('store_refresh_all_repos');
                   setRepos(next);
                   await reloadDiscover();
-                }, '已刷新全部启用仓库')}
+                }, t('skill.toastAllRefreshed'))}
               >
-                <RefreshCw size={14} />刷新全部
+                <RefreshCw size={14} />{t('skill.refreshAll')}
               </button>
             </div>
             {repoProblems.length > 0 && (
               <p className="hint compact" style={{ color: 'var(--danger, #c44)' }}>
-                部分仓库拉取失败（不影响已缓存的其它库）：
+                {t('skill.repoProblems')}
                 {repoProblems.map((r) => `${r.label}`).join('、')}
-                。缺 frontend-design 时请到「技能库配置」设置 GitHub 代理后重试 anthropics/skills。
+                {t('skill.repoProblemsTail')}
               </p>
             )}
             {filteredCatalog.map((skill) => (
@@ -532,7 +533,7 @@ export function SkillsPanel({
                   </div>
                   {clipTriggerHint(skill.description) ? (
                     <span className="hint compact skills-trigger-hint" title={skill.description ?? undefined}>
-                      适用：{clipTriggerHint(skill.description)}
+                      {t('skill.applicable', { hint: clipTriggerHint(skill.description) ?? '' })}
                     </span>
                   ) : (
                     <span className="hint compact">{skill.relative_path}</span>
@@ -540,7 +541,7 @@ export function SkillsPanel({
                 </div>
                 <div className="skills-row-actions">
                   <button type="button" className="tiny primary" disabled={busy} onClick={() => installSkill(skill.id)}>
-                    <Download size={14} />入库
+                    <Download size={14} />{t('skill.install')}
                   </button>
                 </div>
               </div>
@@ -548,8 +549,8 @@ export function SkillsPanel({
             {filteredCatalog.length === 0 && (
               <p className="hint compact">
                 {enabledRepoIds.size === 0
-                  ? '没有启用的技能仓库。请到「技能库配置」启用并刷新。'
-                  : '没有可发现的技能。可点「刷新推荐库」；frontend-design 在 anthropics/skills，国内通常需配置 GitHub 代理。'}
+                  ? t('skill.noReposEnabled')
+                  : t('skill.noDiscoverable')}
               </p>
             )}
           </div>
@@ -560,11 +561,11 @@ export function SkillsPanel({
         <div className="modal-overlay">
           <div className="modal takeover-env-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>{mountMode === 'mount' ? '挂载到 Agent' : '取消挂载'}</h3>
-              <button type="button" className="icon-btn" onClick={() => setMountOpen(false)}>×</button>
+              <h3>{mountMode === 'mount' ? t('skill.mountToAgent') : t('skill.unmountTitle')}</h3>
+              <button type="button" className="icon-btn" onClick={() => setMountOpen(false)} aria-label={t('common.close')}>×</button>
             </div>
             <div className="modal-body">
-              <p className="hint compact">已选 {selected.size} 个技能 · 勾选目标 Agent（全局技能目录）</p>
+              <p className="hint compact">{t('skill.mountModalHint', { n: selected.size })}</p>
               <div className="skills-agent-pick">
                 {agents.map((agent) => (
                   <label key={agent.id} className="skills-agent-option">
@@ -584,34 +585,34 @@ export function SkillsPanel({
                       <strong>
                         {agent.name}
                         <span className="hint compact">
-                          {' '}· {agent.detected ? '已发现' : '目录未创建'}
-                          {typeof agent.skills_count === 'number' ? ` · ${agent.skills_count} 技能` : ''}
+                          {' '}· {agent.detected ? t('skill.detected') : t('skill.dirNotCreated')}
+                          {typeof agent.skills_count === 'number' ? t('skill.skillsCountSuffix', { n: agent.skills_count }) : ''}
                         </span>
                       </strong>
                       <code className="skills-agent-path">{agent.skills_dir}</code>
                     </span>
                   </label>
                 ))}
-                {agents.length === 0 && <p className="hint compact">没有可挂载的 Agent（需配置 skill_dirs）。</p>}
+                {agents.length === 0 && <p className="hint compact">{t('skill.noAgentsMount')}</p>}
               </div>
               <label className="field-label">
-                项目 / 自定义目录（可选）
+                {t('skill.customDirLabel')}
                 <input
-                  placeholder="项目根 → 自动用 .claude/skills；或以 skills 结尾的完整路径"
+                  placeholder={t('skill.customDirPlaceholder')}
                   value={customPath}
                   onChange={(e) => setCustomPath(e.target.value)}
                 />
               </label>
             </div>
             <div className="modal-actions">
-              <button type="button" className="ghost" onClick={() => setMountOpen(false)}>取消</button>
+              <button type="button" className="ghost" onClick={() => setMountOpen(false)}>{t('common.cancel')}</button>
               <button
                 type="button"
                 className="primary"
                 disabled={busy || (pickedAgents.size === 0 && !customPath.trim())}
                 onClick={() => confirmMount()}
               >
-                确定
+                {t('skill.confirm')}
               </button>
             </div>
           </div>

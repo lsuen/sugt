@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import type { TrafficStats } from './providerPresets';
+import { t } from './i18n';
 
 function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) {
   const max = Math.max(...buckets.map((b) => b.success + b.failed), 1);
   return (
-    <div className="traffic-chart" aria-label="近 60 分钟请求量">
+    <div className="traffic-chart" aria-label={t('trafstat.chartAria')}>
       {buckets.map((bucket, index) => {
         const total = bucket.success + bucket.failed;
         const height = Math.max(4, Math.round((total / max) * 100));
@@ -29,8 +30,8 @@ function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) 
         );
       })}
       <div className="traffic-chart-labels">
-        <span>60 分钟前</span>
-        <span>现在</span>
+        <span>{t('trafstat.minutesAgo')}</span>
+        <span>{t('trafstat.now')}</span>
       </div>
     </div>
   );
@@ -47,8 +48,8 @@ function ClientsDetailModal({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact traffic-clients-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>调用来源（{clients.length}）</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">×</button>
+          <h3>{t('trafstat.sourceTitle', { n: clients.length })}</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('common.close')}>×</button>
         </div>
         <div className="modal-body traffic-clients-modal-body">
           <div className="store-mini-list traffic-client-list-scroll">
@@ -57,7 +58,7 @@ function ClientsDetailModal({
                 <div>
                   <strong>{client.label}</strong>
                   <span className="hint compact">
-                    {client.provider_name} · {client.model_name} · {client.request_count} 次
+                    {client.provider_name} · {client.model_name} · {t('trafstat.requests', { n: client.request_count })}
                   </span>
                 </div>
                 <span className="hint compact traffic-client-meta">
@@ -92,8 +93,8 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
   if (!traffic) {
     return (
       <div className="card traffic-card">
-        <h3>请求统计</h3>
-        <p className="hint compact">等待网关状态…</p>
+        <h3>{t('trafstat.title')}</h3>
+        <p className="hint compact">{t('trafstat.waiting')}</p>
       </div>
     );
   }
@@ -107,55 +108,55 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
   return (
     <div className="card traffic-card">
       <div className="section-title">
-        <h3>请求统计</h3>
-        <span className="hint compact">{running ? '实时' : '网关未运行'}</span>
+        <h3>{t('trafstat.title')}</h3>
+        <span className="hint compact">{running ? t('trafstat.realtime') : t('trafstat.notRunning')}</span>
       </div>
       {empty ? (
         <p className="hint compact traffic-empty">
-          {running ? '暂无请求。客户端经接管访问网关后会显示在这里。' : '启动网关并接管客户端后开始统计。'}
+          {running ? t('trafstat.emptyRunning') : t('trafstat.emptyStopped')}
         </p>
       ) : (
         <>
           <div className="traffic-metrics">
             <div className="traffic-metric">
-              <span>今日</span>
+              <span>{t('trafstat.today')}</span>
               <strong>{traffic.today_requests}</strong>
             </div>
             <div className="traffic-metric">
-              <span>累计</span>
+              <span>{t('trafstat.total')}</span>
               <strong>{traffic.total_requests}</strong>
             </div>
             <div className="traffic-metric">
-              <span>平均耗时</span>
+              <span>{t('trafstat.avgLatency')}</span>
               <strong>{traffic.avg_latency_ms}<span className="traffic-unit">ms</span></strong>
             </div>
             <div className="traffic-metric">
-              <span>成功率</span>
+              <span>{t('trafstat.successRate')}</span>
               <strong className={successRate < 90 ? 'store-error' : ''}>{successRate.toFixed(0)}%</strong>
             </div>
             <div className="traffic-metric">
-              <span>失败</span>
+              <span>{t('trafstat.failed')}</span>
               <strong className={traffic.fail_rate_percent > 10 ? 'store-error' : ''}>
                 {traffic.failed_count}
                 <span className="traffic-unit">/{failText}%</span>
               </strong>
             </div>
             <div className="traffic-metric">
-              <span>来源</span>
+              <span>{t('trafstat.sources')}</span>
               <strong>{traffic.active_clients}</strong>
             </div>
             <div className="traffic-metric">
-              <span>Token 入</span>
+              <span>{t('trafstat.tokenIn')}</span>
               <strong>{formatToken(traffic.today_input_tokens)}</strong>
             </div>
             <div className="traffic-metric">
-              <span>Token 出</span>
+              <span>{t('trafstat.tokenOut')}</span>
               <strong>{formatToken(traffic.today_output_tokens)}</strong>
             </div>
           </div>
           {(lastProvider || lastPath) && (
             <p className="hint compact traffic-last-hit">
-              最近：{lastProvider ?? '—'}
+              {t('trafstat.lastHit')}{lastProvider ?? '—'}
               {lastPath ? ` · ${lastPath}` : ''}
             </p>
           )}
@@ -167,7 +168,7 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
                 className="ghost tiny-btn traffic-clients-toggle"
                 onClick={() => setClientsOpen(true)}
               >
-                调用来源（{traffic.recent_clients.length}）
+                {t('trafstat.sourceTitle', { n: traffic.recent_clients.length })}
               </button>
             </div>
           )}

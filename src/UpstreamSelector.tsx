@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Play, RefreshCw, Shuffle } from 'lucide-react'
+import { t } from './i18n'
 
 type ProviderOption = {
   id: string
@@ -105,7 +106,7 @@ export function UpstreamSelector({
             auto_adapt_base_url: true,
           },
         }),
-      '模型已切换',
+      t('upstream.toastSwitched'),
     )
     onRefresh()
   }
@@ -114,7 +115,7 @@ export function UpstreamSelector({
     if (!upstreamProviderId) return
     await run(
       () => invoke('test_provider', { id: upstreamProviderId }),
-      '测试完成',
+      t('upstream.toastTested'),
     )
   }
 
@@ -129,7 +130,7 @@ export function UpstreamSelector({
           onChange={(e) => void switchUpstream(e.target.value)}
         >
           {enabledProviders.length === 0 && (
-            <option value="">暂无已启用模型</option>
+            <option value="">{t('upstream.noModels')}</option>
           )}
           {enabledProviders.map((p) => (
             <option key={p.id} value={p.id}>
@@ -141,8 +142,8 @@ export function UpstreamSelector({
           type="button"
           className="tiny icon-only access-mode-toggle"
           onClick={onCycleMode}
-          aria-label="切换接入协议"
-          title="切换接入协议：auto → OpenAI → Anthropic"
+          aria-label={t('upstream.switchProtocol')}
+          title={t('upstream.switchProtocolTitle')}
         >
           <Shuffle size={14} />
         </button>
@@ -174,7 +175,7 @@ export function UpstreamSelector({
               className="tiny icon-only"
               disabled={modelsBusy}
               onClick={() => void fetchModels()}
-              aria-label="获取模型列表"
+              aria-label={t('upstream.fetchModels')}
             >
               <RefreshCw size={14} className={modelsBusy ? 'spin' : ''} />
             </button>
@@ -183,7 +184,7 @@ export function UpstreamSelector({
               className="tiny icon-only"
               disabled={busy}
               onClick={() => void testCurrent()}
-              aria-label="测试"
+              aria-label={t('upstream.test')}
             >
               <Play size={14} />
             </button>

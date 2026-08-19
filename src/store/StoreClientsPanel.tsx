@@ -8,6 +8,7 @@ import {
 import { GithubProxyModal } from './GithubProxyModal';
 import { LaunchClientModal } from './LaunchClientModal';
 import { SkillRow } from './SkillRow';
+import { t } from '../i18n';
 import type {
   DiscoverFilter,
   MountTarget,
@@ -58,18 +59,18 @@ type Props = {
   formatInvokeError: (error: unknown) => string;
 };
 
-const DISCOVER_FILTERS: { id: DiscoverFilter; label: string }[] = [
-  { id: 'all', label: '全部' },
-  { id: 'available', label: '可安装' },
-  { id: 'staged', label: '已暂存' },
-  { id: 'mounted', label: '已挂载' },
+const DISCOVER_FILTERS: { id: DiscoverFilter }[] = [
+  { id: 'all' },
+  { id: 'available' },
+  { id: 'staged' },
+  { id: 'mounted' },
 ];
 
-const CONTENT_TABS: { id: StoreContentTab; label: string }[] = [
-  { id: 'env', label: '环境' },
-  { id: 'templates', label: '接管模板' },
-  { id: 'skills', label: '技能' },
-  { id: 'plugins', label: '插件' },
+const CONTENT_TABS: { id: StoreContentTab }[] = [
+  { id: 'env' },
+  { id: 'templates' },
+  { id: 'skills' },
+  { id: 'plugins' },
 ];
 
 function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; listenUrl: string }) {
@@ -77,7 +78,7 @@ function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; lis
   return (
     <span className="badge-wrap" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
       <span className={`badge popover-trigger ${client.configured ? 'ok' : 'stop'}`}>
-        {client.configured ? '已接管' : '未接管'}
+        {client.configured ? t('store.takenOver') : t('store.notTakenOver')}
       </span>
       {hover && (
         <div className="badge-popover" role="tooltip">
@@ -85,11 +86,11 @@ function ClientStatusBadge({ client, listenUrl }: { client: ClientEnvStatus; lis
           {client.variables && (
             <div className="env-vars compact">
               {Object.entries(client.variables).map(([name, value]) => (
-                <div className="env-row" key={name}><span>{name}</span><code>{value || '（未设置）'}</code></div>
+                <div className="env-row" key={name}><span>{name}</span><code>{value || t('store.unset')}</code></div>
               ))}
             </div>
           )}
-          <p className="hint compact popover-foot">网关 {listenUrl}</p>
+          <p className="hint compact popover-foot">{t('store.gatewayUrl', { url: listenUrl })}</p>
         </div>
       )}
     </span>
@@ -188,25 +189,25 @@ export function StoreClientsPanel({
     run(async () => {
       await invoke('store_install_skill', { skillId });
       await loadCatalog();
-    }, '已安装到暂存区');
+    }, t('store.installedStaging'));
 
   const mountSkill = (skillId: string, target: MountTarget) =>
     run(async () => {
       await invoke('store_mount_skill', { skillId, target });
       await loadCatalog();
-    }, '挂载完成');
+    }, t('store.mountDone'));
 
   const unmountSkill = (skillId: string, target: MountTarget) =>
     run(async () => {
       await invoke('store_unmount_skill', { skillId, target });
       await loadCatalog();
-    }, '已取消挂载');
+    }, t('store.unmountDone'));
 
   const uninstallSkill = (skillId: string) =>
     run(async () => {
       await invoke('store_uninstall_skill', { skillId });
       await loadCatalog();
-    }, '已从暂存区移除');
+    }, t('store.removedStaging'));
 
   const openSkill = (skillId: string, staged: boolean) =>
     run(() => invoke('store_open_skill', { skillId, staged, client: clientTab }));
@@ -249,15 +250,33 @@ export function StoreClientsPanel({
   const proxyActive = Boolean(settings.github_proxy_prefix?.trim());
   const clientLabel = clientTab === 'claude' ? 'Claude Code' : 'Codex';
 
+  const discoverFilterLabel = (id: DiscoverFilter): string => {
+    switch (id) {
+      case 'all': return t('store.filterAll');
+      case 'available': return t('store.filterAvailable');
+      case 'staged': return t('store.filterStaged');
+      case 'mounted': return t('store.filterMounted');
+    }
+  };
+
+  const contentTabLabel = (id: StoreContentTab): string => {
+    switch (id) {
+      case 'env': return t('store.tabEnv');
+      case 'templates': return t('store.tabTemplates');
+      case 'skills': return t('store.tabSkills');
+      case 'plugins': return t('store.tabPlugins');
+    }
+  };
+
   const copyGatewayUrl = () => {
     const url = clients?.listen_url ?? status?.listen_url;
     if (!url) {
-      pushToast('网关地址未知', 'info');
+      pushToast(t('store.gatewayUrlUnknown'), 'info');
       return;
     }
     navigator.clipboard.writeText(url).then(
-      () => pushToast('已复制网关地址', 'ok'),
-      () => pushToast('复制失败', 'error'),
+      () => pushToast(t('store.gatewayUrlCopied'), 'ok'),
+      () => pushToast(t('gateway.copyFailed'), 'error'),
     );
   };
 
@@ -286,8 +305,8 @@ export function StoreClientsPanel({
         {items.length === 0 && (
           <div className="store-empty">
             {discoverFilter === 'staged'
-              ? '暂无暂存技能。切换到「可安装」或「全部」安装后，可在此直接挂载。'
-              : '暂无匹配技能。请先刷新仓库或调整筛选。'}
+              ? t('store.emptyStaged')
+              : t('store.emptyNoMatch')}
           </div>
         )}
         {items.map((skill) => (
@@ -314,31 +333,31 @@ export function StoreClientsPanel({
           <div className="section-title">
             <div className="store-title-row">
               <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('main')}>
-                <ArrowLeft size={14} />返回
+                <ArrowLeft size={14} />{t('store.back')}
               </button>
-              <h3>发现技能</h3>
+              <h3>{t('store.discoverTitle')}</h3>
             </div>
             <div className="title-actions store-action-bar">
               <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setProxyModalOpen(true)}>
-                <Globe size={14} />GitHub 代理{proxyActive ? ' · 已启用' : ''}
+                <Globe size={14} />{t('store.githubProxy')}{proxyActive ? t('store.proxyEnabled') : ''}
               </button>
               <button
                 type="button"
                 className="ghost tiny-btn"
                 disabled={busy}
-                onClick={() => withStatus('正在刷新全部仓库…', async () => {
+                onClick={() => withStatus(t('store.refreshingAll'), async () => {
                   const next = await invoke<SkillRepoView[]>('store_refresh_all_repos');
                   setRepos(next);
                   await loadCatalog();
-                }, '仓库已刷新')}
+                }, t('store.reposRefreshed'))}
               >
-                <RefreshCw size={14} />刷新全部
+                <RefreshCw size={14} />{t('store.refreshAll')}
               </button>
             </div>
           </div>
           {statusText && <StatusBanner text={statusText} />}
           {proxyActive && (
-            <p className="hint compact">GitHub 代理：<code className="store-path-code">{settings.github_proxy_prefix.trim().replace(/\/+$/, '')}</code></p>
+            <p className="hint compact">{t('store.proxyHint')}<code className="store-path-code">{settings.github_proxy_prefix.trim().replace(/\/+$/, '')}</code></p>
           )}
           <div className="store-filter-tabs">
             {DISCOVER_FILTERS.map((tab) => (
@@ -348,24 +367,24 @@ export function StoreClientsPanel({
                 className={discoverFilter === tab.id ? 'store-tab active' : 'store-tab'}
                 onClick={() => setDiscoverFilter(tab.id)}
               >
-                {tab.label}
+                {discoverFilterLabel(tab.id)}
               </button>
             ))}
           </div>
           <div className="store-filters">
             <div className="store-search">
               <Search size={16} />
-              <input placeholder="搜索技能" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input placeholder={t('store.searchPlaceholder')} value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
             <select value={repoFilter} onChange={(e) => setRepoFilter(e.target.value)}>
-              <option value="">全部仓库</option>
+              <option value="">{t('store.allRepos')}</option>
               {repos.map((repo) => (
                 <option key={repo.id} value={repo.id}>{repo.label} ({repo.skill_count})</option>
               ))}
             </select>
           </div>
           <p className="hint compact">
-            技能格式与 Claude / Codex 通用（SKILL.md）。安装到暂存区后，在「已暂存」筛选中可直接挂载到
+            {t('store.skillFormatHint')}
             {clientTab === 'claude' ? ' ~/.claude/skills' : ' ~/.agents/skills'}。
           </p>
           {skillList(filteredCatalog)}
@@ -382,16 +401,16 @@ export function StoreClientsPanel({
           <div className="section-title">
             <div className="store-title-row">
               <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('main')}>
-                <ArrowLeft size={14} />返回
+                <ArrowLeft size={14} />{t('store.back')}
               </button>
-              <h3>管理技能仓库</h3>
+              <h3>{t('store.manageReposTitle')}</h3>
             </div>
           </div>
           {statusText && <StatusBanner text={statusText} />}
           <div className="store-repo-form store-repo-form-grid">
             <input
               className="store-repo-url"
-              placeholder="完整 git 地址，如 https://atomgit.com/sunwl88/sun-skills"
+              placeholder={t('store.gitUrlPlaceholder')}
               value={newRepo.url}
               onChange={(e) => {
                 setNewRepo({ ...newRepo, url: e.target.value });
@@ -400,13 +419,13 @@ export function StoreClientsPanel({
               }}
             />
             <input
-              placeholder="branch"
+              placeholder={t('skill.branchPlaceholder')}
               value={newRepo.branch}
               onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })}
             />
             <input
-              placeholder="权重"
-              title="权重越高，发现技能列表越靠前"
+              placeholder={t('skill.weightPlaceholder')}
+              title={t('store.weightTitle')}
               value={newRepo.weight}
               onChange={(e) => setNewRepo({ ...newRepo, weight: e.target.value })}
             />
@@ -422,9 +441,9 @@ export function StoreClientsPanel({
                   branch: newRepo.branch || 'main',
                 });
                 setRepoTestHint(msg);
-              }, '仓库测试通过')}
+              }, t('store.repoTested'))}
             >
-              测试解析
+              {t('store.testParse')}
             </button>
             <button
               type="button"
@@ -432,7 +451,7 @@ export function StoreClientsPanel({
               disabled={busy}
               onClick={() => run(async () => {
                 const weight = Number.parseInt(newRepo.weight || '0', 10);
-                if (Number.isNaN(weight)) throw new Error('权重必须是数字');
+                if (Number.isNaN(weight)) throw new Error(t('store.weightMustBeNumber'));
                 const next = await invoke<SkillRepoView[]>('store_add_repo', {
                   url: newRepo.url,
                   branch: newRepo.branch || 'main',
@@ -442,15 +461,15 @@ export function StoreClientsPanel({
                 setNewRepo({ url: '', branch: 'main', weight: '100' });
                 setRepoTestHint(null);
                 setParsedPreview(null);
-              }, '仓库已保存')}
+              }, t('store.repoSaved'))}
             >
-              保存
+              {t('common.save')}
             </button>
           </div>
           {parsedPreview && (
             <p className="hint compact store-ok-hint">
-              解析：{parsedPreview.host} · {parsedPreview.label}
-              {parsedPreview.is_github ? '（GitHub，可走克隆代理）' : '（国内/第三方源，直连）'}
+              {t('store.parsedHint', { host: parsedPreview.host, label: parsedPreview.label })}
+              {parsedPreview.is_github ? t('store.parsedGithub') : t('store.parsedDirect')}
             </p>
           )}
           {repoTestHint && (
@@ -465,7 +484,7 @@ export function StoreClientsPanel({
                   <div className="store-repo-meta">
                     <strong className="store-repo-name">{repo.label}</strong>
                     <span className="hint compact store-repo-stats">
-                      权重 {repo.weight} · {repo.branch} · {repo.skill_count} 个技能
+                      {t('store.repoWeight', { weight: repo.weight, branch: repo.branch, count: repo.skill_count })}
                     </span>
                     <code className="store-path-code">{repo.clone_url}</code>
                     {repo.last_error && <p className="hint compact store-error">{repo.last_error}</p>}
@@ -475,7 +494,7 @@ export function StoreClientsPanel({
                       type="button"
                       className="tiny"
                       disabled={busy}
-                      title="提高权重"
+                      title={t('store.weightUpTitle')}
                       onClick={() => run(async () => {
                         const next = await invoke<SkillRepoView[]>('store_update_repo', {
                           repoId: repo.id,
@@ -483,21 +502,21 @@ export function StoreClientsPanel({
                         });
                         setRepos(next);
                         await loadCatalog();
-                      }, '权重已更新')}
+                      }, t('store.weightUpdated'))}
                     >
-                      权重+
+                      {t('store.weightUp')}
                     </button>
                     <button
                       type="button"
                       className="tiny"
                       disabled={busy}
-                      onClick={() => withStatus(`正在刷新 ${repo.label}…`, async () => {
+                      onClick={() => withStatus(t('store.refreshingRepo', { label: repo.label }), async () => {
                         const next = await invoke<SkillRepoView[]>('store_refresh_repo', { repoId: repo.id });
                         setRepos(next);
                         await loadCatalog();
-                      }, '仓库已刷新')}
+                      }, t('store.repoRefreshed'))}
                     >
-                      <RefreshCw size={14} />刷新
+                      <RefreshCw size={14} />{t('common.refresh')}
                     </button>
                     <button
                       type="button"
@@ -507,9 +526,9 @@ export function StoreClientsPanel({
                         const next = await invoke<SkillRepoView[]>('store_remove_repo', { repoId: repo.id });
                         setRepos(next);
                         await loadCatalog();
-                      }, '仓库已删除')}
+                      }, t('store.repoDeleted'))}
                     >
-                      删除
+                      {t('common.delete')}
                     </button>
                   </div>
                 </div>
@@ -517,29 +536,29 @@ export function StoreClientsPanel({
             </div>
           </div>
           <div className="store-settings-block">
-            <h4>GitHub 克隆代理</h4>
+            <h4>{t('store.proxyBlockTitle')}</h4>
             <p className="hint compact">
               {proxyActive
-                ? `已启用：${settings.github_proxy_prefix.trim()}`
-                : '未配置，刷新仓库将直连 GitHub'}
+                ? t('store.proxyBlockEnabled', { prefix: settings.github_proxy_prefix.trim() })
+                : t('store.proxyBlockDisabled')}
             </p>
             <button type="button" className="tiny" disabled={busy} onClick={() => setProxyModalOpen(true)}>
-              <Globe size={14} />配置代理
+              <Globe size={14} />{t('store.configProxy')}
             </button>
           </div>
           <div className="store-settings-block">
-            <h4>编辑器命令</h4>
-            <p className="hint compact">留空则用文件管理器打开目录；可填 code、cursor 等（后台启动，不弹控制台）。</p>
+            <h4>{t('store.editorCommand')}</h4>
+            <p className="hint compact">{t('store.editorHint')}</p>
             <div className="store-repo-form">
               <input
-                placeholder="例如 code 或 cursor"
+                placeholder={t('store.editorPlaceholder')}
                 value={settings.editor_command}
                 onChange={(e) => setSettings({ ...settings, editor_command: e.target.value })}
               />
               <button type="button" className="tiny" disabled={busy} onClick={() => run(async () => {
                 await invoke('store_set_settings', { settings });
-              }, '设置已保存')}>
-                保存
+              }, t('store.settingsSaved'))}>
+                {t('common.save')}
               </button>
             </div>
           </div>
@@ -553,16 +572,16 @@ export function StoreClientsPanel({
     <section className="page-grid single in-tab">
       <div className="card store-card store-card-fill">
         <div className="section-title">
-          <h3>客户端 · 商店版</h3>
+          <h3>{t('store.title')}</h3>
           <div className="title-actions store-action-bar">
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('discover')}>
-              <Sparkles size={14} />发现技能
+              <Sparkles size={14} />{t('store.discoverTitle')}
             </button>
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSubview('repos')}>
-              <BookOpen size={14} />管理仓库
+              <BookOpen size={14} />{t('store.manageRepos')}
             </button>
             <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(() => invoke('store_open_staging_dir'))}>
-              <FolderOpen size={14} />暂存目录
+              <FolderOpen size={14} />{t('store.stagingDir')}
             </button>
           </div>
         </div>
@@ -580,7 +599,7 @@ export function StoreClientsPanel({
               className={contentTab === tab.id ? 'store-content-tab active' : 'store-content-tab'}
               onClick={() => setContentTab(tab.id)}
             >
-              {tab.label}
+              {contentTabLabel(tab.id)}
             </button>
           ))}
         </div>
@@ -591,61 +610,61 @@ export function StoreClientsPanel({
           <div className="store-content-body">
             <div className="store-env-grid">
               <div className="store-env-stat">
-                <strong>网关</strong>
+                <strong>{t('store.gateway')}</strong>
                 <span className={status?.running ? 'badge ok' : 'badge stop'}>
-                  {status?.running ? '运行中' : '未启动'}
+                  {status?.running ? t('common.running') : t('store.notStarted')}
                 </span>
               </div>
               <div className="store-env-stat">
-                <strong>{clientLabel} 接管</strong>
+                <strong>{t('store.takeoverStatus', { client: clientLabel })}</strong>
                 <span className={activeClient?.configured ? 'badge ok' : 'badge stop'}>
-                  {activeClient?.configured ? '已接管' : '未接管'}
+                  {activeClient?.configured ? t('store.takenOver') : t('store.notTakenOver')}
                 </span>
               </div>
               <div className="store-env-stat">
-                <strong>GitHub 代理</strong>
-                <span className={proxyActive ? 'badge ok' : 'badge'}>{proxyActive ? '已启用' : '直连'}</span>
+                <strong>{t('store.proxyStatus')}</strong>
+                <span className={proxyActive ? 'badge ok' : 'badge'}>{proxyActive ? t('common.enabled') : t('store.direct')}</span>
               </div>
             </div>
             <div className="section-title store-takeover-head">
-              <span className="hint">{clientLabel} 检查与快捷操作；长期接管偏好请到「接管模板」</span>
+              <span className="hint">{t('store.takeoverHint', { client: clientLabel })}</span>
               <div className="title-actions store-action-bar">
                 <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
                   const next = await invoke<ClientsEnvStatus>('get_clients_env_status');
                   onClientsChange(next);
-                  pushToast(next.has_issues ? '检测到接管问题' : '状态正常', next.has_issues ? 'info' : 'ok');
-                })}><ShieldCheck size={14} />检查</button>
+                  pushToast(next.has_issues ? t('store.toastIssues') : t('store.toastOk'), next.has_issues ? 'info' : 'ok');
+                })}><ShieldCheck size={14} />{t('store.check')}</button>
                 <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
                   const next = await invoke<ClientsEnvStatus>('repair_clients_env');
                   onClientsChange(next);
-                }, '已修复')}><Wrench size={14} />修复</button>
+                }, t('store.repaired'))}><Wrench size={14} />{t('client.repair')}</button>
                 {status?.running ? (
                   <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
                     const next = await invoke<ClientsEnvStatus>('install_clients_env', { client: clientTab });
                     onClientsChange(next);
-                  }, `${clientLabel} 已接管`)}><PlugZap size={14} />接管</button>
+                  }, t('store.takenOverToast', { client: clientLabel }))}><PlugZap size={14} />{t('client.takeover')}</button>
                 ) : (
                   <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
                     const next = await invoke<ClientsEnvStatus>('install_clients_env', { autoStart: true, client: clientTab });
                     onClientsChange(next);
-                  }, `网关已启动，${clientLabel} 已接管`)}><Play size={14} />启动并接管</button>
+                  }, t('store.startedAndTakenOver', { client: clientLabel }))}><Play size={14} />{t('store.startAndTakeover')}</button>
                 )}
                 <button type="button" className="ghost tiny-btn" disabled={busy || !activeClient?.configured} onClick={() => run(async () => {
                   const next = await invoke<ClientsEnvStatus>('uninstall_clients_env', { client: clientTab });
                   onClientsChange(next);
-                }, `已取消 ${clientLabel} 接管`)}>取消接管</button>
+                }, t('store.cancelledTakeover', { client: clientLabel }))}>{t('store.cancelTakeover')}</button>
               </div>
             </div>
             {clientsHint ? <p className="hint">{clientsHint}</p> : null}
             <div className="store-env-actions">
               <button type="button" className="tiny" disabled={busy} onClick={() => setLaunchModalOpen(true)}>
-                <Terminal size={14} />新终端启动 {clientLabel}
+                <Terminal size={14} />{t('store.newTerminal', { client: clientLabel })}
               </button>
               <button type="button" className="tiny" disabled={busy} onClick={() => copyGatewayUrl()}>
-                复制网关地址
+                {t('store.copyGatewayUrl')}
               </button>
               <button type="button" className="tiny" disabled={busy} onClick={() => run(() => invoke('store_open_staging_dir'))}>
-                <FolderOpen size={14} />打开暂存目录
+                <FolderOpen size={14} />{t('store.openStagingDir')}
               </button>
             </div>
             {activeClient && (
@@ -666,7 +685,7 @@ export function StoreClientsPanel({
                   </div>
                 )}
                 {activeClient.missing && activeClient.missing.length > 0 && (
-                  <p className="hint compact store-error">待写入：{activeClient.missing.join('、')}</p>
+                  <p className="hint compact store-error">{t('store.pendingWrite', { list: activeClient.missing.join('、') })}</p>
                 )}
               </div>
             )}
@@ -682,13 +701,13 @@ export function StoreClientsPanel({
         {contentTab === 'skills' && (
           <div className="store-content-body">
             <p className="hint compact">
-              技能与 Claude Code、Codex 共用 SKILL.md 格式；挂载目录：
+              {t('store.skillsSharedHint')}
               <code className="store-path-code">{skillsPath ?? '—'}</code>
             </p>
             <div className="store-scroll-panel">
               <div className="store-skill-list compact">
                 {clientStagedSkills.length === 0 ? (
-                  <div className="store-empty">暂无暂存技能。点击「发现技能」安装，或在「已暂存」页签中挂载。</div>
+                  <div className="store-empty">{t('store.noStagedSkills')}</div>
                 ) : (
                   clientStagedSkills.map((skill) => (
                     <SkillRow
@@ -720,19 +739,19 @@ export function StoreClientsPanel({
                 ))}
               </ul>
               {pluginPanel.guide.docs_url && (
-                <p className="hint compact">文档：<a href={pluginPanel.guide.docs_url} target="_blank" rel="noreferrer">{pluginPanel.guide.docs_url}</a></p>
+                <p className="hint compact">{t('store.pluginsDoc')}<a href={pluginPanel.guide.docs_url} target="_blank" rel="noreferrer">{pluginPanel.guide.docs_url}</a></p>
               )}
-              <p className="hint compact">技能目录：<code className="store-path-code">{pluginPanel.guide.skills_path}</code></p>
+              <p className="hint compact">{t('store.skillsDirLabel')}<code className="store-path-code">{pluginPanel.guide.skills_path}</code></p>
               {pluginPanel.guide.plugins_path && (
-                <p className="hint compact">插件目录：<code className="store-path-code">{pluginPanel.guide.plugins_path}</code></p>
+                <p className="hint compact">{t('store.pluginsDirLabel')}<code className="store-path-code">{pluginPanel.guide.plugins_path}</code></p>
               )}
             </div>
             <div className="store-scroll-panel store-scroll-short">
               {pluginPanel.items.length === 0 ? (
                 <div className="store-empty">
                   {clientTab === 'codex'
-                    ? 'Codex 无独立本地插件目录；扩展与技能请使用上方官方命令。'
-                    : '未检测到已安装插件，请按上方说明在终端或 Claude Code 内安装。'}
+                    ? t('store.noPluginsCodex')
+                    : t('store.noPluginsClaude')}
                 </div>
               ) : (
                 <div className="store-mini-list">

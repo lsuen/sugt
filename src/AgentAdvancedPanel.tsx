@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowLeft, Download, RefreshCw } from 'lucide-react';
+import { t } from './i18n';
 
 export type AgentAdvancedSkill = {
   folder: string;
@@ -65,20 +66,20 @@ function pathHint(tab: Tab, data: AgentAdvancedView | null) {
     return {
       path: dirs.length ? dirs.join(' · ') : null,
       exists: dirs.length > 0,
-      label: dirs.length > 1 ? `技能目录(${dirs.length})` : '技能目录',
+      label: dirs.length > 1 ? t('agent.skillsDirCount', { n: dirs.length }) : t('agent.skillsDir'),
     };
   }
   if (tab === 'plugins') {
     return {
       path: data.plugins_dir,
       exists: data.plugins_dir_exists,
-      label: '插件目录',
+      label: t('agent.pluginsDir'),
     };
   }
   return {
     path: data.config.path || data.settings_root,
     exists: data.config.exists || data.settings_root_exists,
-    label: '配置',
+    label: t('agent.config'),
   };
 }
 
@@ -131,7 +132,7 @@ export function AgentAdvancedPanel({
       setData(next);
       setPathDraft(next.settings_root?.trim() || '');
       setSkillDirsDraft(next.skill_dirs_text?.trim() || '');
-      pushToast('已保存路径', 'ok');
+      pushToast(t('agent.toastSaved'), 'ok');
     } catch (e) {
       pushToast(String(e), 'error');
     } finally {
@@ -141,13 +142,13 @@ export function AgentAdvancedPanel({
 
   const importSkill = async (skill: AgentAdvancedSkill) => {
     if (skill.in_library) {
-      pushToast('已在中控库中', 'info');
+      pushToast(t('agent.toastInLibrary'), 'info');
       return;
     }
     setImporting(skill.path);
     try {
       await invoke('import_agent_skill', { sourcePath: skill.path });
-      pushToast(`已入库「${skill.name}」`, 'ok');
+      pushToast(t('agent.toastImported', { name: skill.name }), 'ok');
       await reload();
     } catch (e) {
       pushToast(String(e), 'error');
@@ -163,9 +164,9 @@ export function AgentAdvancedPanel({
       <div className="section-title takeover-section-head">
         <div className="agent-advanced-title">
           <button type="button" className="ghost tiny-btn" disabled={busy || savingPath} onClick={onBack}>
-            <ArrowLeft size={14} />返回
+            <ArrowLeft size={14} />{t('agent.back')}
           </button>
-          <h3>{profileName} · 高级</h3>
+          <h3>{t('agent.advanced', { name: profileName })}</h3>
         </div>
         <div className="title-actions">
           {onOpenSkillsHub && (
@@ -175,11 +176,11 @@ export function AgentAdvancedPanel({
               disabled={busy}
               onClick={() => onOpenSkillsHub(profileId)}
             >
-              技能中控
+              {t('agent.skillsHub')}
             </button>
           )}
           <button type="button" className="ghost tiny-btn" disabled={busy || loading} onClick={() => void reload()}>
-            <RefreshCw size={14} />刷新
+            <RefreshCw size={14} />{t('agent.refresh')}
           </button>
         </div>
       </div>
@@ -189,10 +190,10 @@ export function AgentAdvancedPanel({
           Skills{data ? ` (${data.skills.length})` : ''}
         </button>
         <button type="button" className={tab === 'plugins' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('plugins')}>
-          插件{data ? ` (${data.plugins.length})` : ''}
+          {t('agent.pluginsTab')}{data ? ` (${data.plugins.length})` : ''}
         </button>
         <button type="button" className={tab === 'config' ? 'skills-tab active' : 'skills-tab'} onClick={() => setTab('config')}>
-          配置
+          {t('agent.configTab')}
         </button>
       </div>
 
@@ -202,46 +203,46 @@ export function AgentAdvancedPanel({
             {hint.label}：{hint.path}
           </p>
         ) : (
-          <p className="hint compact">未找到{hint?.label || '目录'}，可在下方配置</p>
+          <p className="hint compact">{t('agent.notFound', { label: hint?.label ?? t('agent.dir') })}</p>
         )}
         <label className="field-label">
-          Agent 根目录
+          {t('agent.rootDir')}
           <input
-            placeholder="例如 ~/.claude 或 ~/.config/opencode"
+            placeholder={t('agent.rootPlaceholder')}
             value={pathDraft}
             disabled={savingPath || busy}
             onChange={(e) => setPathDraft(e.target.value)}
           />
         </label>
         <label className="field-label">
-          技能目录（多个用 ; 分隔）
+          {t('agent.skillsDirLabel')}
           <input
-            placeholder="例如 ~/.claude/skills;~/.dev-agents/skills"
+            placeholder={t('agent.skillsPlaceholder')}
             value={skillDirsDraft}
             disabled={savingPath || busy}
             onChange={(e) => setSkillDirsDraft(e.target.value)}
           />
         </label>
-        <p className="hint compact">留空技能目录则按该 Agent 内置指纹自动发现；保存后以手动列表为准，内置源仍会合并存在的目录。</p>
+        <p className="hint compact">{t('agent.skillsHint')}</p>
         <div className="agent-advanced-path-edit">
           <button type="button" className="primary tiny-btn" disabled={savingPath || busy} onClick={() => void savePath()}>
-            {savingPath ? '保存中…' : '保存路径'}
+            {savingPath ? t('agent.savingPath') : t('agent.savePath')}
           </button>
         </div>
       </div>
 
-      {loading && !data && <p className="hint compact">加载中…</p>}
+      {loading && !data && <p className="hint compact">{t('agent.loading')}</p>}
 
       {tab === 'skills' && data && (
         <div className="agent-advanced-list">
-          {data.skills.length === 0 && <p className="hint compact">该目录下暂无技能（需含 SKILL.md）</p>}
+          {data.skills.length === 0 && <p className="hint compact">{t('agent.noSkills')}</p>}
           {data.skills.map((skill) => (
             <div key={skill.path} className="agent-advanced-row">
               <div className="agent-advanced-row-main">
                 <div className="agent-advanced-row-title">
                   <strong>{skill.name}</strong>
                   {skill.sugt_mark && (
-                    <span className="badge ok inline" title={skill.sugt_mark === 'mounted' ? '由 SUGT 挂载' : '已在中控库'}>
+                    <span className="badge ok inline" title={skill.sugt_mark === 'mounted' ? t('agent.mountedBy') : t('agent.inLibrary')}>
                       sugt
                     </span>
                   )}
@@ -253,11 +254,11 @@ export function AgentAdvancedPanel({
                 type="button"
                 className="tiny ghost"
                 disabled={busy || skill.in_library || importing === skill.path}
-                title={skill.in_library ? '已在中控库' : '复制到 SUGT 技能库'}
+                title={skill.in_library ? t('agent.inLibrary') : t('agent.copyToLibrary')}
                 onClick={() => void importSkill(skill)}
               >
                 <Download size={14} />
-                {skill.in_library ? '已入库' : importing === skill.path ? '入库中…' : '入库'}
+                {skill.in_library ? t('agent.imported') : importing === skill.path ? t('agent.importing') : t('agent.import')}
               </button>
             </div>
           ))}
@@ -266,7 +267,7 @@ export function AgentAdvancedPanel({
 
       {tab === 'plugins' && data && (
         <div className="agent-advanced-list">
-          {data.plugins.length === 0 && <p className="hint compact">未发现插件目录或目录为空</p>}
+          {data.plugins.length === 0 && <p className="hint compact">{t('agent.noPlugins')}</p>}
           {data.plugins.map((p) => (
             <div key={p.path} className="agent-advanced-row">
               <div className="agent-advanced-row-main">
@@ -285,14 +286,14 @@ export function AgentAdvancedPanel({
             <p className="hint compact">{data.config.error}</p>
           )}
           {data.config.path && (
-            <p className="hint compact agent-advanced-abspath">文件：{data.config.path}</p>
+            <p className="hint compact agent-advanced-abspath">{t('agent.filePrefix')}{data.config.path}</p>
           )}
           {data.config.content ? (
             <pre className="agent-advanced-config-pre">{data.config.content}</pre>
           ) : (
             data.config.candidates.length > 0 && (
               <div className="hint compact">
-                尝试路径：
+                {t('agent.tryPaths')}
                 <ul className="agent-advanced-candidates">
                   {data.config.candidates.map((c) => (
                     <li key={c}>{c}</li>

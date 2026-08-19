@@ -14,6 +14,7 @@ import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import type { ProviderForm } from './providerPresets';
+import { lang, t } from './i18n';
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'settings' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -163,7 +164,7 @@ function parseLogLine(line: string, index: number): ParsedLogLine {
     if (data.timestamp) {
       const date = new Date(data.timestamp);
       if (!Number.isNaN(date.getTime())) {
-        time = date.toLocaleTimeString('zh-CN', { hour12: false });
+        time = date.toLocaleTimeString(lang() === 'zh' ? 'zh-CN' : undefined, { hour12: false });
       }
     }
     return {
@@ -198,13 +199,13 @@ function LogViewer({ lines }: { lines: string[] }) {
   };
 
   if (!lines.length) {
-    return <div className="log-empty">暂无日志，启动网关后这里会显示运行记录</div>;
+    return <div className="log-empty">{t('logs.empty')}</div>;
   }
 
   return (
     <>
       <div className="log-toolbar">
-        <span className="hint compact">共 {lines.length} 行 · 最新在底部</span>
+        <span className="hint compact">{t('logs.count', { n: lines.length })}</span>
         <button
           type="button"
           className={`ghost tiny-btn${autoScroll ? ' active' : ''}`}
@@ -213,7 +214,7 @@ function LogViewer({ lines }: { lines: string[] }) {
             endRef.current?.scrollIntoView({ behavior: 'smooth' });
           }}
         >
-          {autoScroll ? '跟随最新' : '滚到底部'}
+          {autoScroll ? t('logs.follow') : t('logs.toBottom')}
         </button>
       </div>
       <div className="log-viewport" ref={viewportRef} onScroll={onScroll}>
@@ -250,7 +251,7 @@ function ToastHost({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id:
       {toasts.map((toast) => (
         <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
           <span className="toast-text">{toast.text}</span>
-          <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label="关闭">×</button>
+          <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={t('common.close')}>×</button>
         </div>
       ))}
     </div>
@@ -262,7 +263,7 @@ function normalizeProtocol(value: ProviderView['protocol']): ProviderProtocol {
 }
 
 function protocolLabel(protocol: ProviderProtocol) {
-  return protocol === 'anthropic' ? 'Anthropic 原生' : 'OpenAI 兼容';
+  return protocol === 'anthropic' ? t('common.protocolAnthropic') : t('common.protocolOpenai');
 }
 
 function Modal({
@@ -284,7 +285,7 @@ function Modal({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button className="icon-btn" onClick={onClose} aria-label="关闭"><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}><X size={18} /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -400,7 +401,7 @@ function App() {
     setBusy(true);
     try {
       await invoke('save_provider', { input: form });
-      pushToast(form.id ? '模型配置已更新' : '模型配置已添加', 'ok');
+      pushToast(form.id ? t('models.toastUpdated') : t('models.toastAdded'), 'ok');
       setProviderModal(false);
       setForm(emptyForm);
       await refresh();
@@ -415,11 +416,11 @@ function App() {
     if (!deleteTarget) return;
     const id = deleteTarget.id;
     setDeleteTarget(null);
-    await run(() => invoke('delete_provider', { id }), '模型配置已删除');
+    await run(() => invoke('delete_provider', { id }), t('models.toastDeleted'));
   };
 
   const setProviderEnabled = async (provider: ProviderView, enabled: boolean) => {
-    await run(() => invoke('set_provider_enabled', { id: provider.id, enabled }), enabled ? '模型已启用' : '模型已禁用');
+    await run(() => invoke('set_provider_enabled', { id: provider.id, enabled }), enabled ? t('models.toastEnabled') : t('models.toastDisabled'));
   };
 
   const testAllProviders = async () => {
@@ -433,7 +434,7 @@ function App() {
         if (result === 'Available') available += 1;
         if (result === 'Unavailable') unavailable += 1;
       }
-      pushToast(`一键测试完成：${available} 个可用，${unavailable} 个不可用`, unavailable > 0 ? 'info' : 'ok');
+      pushToast(t('models.toastTestAll', { a: available, b: unavailable }), unavailable > 0 ? 'info' : 'ok');
       await refresh();
     } catch (error) {
       pushToast(String(error), 'error');
@@ -443,38 +444,38 @@ function App() {
   };
 
   const statusBadge = useMemo(() => {
-    if (!status) return <span className="badge neutral">加载中</span>;
-    return status.running ? <span className="badge ok">运行中</span> : <span className="badge stop">已停止</span>;
+    if (!status) return <span className="badge neutral">{t('common.loading')}</span>;
+    return status.running ? <span className="badge ok">{t('common.running')}</span> : <span className="badge stop">{t('common.stopped')}</span>;
   }, [status]);
 
   const tabTitle = {
-    dashboard: '控制台',
-    models: '模型配置',
-    clients: '客户端',
-    skills: '技能',
-    settings: '设置',
-    logs: '运行日志',
-    about: '关于 SUTAI',
+    dashboard: t('tab.dashboard.title'),
+    models: t('tab.models.title'),
+    clients: t('tab.clients.title'),
+    skills: t('tab.skills.title'),
+    settings: t('tab.settings.title'),
+    logs: t('tab.logs.title'),
+    about: t('tab.about.title'),
   }[tab];
 
   const tabDesc = {
-    dashboard: '启停本地网关，查看当前模型与流量',
-    models: '配置上游 API、协议与实验免费通道',
-    clients: '发现本机工具、一键接管与高级配置',
-    skills: '发现、入库并挂到各客户端',
-    settings: '启动、守护、代理与实验功能',
-    logs: '网关实时日志与调试信息',
-    about: '版本、更新说明与项目信息',
+    dashboard: t('tab.dashboard.desc'),
+    models: t('tab.models.desc'),
+    clients: t('tab.clients.desc'),
+    skills: t('tab.skills.desc'),
+    settings: t('tab.settings.desc'),
+    logs: t('tab.logs.desc'),
+    about: t('tab.about.desc'),
   }[tab];
 
   if (!isTauriRuntime()) {
     return (
       <main className="browser-only">
-        <h2>SUTAI 需在 Tauri 窗口中运行</h2>
-        <p>当前在普通浏览器中打开，没有 Tauri IPC，因此会出现 <code>invoke</code> 报错。</p>
-        <p>请在项目根目录执行：</p>
+        <h2>{t('browser.title')}</h2>
+        <p>{t('browser.desc')}</p>
+        <p>{t('browser.root')}</p>
         <pre>npm run tauri dev</pre>
-        <p className="hint">不要单独运行 <code>npm run dev</code> 后手动打开 http://127.0.0.1:1420。</p>
+        <p className="hint">{t('browser.hint')}</p>
       </main>
     );
   }
@@ -486,19 +487,19 @@ function App() {
           <div className="brand-logo">SA</div>
           <div>
             <h1>SUTAI</h1>
-            <span>朴素的 AI 时代中控台</span>
+            <span>{t('brand.tagline')}</span>
           </div>
         </div>
-        <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />控制台</button>
-        <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />模型配置</button>
-        <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />客户端</button>
-        <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />技能</button>
-        <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />设置</button>
-        <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />日志</button>
-        <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />关于</button>
+        <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />{t('nav.dashboard')}</button>
+        <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
+        <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
+        <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
+        <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
+        <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />{t('nav.logs')}</button>
+        <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />{t('nav.about')}</button>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
-          <span>异常设计</span>
+          <span>{t('about.brand')}</span>
         </div>
       </aside>
 
@@ -518,23 +519,23 @@ function App() {
                 <div className="hero-title">
                   <Cpu size={28} />
                   <div>
-                    <h3>服务状态</h3>
+                    <h3>{t('dash.service')}</h3>
                     <p>{status?.listen_url ?? 'http://127.0.0.1:8787'}</p>
                   </div>
                   {statusBadge}
                 </div>
                 {status?.last_proxy_provider && (
                   <p className="hint compact hero-proxy-hint">
-                    最近命中 {status.last_proxy_provider}
-                    {status.last_proxy_failover ? '（故障转移）' : ''}
+                    {t('dash.recent')} {status.last_proxy_provider}
+                    {status.last_proxy_failover ? t('dash.failover') : ''}
                     · {status.last_proxy_path ?? '-'}
                     {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
                   </p>
                 )}
                 <div className="actions dashboard-actions">
-                  <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), '服务已启动')}><Play size={17} />启动</button>
-                  <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), '服务已停止')}><CircleStop size={17} />停止</button>
-                  <button className="ghost" onClick={() => invoke('open_config_dir')}><FolderOpen size={17} />配置目录</button>
+                  <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), t('dash.toastStarted'))}><Play size={17} />{t('dash.start')}</button>
+                  <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), t('dash.toastStopped'))}><CircleStop size={17} />{t('dash.stop')}</button>
+                  <button className="ghost" onClick={() => invoke('open_config_dir')}><FolderOpen size={17} />{t('dash.configDir')}</button>
                 </div>
               </div>
 
@@ -562,7 +563,7 @@ function App() {
                   }))}
                 busy={busy}
                 onRefresh={() => refresh().catch(() => undefined)}
-                onActiveProviderChange={(id) => run(() => invoke('set_active_provider', { id }), '已切换上游')}
+                onActiveProviderChange={(id) => run(() => invoke('set_active_provider', { id }), t('dash.toastSwitched'))}
                 run={run}
                 pushToast={pushToast}
               />
@@ -587,28 +588,28 @@ function App() {
           <div className="tab-body">
           <section className="card">
             <div className="section-title">
-              <h3>模型列表</h3>
+              <h3>{t('models.title')}</h3>
               <div className="title-actions">
                 {!providers.some((p) => p.id === 'sugt-zen-free') && (
                   <button
                     className="ghost tiny-btn"
                     disabled={busy}
-                    title="恢复实验免费通道（不稳定，可删）"
+                    title={t('models.restoreZenTitle')}
                     onClick={() =>
                       run(async () => {
                         const list = await invoke<ProviderView[]>('restore_experimental_zen');
                         setProviders(list);
-                      }, '已恢复实验免费源')
+                      }, t('models.toastZenRestored'))
                     }
                   >
-                    恢复实验源
+                    {t('models.restoreZen')}
                   </button>
                 )}
-                <button className="ghost tiny-btn" disabled={busy || providers.length === 0} onClick={testAllProviders}>一键测试</button>
-                <button className="primary tiny-btn" disabled={busy} onClick={openNewProvider}><Plus size={14} />添加模型</button>
+                <button className="ghost tiny-btn" disabled={busy || providers.length === 0} onClick={testAllProviders}>{t('models.testAll')}</button>
+                <button className="primary tiny-btn" disabled={busy} onClick={openNewProvider}><Plus size={14} />{t('models.add')}</button>
               </div>
             </div>
-            {providers.length === 0 && <p className="hint">暂无配置。点击「添加模型」并从下拉选择服务商预设。</p>}
+            {providers.length === 0 && <p className="hint">{t('models.empty')}</p>}
             <div className="provider-list-scroll">
               {providers.map((provider) => {
                 const isActive = provider.id === activeProviderId;
@@ -618,22 +619,22 @@ function App() {
                     <div className="provider-main" onClick={() => openEditProvider(provider)}>
                       <div className="provider-title">
                         <strong>{provider.name}</strong>
-                        {provider.experimental && <span className="badge inline" title="免费额度不稳定，可删；失效后可改 API Key / 地址继续用">实验</span>}
-                        {isActive && <span className="badge ok inline">默认</span>}
-                        <span className={provider.enabled ? 'badge neutral inline' : 'badge stop inline'}>{provider.enabled ? '启用' : '禁用'}</span>
+                        {provider.experimental && <span className="badge inline" title={t('models.experimentalTitle')}>{t('models.experimental')}</span>}
+                        {isActive && <span className="badge ok inline">{t('common.default')}</span>}
+                        <span className={provider.enabled ? 'badge neutral inline' : 'badge stop inline'}>{provider.enabled ? t('common.enabled') : t('common.disabled')}</span>
                       </div>
                       <span className="provider-sub">{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
                       {provider.experimental && (
-                        <span className="hint compact">免费通道不稳定；失效后可编辑改 Key/地址，或删除后点「恢复实验源」</span>
+                        <span className="hint compact">{t('models.restoreZenHint')}</span>
                       )}
                       <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       {provider.last_error && <span className="error-text">{provider.last_error}</span>}
                     </div>
                     <div className="provider-actions">
                       {provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
-                      <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), '已设为默认')}>{isActive ? '已默认' : '设为默认'}</button>
-                      <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? '禁用' : '启用'}</button>
-                      <button className="tiny" disabled={busy} onClick={() => run(() => invoke('test_provider', { id: provider.id }), '测试完成')}>测试</button>
+                      <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
+                      <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
+                      <button className="tiny" disabled={busy} onClick={() => run(() => invoke('test_provider', { id: provider.id }), t('models.toastTested'))}>{t('common.test')}</button>
                       <button className="tiny danger-link" disabled={busy} onClick={() => setDeleteTarget(provider)}><Trash2 size={14} /></button>
                     </div>
                   </div>
@@ -680,8 +681,8 @@ function App() {
           <div className="tab-body tab-body-fill">
           <section className="card log-card-full">
             <div className="section-title">
-              <h3>运行日志</h3>
-              <button className="ghost tiny-btn" disabled={busy} onClick={() => refreshLogs()}><RefreshCw size={14} />刷新</button>
+              <h3>{t('logs.title')}</h3>
+              <button className="ghost tiny-btn" disabled={busy} onClick={() => refreshLogs()}><RefreshCw size={14} />{t('common.refresh')}</button>
             </div>
             <LogViewer lines={logs} />
           </section>
@@ -692,33 +693,28 @@ function App() {
           <div className="tab-body">
           <section className="card about-card">
             <div className="about-logo">SUTAI</div>
-            <h3>SUTAI · 朴素的 AI 时代中控台</h3>
-            {/* <p className="hint compact about-lead">
-              在本机统一接入大模型服务，方便 agent工具调用。
-              <br />
-              支持模型配置、一键接管、技能发现与挂载。
-            </p> */}
-            <p>作者：孙文龙 · 异常设计</p>
+            <h3>{t('about.title')}</h3>
+            <p>{t('about.author')}</p>
             <p className={status?.trial.valid ? 'trial-note' : 'trial-note expired'}>
-              {status?.trial.message ?? '当前为开发运行，无试用期限制'}
+              {status?.trial.message ?? t('about.devMode')}
             </p>
             <div className="about-grid">
-              <div><strong>版本</strong><span>v{CURRENT_VERSION}</span></div>
-              <div><strong>产品形态</strong><span>{status?.trial.product_label ?? '全功能版'}</span></div>
-              <div><strong>授权</strong><span>{status?.trial.message ?? '开发模式'}</span></div>
-              <div><strong>配置目录</strong><span>{status?.config_dir}</span></div>
-              <div><strong>日志文件</strong><span>{status?.log_file}</span></div>
-              <div><strong>本机接入</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
+              <div><strong>{t('about.version')}</strong><span>v{CURRENT_VERSION}</span></div>
+              <div><strong>{t('about.product')}</strong><span>{status?.trial.product_label ?? t('about.full')}</span></div>
+              <div><strong>{t('about.license')}</strong><span>{status?.trial.message ?? t('about.devMode')}</span></div>
+              <div><strong>{t('about.configDir')}</strong><span>{status?.config_dir}</span></div>
+              <div><strong>{t('about.logFile')}</strong><span>{status?.log_file}</span></div>
+              <div><strong>{t('about.listen')}</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
             </div>
             <div className="release-notes-frame">
               <div className="release-notes-head">
-                <strong>本版本更新</strong>
+                <strong>{t('about.releaseHead')}</strong>
                 <span className="hint compact">v{CURRENT_VERSION}</span>
               </div>
               <ul className="release-notes-list">
                 {RELEASE_NOTES.map((note) => (
                   <li key={note.text} className={`release-note ${note.type}`}>
-                    <span className="release-tag">{note.type === 'feat' ? '新功能' : '修复'}</span>
+                    <span className="release-tag">{note.type === 'feat' ? t('about.tagFeat') : t('about.tagFix')}</span>
                     {note.text}
                   </li>
                 ))}
@@ -743,14 +739,14 @@ function App() {
       )}
 
       {deleteTarget && (
-        <Modal title="确认删除" onClose={() => setDeleteTarget(null)} closeOnOverlay>
-          <p>确定删除模型配置「{deleteTarget.name}」？</p>
+        <Modal title={t('delete.title')} onClose={() => setDeleteTarget(null)} closeOnOverlay>
+          <p>{t('delete.body', { name: deleteTarget.name })}</p>
           {deleteTarget.experimental && (
-            <p className="hint compact">这是实验免费源，删除后不会自动再添加；需要时可点「恢复实验源」。</p>
+            <p className="hint compact">{t('delete.zenHint')}</p>
           )}
           <div className="modal-actions">
-            <button className="ghost" onClick={() => setDeleteTarget(null)}>取消</button>
-            <button className="danger" disabled={busy} onClick={confirmDelete}>删除</button>
+            <button className="ghost" onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</button>
+            <button className="danger" disabled={busy} onClick={confirmDelete}>{t('common.delete')}</button>
           </div>
         </Modal>
       )}

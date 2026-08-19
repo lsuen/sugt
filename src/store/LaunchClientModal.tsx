@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { StoreModal } from './StoreModal';
 import type { StoreClientTab } from './types';
+import { t } from '../i18n';
 
 type Props = {
   clientTab: StoreClientTab;
@@ -23,7 +24,7 @@ export function LaunchClientModal({ clientTab, onClose, pushToast, formatError }
         client: clientTab,
         workDir: workDir.trim() || null,
       });
-      pushToast(`已在新终端启动 ${label}`, 'ok');
+      pushToast(t('launch.toastStarted', { label }), 'ok');
       onClose();
     } catch (error) {
       pushToast(formatError(error), 'error');
@@ -33,22 +34,22 @@ export function LaunchClientModal({ clientTab, onClose, pushToast, formatError }
   };
 
   return (
-    <StoreModal title={`启动 ${label}`} onClose={onClose}>
+    <StoreModal title={t('launch.title', { label })} onClose={onClose}>
       <p className="hint compact">
-        将打开新的命令行窗口，并注入 SUGT 网关环境变量（使用配置目录中的启动脚本）。
+        {t('launch.hint')}
       </p>
       <label className="field-label">
-        工作目录（可选）
+        {t('launch.workDirLabel')}
         <input
-          placeholder="留空则使用用户主目录"
+          placeholder={t('launch.workDirPlaceholder')}
           value={workDir}
           onChange={(e) => setWorkDir(e.target.value)}
         />
       </label>
       <div className="modal-actions">
-        <button type="button" className="ghost" onClick={onClose}>取消</button>
+        <button type="button" className="ghost" onClick={onClose}>{t('common.cancel')}</button>
         <button type="button" className="primary" disabled={launching} onClick={() => launch()}>
-          {launching ? '启动中…' : '启动'}
+          {launching ? t('common.starting') : t('launch.start')}
         </button>
       </div>
     </StoreModal>

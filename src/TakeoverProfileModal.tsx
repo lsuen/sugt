@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FileSearch, Plus, X } from 'lucide-react';
 import type { TakeoverProfileView } from './TakeoverProfilesSection';
+import { t } from './i18n';
 
 export type TakeoverProfileForm = {
   id: string;
@@ -27,7 +28,7 @@ type Props = {
 const EMPTY_FORM: TakeoverProfileForm = {
   id: '',
   name: '',
-  vendor: '自定义',
+  vendor: '',
   description: '',
   protocol: 'openai',
 };
@@ -83,7 +84,7 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
     const id = form.id.trim();
     const name = form.name.trim();
     if (!id || !name) {
-      onError('请填写客户端 ID 与名称');
+      onError(t('tpl.errorIdName'));
       return;
     }
     setSaving(true);
@@ -94,8 +95,8 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
         input: {
           id,
           name,
-          vendor: form.vendor.trim() || '自定义',
-          description: form.description.trim() || '用户自定义 Agent 接管模板',
+          vendor: form.vendor.trim() || t('tpl.vendorDefault'),
+          description: form.description.trim() || t('tpl.defaultDesc'),
           protocol: form.protocol,
           envVars: keepEnv ? initial!.env_vars : buildEnvVars(form.protocol),
           clearVars: editing ? (initial?.clear_vars ?? []) : [],
@@ -116,7 +117,7 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
 
   const parseFile = async () => {
     if (!parsePath.trim()) {
-      onError('请输入配置文件路径');
+      onError(t('tpl.errorPath'));
       return;
     }
     setSaving(true);
@@ -135,7 +136,7 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
     setForm((prev) => ({
       ...prev,
       ...preset,
-      description: prev.description || '自定义 Agent 接管模板',
+      description: prev.description || t('tpl.defaultDesc'),
     }));
   };
 
@@ -145,8 +146,8 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
     <div className="modal-overlay">
       <div className="modal takeover-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>{editing ? '编辑接管客户端' : '添加接管客户端'}</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
+          <h3>{editing ? t('tpl.editTitle') : t('tpl.addTitle')}</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('common.close')}>
             <X size={18} />
           </button>
         </div>
@@ -158,16 +159,16 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
               className={tab === 'custom' ? 'takeover-modal-tab active' : 'takeover-modal-tab'}
               onClick={() => setTab('custom')}
             >
-              <Plus size={14} />自定义
+              <Plus size={14} />{t('tpl.custom')}
             </button>
             <button
               type="button"
               className={tab === 'import' ? 'takeover-modal-tab active' : 'takeover-modal-tab'}
               onClick={() => setTab('import')}
               disabled={!aiEnabled}
-              title={!aiEnabled ? '需先配置大模型服务' : undefined}
+              title={!aiEnabled ? t('tpl.needModel') : undefined}
             >
-              <FileSearch size={14} />从配置导入
+              <FileSearch size={14} />{t('tpl.importFromConfig')}
             </button>
           </div>
         )}
@@ -177,12 +178,12 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
             <>
               <p className="hint compact">
                 {editing
-                  ? '修改后保存；已接管的条目下次启动仍会按偏好恢复。'
-                  : '填写后保存到列表，再点「接管」写入环境；可随时取消接管。'}
+                  ? t('tpl.editHint')
+                  : t('tpl.addHint')}
               </p>
               {!editing && (
                 <div className="takeover-preset-chips">
-                  <span className="hint compact">快速填充</span>
+                  <span className="hint compact">{t('tpl.quickFill')}</span>
                   {QUICK_PRESETS.map((p) => (
                     <button key={p.label} type="button" className="tiny ghost preset-chip" disabled={disabled} onClick={() => applyPreset(p.form)}>
                       {p.label}
@@ -191,54 +192,54 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
                 </div>
               )}
               <label className="field-label">
-                客户端 ID
+                {t('tpl.clientId')}
                 <input
-                  placeholder="如 my-agent（英文标识）"
+                  placeholder={t('tpl.clientIdPlaceholder')}
                   value={form.id}
                   disabled={editing || disabled}
                   onChange={(e) => setForm({ ...form, id: e.target.value })}
                 />
               </label>
               <label className="field-label">
-                显示名称
-                <input placeholder="在列表中显示的名称" value={form.name} disabled={disabled} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+                {t('tpl.displayName')}
+                <input placeholder={t('tpl.displayNamePlaceholder')} value={form.name} disabled={disabled} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               </label>
               <label className="field-label">
-                厂商 / 来源
-                <input placeholder="如 自定义、某团队" value={form.vendor} disabled={disabled} onChange={(e) => setForm({ ...form, vendor: e.target.value })} />
+                {t('tpl.vendor')}
+                <input placeholder={t('tpl.vendorPlaceholder')} value={form.vendor} disabled={disabled} onChange={(e) => setForm({ ...form, vendor: e.target.value })} />
               </label>
               <label className="field-label">
-                协议类型
+                {t('tpl.protocol')}
                 <select value={form.protocol} disabled={disabled} onChange={(e) => setForm({ ...form, protocol: e.target.value as 'openai' | 'anthropic' })}>
-                  <option value="openai">OpenAI 兼容</option>
-                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">{t('common.protocolOpenai')}</option>
+                  <option value="anthropic">{t('common.protocolAnthropic')}</option>
                 </select>
               </label>
               <label className="field-label">
-                说明
-                <input placeholder="可选" value={form.description} disabled={disabled} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                {t('tpl.description')}
+                <input placeholder={t('tpl.descriptionPlaceholder')} value={form.description} disabled={disabled} onChange={(e) => setForm({ ...form, description: e.target.value })} />
               </label>
             </>
           )}
 
           {tab === 'import' && !editing && (
             <>
-              <p className="hint compact">粘贴本地配置文件路径，解析后生成接管模板。</p>
+              <p className="hint compact">{t('tpl.importHint')}</p>
               <label className="field-label">
-                配置文件路径
-                <input placeholder="例如 C:\\Users\\你\\.claude\\settings.json" value={parsePath} disabled={disabled} onChange={(e) => setParsePath(e.target.value)} />
+                {t('tpl.configPath')}
+                <input placeholder={t('tpl.configPathPlaceholder')} value={parsePath} disabled={disabled} onChange={(e) => setParsePath(e.target.value)} />
               </label>
             </>
           )}
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="ghost" disabled={disabled} onClick={onClose}>取消</button>
+          <button type="button" className="ghost" disabled={disabled} onClick={onClose}>{t('common.cancel')}</button>
           {tab === 'import' && !editing ? (
-            <button type="button" className="primary" disabled={disabled} onClick={() => void parseFile()}>解析并保存</button>
+            <button type="button" className="primary" disabled={disabled} onClick={() => void parseFile()}>{t('tpl.parseAndSave')}</button>
           ) : (
             <button type="button" className="primary" disabled={disabled} onClick={() => void saveCustom()}>
-              {editing ? '保存' : '添加'}
+              {editing ? t('common.save') : t('client.add')}
             </button>
           )}
         </div>

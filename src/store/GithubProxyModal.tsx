@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { StoreModal } from './StoreModal';
+import { t } from '../i18n';
 
 const TEST_REPO = 'https://github.com/lsuen/testconnect';
 
@@ -30,7 +31,7 @@ export function GithubProxyModal({ prefix, onClose, onSaved, pushToast, formatEr
     try {
       const msg = await invoke<string>('store_test_github_proxy', { prefix: value.trim() });
       setTestHint(msg);
-      pushToast('代理测试通过', 'ok');
+      pushToast(t('gproxy.toastTested'), 'ok');
     } catch (error) {
       const msg = formatError(error);
       setTestHint(msg);
@@ -47,7 +48,7 @@ export function GithubProxyModal({ prefix, onClose, onSaved, pushToast, formatEr
       const next = { ...settings, github_proxy_prefix: value.trim() };
       await invoke('store_set_settings', { settings: next });
       onSaved(value.trim());
-      pushToast('GitHub 代理已保存', 'ok');
+      pushToast(t('gproxy.toastSaved'), 'ok');
       onClose();
     } catch (error) {
       pushToast(formatError(error), 'error');
@@ -57,32 +58,32 @@ export function GithubProxyModal({ prefix, onClose, onSaved, pushToast, formatEr
   };
 
   return (
-    <StoreModal title="GitHub 克隆代理" onClose={onClose} wide>
+    <StoreModal title={t('gproxy.title')} onClose={onClose} wide>
       <p className="hint compact">
-        国内网络可配置加速前缀，刷新技能仓库时 git clone 将访问拼接后的地址。留空则直连 GitHub。
+        {t('gproxy.hint')}
       </p>
       <label className="field-label">
-        代理前缀
+        {t('gproxy.prefixLabel')}
         <input
-          placeholder="例如 https://ghfast.top"
+          placeholder={t('gproxy.prefixPlaceholder')}
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
       </label>
       <p className="hint compact">
-        预览：<code className="store-path-code">{previewUrl}</code>
+        {t('gproxy.preview')}<code className="store-path-code">{previewUrl}</code>
       </p>
       <p className="hint compact">
-        测试将访问公开仓库 <code className="store-path-code">{TEST_REPO}</code>
+        {t('gproxy.testRepoHint')}<code className="store-path-code">{TEST_REPO}</code>
       </p>
       {testHint && <p className={`hint compact${testHint.includes('成功') ? ' store-ok-hint' : ' store-error'}`}>{testHint}</p>}
       <div className="modal-actions">
-        <button type="button" className="ghost" onClick={onClose}>取消</button>
+        <button type="button" className="ghost" onClick={onClose}>{t('common.cancel')}</button>
         <button type="button" className="ghost" disabled={testing || saving} onClick={() => test()}>
-          {testing ? '测试中…' : '测试连接'}
+          {testing ? t('common.testing') : t('common.testConnection')}
         </button>
         <button type="button" className="primary" disabled={testing || saving} onClick={() => save()}>
-          {saving ? '保存中…' : '保存'}
+          {saving ? t('common.saving') : t('common.save')}
         </button>
       </div>
     </StoreModal>

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
+import { t } from './i18n';
 
 type Props = {
   open: boolean;
@@ -21,7 +22,7 @@ export function CodeExampleModal({ open, onClose, code }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>代码范例</h3>
+          <h3>{t('code.title')}</h3>
           <button type="button" className="tiny icon-only" onClick={onClose}>
             <X size={14} />
           </button>

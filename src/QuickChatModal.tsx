@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
+import { t } from './i18n';
 
 type ChatMsg = { role: 'user' | 'assistant' | 'system'; content: string };
 
@@ -64,7 +65,7 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
     const text = chatInput.trim();
     if (!text || chatBusy) return;
     if (!providerId) {
-      pushToast('请先选择模型', 'error');
+      pushToast(t('chat.selectModelFirst'), 'error');
       return;
     }
     setChatInput('');
@@ -91,7 +92,7 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact quick-chat-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>直接体验</h3>
+          <h3>{t('chat.title')}</h3>
           <button type="button" className="tiny icon-only" onClick={onClose}>
             <X size={14} />
           </button>
@@ -105,7 +106,7 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
                 disabled={chatBusy || enabledProviders.length === 0}
                 onChange={(e) => setProviderId(e.target.value)}
               >
-                {enabledProviders.length === 0 && <option value="">暂无已启用模型</option>}
+                {enabledProviders.length === 0 && <option value="">{t('chat.noModels')}</option>}
                 {enabledProviders.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} · {p.model_name}
@@ -116,7 +117,7 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
             <div className="quick-chat-messages">
               {messages.length === 0 && (
                 <div style={{ color: '#6b7d8f', fontSize: 12, textAlign: 'center', padding: '20px 0' }}>
-                  发个消息试试网关通不通
+                  {t('chat.hint')}
                 </div>
               )}
               {messages.map((msg, i) => (
@@ -131,13 +132,13 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
               <input
                 className="app-input"
                 value={chatInput}
-                placeholder="发送消息测试…"
+                placeholder={t('chat.placeholder')}
                 disabled={chatBusy}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat(); } }}
               />
               <button type="button" className="button primary" disabled={chatBusy || !chatInput.trim()} onClick={() => void sendChat()}>
-                发送
+                {t('chat.send')}
               </button>
             </div>
           </div>

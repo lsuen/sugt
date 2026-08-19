@@ -4,6 +4,7 @@ import { FileSearch, FolderOpen, Pencil, Plus, PlugZap, Search, Settings2, Shiel
 import { TakeoverProfileModal } from './TakeoverProfileModal';
 import { AgentDiscoverModal } from './AgentDiscoverModal';
 import { AgentAdvancedPanel } from './AgentAdvancedPanel';
+import { t } from './i18n';
 
 export type TakeoverProfileView = {
   id: string;
@@ -96,20 +97,20 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
     run(async () => {
       await invoke('apply_takeover_profile', { profileId: id, autoStart: true });
       await reload();
-    }, `已接管 ${name}`);
+    }, t('client.toastTakenOver', { name }));
 
   const release = (id: string, name: string) =>
     run(async () => {
       await invoke('release_takeover_profile', { profileId: id });
       await reload();
-    }, `已取消 ${name}`);
+    }, t('client.toastReleased', { name }));
 
   const remove = (p: TakeoverProfileView) => {
-    if (!window.confirm(`确定删除「${p.name}」？`)) return;
+    if (!window.confirm(t('client.confirmDelete', { name: p.name }))) return;
     run(async () => {
       await invoke('delete_takeover_profile', { profileId: p.id });
       await reload();
-    }, `已删除 ${p.name}`);
+    }, t('client.toastDeleted', { name: p.name }));
   };
 
   const checkEnv = () =>
@@ -122,7 +123,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
       if (firstIssue) {
         pushToast(firstIssue, 'info');
       } else {
-        pushToast('环境正常', 'ok');
+        pushToast(t('client.envOk'), 'ok');
       }
     });
 
@@ -131,7 +132,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
       const next = await invoke<ClientsEnvStatus>('repair_clients_env');
       onClientsChange?.(next);
       await reload();
-    }, '已修复，请新开终端');
+    }, t('client.envRepaired'));
 
   const saveEnvPath = async () => {
     if (!envTarget) return;
@@ -142,7 +143,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
         profileId: envTarget.id,
         path: path || null,
       });
-      pushToast(path ? '已保存配置目录' : '已恢复自动检测', 'ok');
+      pushToast(path ? t('client.envPathSaved') : t('client.envPathAuto'), 'ok');
       setEnvTarget(null);
       await reload();
     } catch (e) {
@@ -175,22 +176,22 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
   return (
     <div className="takeover-profiles">
       <div className="section-title takeover-section-head">
-        <h3>Agent</h3>
+        <h3>{t('client.agentList')}</h3>
         <div className="title-actions">
           <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => checkEnv()}>
-            <ShieldCheck size={14} />检查
+            <ShieldCheck size={14} />{t('client.check')}
           </button>
           <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => repairEnv()}>
-            <Wrench size={14} />修复
+            <Wrench size={14} />{t('client.repair')}
           </button>
-          <button type="button" className="ghost tiny-btn" disabled={busy || !aiEnabled} title={!aiEnabled ? '需先配置大模型' : undefined} onClick={() => openImport()}>
-            <FileSearch size={14} />导入
+          <button type="button" className="ghost tiny-btn" disabled={busy || !aiEnabled} title={!aiEnabled ? t('client.needModelFirst') : undefined} onClick={() => openImport()}>
+            <FileSearch size={14} />{t('client.import')}
           </button>
           <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setDiscoverOpen(true)}>
-            <Search size={14} />发现
+            <Search size={14} />{t('client.discover')}
           </button>
           <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => openAdd()}>
-            <Plus size={14} />添加
+            <Plus size={14} />{t('client.add')}
           </button>
         </div>
       </div>
@@ -209,7 +210,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
             onAdvanced={() => setAdvancedId(p.id)}
           />
         ))}
-        {profiles.length === 0 && <p className="hint compact">暂无 Agent，点击「添加」。</p>}
+        {profiles.length === 0 && <p className="hint compact">{t('client.noAgents')}</p>}
       </div>
 
       <TakeoverProfileModal
@@ -225,7 +226,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
         onSaved={() => {
           reload();
           pushToast(
-            modalMode === 'import' ? '已导入' : modalMode === 'edit' ? '已保存' : '已添加',
+            modalMode === 'import' ? t('client.toastImported') : modalMode === 'edit' ? t('client.toastSaved') : t('client.toastAdded'),
             'ok',
           );
         }}
@@ -238,7 +239,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
         onClose={() => setDiscoverOpen(false)}
         onAdded={(count) => {
           reload();
-          pushToast(`已添加 ${count} 个 Agent`, 'ok');
+          pushToast(t('client.toastAddedCount', { count }), 'ok');
         }}
         onError={(msg) => pushToast(msg, 'error')}
       />
@@ -247,38 +248,38 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
         <div className="modal-overlay">
           <div className="modal takeover-env-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>{envTarget.name} · 环境</h3>
-              <button type="button" className="icon-btn" onClick={() => setEnvTarget(null)} aria-label="关闭">×</button>
+              <h3>{t('client.envTitle', { name: envTarget.name })}</h3>
+              <button type="button" className="icon-btn" onClick={() => setEnvTarget(null)} aria-label={t('common.close')}>×</button>
             </div>
             <div className="modal-body">
               <div className="takeover-env-grid">
                 <div className="takeover-env-stat">
                   <span className="hint compact">CLI</span>
                   <span className={envTarget.cli_detected ? 'badge ok inline' : 'badge inline'}>
-                    {envTarget.cli_detected ? '已发现' : '未发现'}
+                    {envTarget.cli_detected ? t('client.cliFound') : t('client.cliNotFound')}
                   </span>
                   {envTarget.cli_path ? (
                     <code className="takeover-env-path">{envTarget.cli_path}</code>
                   ) : envTarget.launch_command ? (
-                    <span className="hint compact">查找：{envTarget.launch_command}</span>
+                    <span className="hint compact">{t('client.lookupCmd', { cmd: envTarget.launch_command })}</span>
                   ) : null}
                 </div>
                 <div className="takeover-env-stat">
-                  <span className="hint compact">配置目录</span>
+                  <span className="hint compact">{t('client.configDir')}</span>
                   <span className={envTarget.settings_detected ? 'badge ok inline' : 'badge inline'}>
-                    {envTarget.settings_detected ? '已发现' : '未发现'}
+                    {envTarget.settings_detected ? t('client.cliFound') : t('client.cliNotFound')}
                   </span>
                   {envTarget.settings_path ? (
                     <code className="takeover-env-path">{envTarget.settings_path}</code>
                   ) : (
-                    <span className="hint compact">未找到默认目录</span>
+                    <span className="hint compact">{t('client.configDirNotFound')}</span>
                   )}
                 </div>
               </div>
               <div className="takeover-env-summary">
                 <span className="hint compact">
-                  技能目录 {envTarget.skills_count ?? 0} 项
-                  {(envTarget.plugins_count ?? 0) > 0 ? ` · 插件 ${envTarget.plugins_count}` : ''}
+                  {t('client.skillsCount', { n: envTarget.skills_count ?? 0 })}
+                  {(envTarget.plugins_count ?? 0) > 0 ? t('client.pluginsCount', { n: envTarget.plugins_count ?? 0 }) : ''}
                 </span>
                 {onOpenSkills && (
                   <button
@@ -291,14 +292,14 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
                       onOpenSkills(id);
                     }}
                   >
-                    在技能页查看
+                    {t('client.viewInSkills')}
                   </button>
                 )}
               </div>
               <label className="field-label">
-                手动指定配置目录（可选）
+                {t('client.manualConfigDir')}
                 <input
-                  placeholder="留空则自动检测，如 ~/.claude"
+                  placeholder={t('client.manualConfigDirPlaceholder')}
                   value={envPathDraft}
                   disabled={envSaving}
                   onChange={(e) => setEnvPathDraft(e.target.value)}
@@ -306,9 +307,9 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
               </label>
             </div>
             <div className="modal-actions">
-              <button type="button" className="ghost" disabled={envSaving} onClick={() => setEnvTarget(null)}>取消</button>
-              <button type="button" className="ghost" disabled={envSaving} onClick={() => setEnvPathDraft('')}>清空</button>
-              <button type="button" className="primary" disabled={envSaving} onClick={() => void saveEnvPath()}>保存</button>
+              <button type="button" className="ghost" disabled={envSaving} onClick={() => setEnvTarget(null)}>{t('common.cancel')}</button>
+              <button type="button" className="ghost" disabled={envSaving} onClick={() => setEnvPathDraft('')}>{t('client.clear')}</button>
+              <button type="button" className="primary" disabled={envSaving} onClick={() => void saveEnvPath()}>{t('common.save')}</button>
             </div>
           </div>
         </div>
@@ -349,8 +350,8 @@ function TakeoverProfileRow({
       <div className="takeover-profile-row-main">
         <div className="takeover-profile-row-title">
           <strong>{p.name}</strong>
-          <span className={p.configured ? 'badge ok inline' : 'badge inline'}>{p.configured ? '已接管' : '未接管'}</span>
-          <span className={discovered ? 'badge ok inline' : 'badge inline'}>{discovered ? '已发现' : '未发现'}</span>
+          <span className={p.configured ? 'badge ok inline' : 'badge inline'}>{p.configured ? t('client.takenOver') : t('client.notTakenOver')}</span>
+          <span className={discovered ? 'badge ok inline' : 'badge inline'}>{discovered ? t('client.discovered') : t('client.notDiscovered')}</span>
         </div>
         <span className="hint compact takeover-profile-row-meta">{metaParts.join(' · ')}</span>
       </div>
@@ -359,27 +360,27 @@ function TakeoverProfileRow({
           type="button"
           className={`tiny ghost takeover-env-btn${discovered ? ' detected' : ''}`}
           disabled={busy}
-          title="查看安装与配置目录"
+          title={t('client.envBtnTitle')}
           onClick={() => onEnv()}
         >
-          <FolderOpen size={14} />环境
+          <FolderOpen size={14} />{t('client.envBtn')}
         </button>
-        <button type="button" className="tiny ghost" disabled={busy} title="高级：技能 / 插件 / 配置" onClick={() => onAdvanced()}>
-          <Settings2 size={14} />高级
+        <button type="button" className="tiny ghost" disabled={busy} title={t('client.advancedTitle')} onClick={() => onAdvanced()}>
+          <Settings2 size={14} />{t('client.advanced')}
         </button>
-        <button type="button" className="tiny ghost" disabled={busy} title="编辑" onClick={() => onEdit()}>
+        <button type="button" className="tiny ghost" disabled={busy} title={t('client.editTitle')} onClick={() => onEdit()}>
           <Pencil size={14} />
         </button>
-        <button type="button" className="tiny ghost danger-link" disabled={busy} title="删除" onClick={() => onDelete()}>
+        <button type="button" className="tiny ghost danger-link" disabled={busy} title={t('client.deleteTitle')} onClick={() => onDelete()}>
           <Trash2 size={14} />
         </button>
         {p.configured ? (
           <button type="button" className="tiny ghost takeover-enable-btn" disabled={busy} onClick={() => onRelease()}>
-            <Unplug size={14} />取消接管
+            <Unplug size={14} />{t('client.cancelTakeover')}
           </button>
         ) : (
           <button type="button" className="tiny primary takeover-enable-btn" disabled={busy} onClick={() => onApply()}>
-            <PlugZap size={14} />接管
+            <PlugZap size={14} />{t('client.takeover')}
           </button>
         )}
       </div>

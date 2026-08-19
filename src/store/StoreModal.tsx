@@ -1,5 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
+import { t } from '../i18n';
 
 type Props = {
   title: string;
@@ -19,7 +20,7 @@ export function StoreModal({ title, onClose, children, wide, closeOnOverlay = fa
       <div className={`modal${wide ? ' modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button type="button" className="ghost tiny-btn" onClick={onClose} aria-label="关闭">
+          <button type="button" className="ghost tiny-btn" onClick={onClose} aria-label={t('common.close')}>
             <X size={16} />
           </button>
         </div>

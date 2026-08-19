@@ -1,6 +1,7 @@
 import React from 'react';
 import { Download, ExternalLink, PlugZap, Trash2 } from 'lucide-react';
 import type { MountTarget, SkillCatalogItem, StoreClientTab } from './types';
+import { t } from '../i18n';
 
 type Props = {
   skill: SkillCatalogItem;
@@ -18,7 +19,7 @@ export function SkillRow({
 }: Props) {
   const clientMounted = clientTab === 'claude' ? skill.mounted_claude : skill.mounted_codex;
   const otherMounted = clientTab === 'claude' ? skill.mounted_codex : skill.mounted_claude;
-  const mountLabel = clientTab === 'claude' ? '挂到 Claude' : '挂到 Codex';
+  const mountLabel = t('srow.mountTo', { client: clientTab === 'claude' ? 'Claude' : 'Codex' });
   const mountTarget: MountTarget = clientTab;
 
   return (
@@ -28,7 +29,7 @@ export function SkillRow({
         <span className="hint compact">{skill.repo_label} · {skill.relative_path}</span>
         {skill.description && <p className="hint compact">{skill.description}</p>}
         <div className="store-tags">
-          {skill.staged && <span className="badge ok">已暂存</span>}
+          {skill.staged && <span className="badge ok">{t('srow.staged')}</span>}
           {skill.mounted_claude && <span className="badge ok">Claude</span>}
           {skill.mounted_codex && <span className="badge ok">Codex</span>}
         </div>
@@ -36,7 +37,7 @@ export function SkillRow({
       <div className="store-skill-actions">
         {!skill.staged && (
           <button type="button" className="tiny" disabled={busy} onClick={() => onInstall(skill.id)}>
-            <Download size={14} />安装
+            <Download size={14} />{t('common.install')}
           </button>
         )}
         {skill.staged && !clientMounted && (
@@ -46,17 +47,17 @@ export function SkillRow({
         )}
         {skill.staged && !otherMounted && clientMounted && (
           <button type="button" className="tiny" disabled={busy} onClick={() => onMount(skill.id, clientTab === 'claude' ? 'codex' : 'claude')}>
-            同步到{clientTab === 'claude' ? ' Codex' : ' Claude'}
+            {t('srow.syncTo', { client: clientTab === 'claude' ? 'Codex' : 'Claude' })}
           </button>
         )}
         {skill.staged && !skill.mounted && (
           <button type="button" className="tiny" disabled={busy} onClick={() => onMount(skill.id, 'both')}>
-            一键双端挂载
+            {t('srow.mountBoth')}
           </button>
         )}
         {clientMounted && (
           <button type="button" className="tiny" disabled={busy} onClick={() => onUnmount(skill.id, mountTarget)}>
-            取消{clientTab === 'claude' ? ' Claude' : ' Codex'}挂载
+            {t('srow.unmountClient', { client: clientTab === 'claude' ? 'Claude' : 'Codex' })}
           </button>
         )}
         {skill.staged && (
@@ -66,7 +67,7 @@ export function SkillRow({
         )}
         {skill.staged && (
           <button type="button" className="tiny" disabled={busy} onClick={() => onOpen(skill.id, true)}>
-            <ExternalLink size={14} />打开
+            <ExternalLink size={14} />{t('common.open')}
           </button>
         )}
       </div>

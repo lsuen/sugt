@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Search, X } from 'lucide-react';
+import { t } from './i18n';
 
 export type DiscoveredAgent = {
   id: string;
@@ -145,7 +146,7 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
         extraPath: rows[item.id]?.extraPath?.trim() || null,
       }));
     if (payload.length === 0) {
-      onError('请先勾选可添加的 Agent');
+      onError(t('disc.errorSelectFirst'));
       return;
     }
     setAdding(true);
@@ -164,22 +165,22 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
     <div className="modal-overlay">
       <div className="modal takeover-modal agent-discover-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>发现 Agent</h3>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭" disabled={adding}>
+          <h3>{t('disc.title')}</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('common.close')} disabled={adding}>
             <X size={16} />
           </button>
         </div>
         <div className="modal-body takeover-modal-body">
           <p className="hint compact takeover-modal-hint">
-            在系统与用户环境变量、PATH 中搜索。发现不会自动接管，添加后出现在 Agent 列表。
+            {t('disc.hint')}
           </p>
           <label className="field-label">
-            搜索
+            {t('disc.search')}
             <div className="agent-discover-search">
               <Search size={14} />
               <input
                 autoFocus
-                placeholder="例如 cursor、claude、code"
+                placeholder={t('disc.searchPlaceholder')}
                 value={query}
                 disabled={adding || busy}
                 onChange={(e) => setQuery(e.target.value)}
@@ -187,9 +188,9 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
             </div>
           </label>
 
-          {searching && <p className="hint compact">正在搜索…</p>}
+          {searching && <p className="hint compact">{t('common.searching')}</p>}
           {!searching && query.trim().length >= 2 && results.length === 0 && (
-            <p className="hint compact">未找到匹配项</p>
+            <p className="hint compact">{t('disc.noMatch')}</p>
           )}
 
           <div className="agent-discover-list">
@@ -212,9 +213,9 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
                       <div className="agent-discover-title">
                         <strong>{item.name}</strong>
                         <span className={`badge inline${item.confidence === 'high' ? ' ok' : ''}`}>
-                          {item.confidence === 'high' ? '高置信' : '低置信'}
+                          {item.confidence === 'high' ? t('disc.highConfidence') : t('disc.lowConfidence')}
                         </span>
-                        {item.already_added && <span className="badge inline ok">已添加</span>}
+                        {item.already_added && <span className="badge inline ok">{t('disc.added')}</span>}
                       </div>
                       <span className="hint compact">
                         {[item.vendor, item.protocol, item.launch_command].filter(Boolean).join(' · ')}
@@ -223,16 +224,16 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
                         {item.hit_reasons.join('；')}
                       </span>
                       {item.cli_path && (
-                        <code className="takeover-env-path">CLI {item.cli_path}</code>
+                        <code className="takeover-env-path">{t('disc.cliPath', { path: item.cli_path })}</code>
                       )}
                       {item.settings_path && (
-                        <code className="takeover-env-path">配置 {item.settings_path}</code>
+                        <code className="takeover-env-path">{t('disc.configPath', { path: item.settings_path })}</code>
                       )}
                       {item.warning && <p className="agent-discover-warn">{item.warning}</p>}
                       {item.requires_path && !item.already_added && (
                         <input
                           className="agent-discover-path"
-                          placeholder="补充配置目录或 skills 目录，如 ~/.cursor"
+                          placeholder={t('disc.extraPathPlaceholder')}
                           value={state.extraPath}
                           disabled={adding || busy}
                           onChange={(e) => setExtraPath(item.id, e.target.value)}
@@ -248,11 +249,11 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
         </div>
         <div className="modal-actions takeover-modal-actions">
           <span className="hint compact">
-            {selectable.length > 0 ? `可选 ${selectable.length}` : ''}
-            {selectedCount > 0 ? ` · 已选 ${selectedCount}` : ''}
+            {selectable.length > 0 ? t('disc.selectableCount', { n: selectable.length }) : ''}
+            {selectedCount > 0 ? t('disc.selectedCount', { n: selectedCount }) : ''}
           </span>
           <button type="button" className="ghost" disabled={adding} onClick={onClose}>
-            取消
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -260,7 +261,7 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
             disabled={adding || busy || selectedCount === 0}
             onClick={() => void addSelected()}
           >
-            {adding ? '添加中…' : `添加所选${selectedCount > 0 ? ` (${selectedCount})` : ''}`}
+            {adding ? t('common.adding') : t('disc.addSelected') + (selectedCount > 0 ? ` (${selectedCount})` : '')}
           </button>
         </div>
       </div>

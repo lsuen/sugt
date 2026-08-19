@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './overlay.css';
+import { t } from './i18n';
 
 type OverlayConfigView = {
   enabled: boolean;
@@ -95,7 +96,7 @@ function Overlay() {
       <div className={isRow ? 'overlay-rows-h' : 'overlay-rows'}>
         {cfg?.show_tokens !== false && (
           <div className="overlay-row">
-            <span className="overlay-label">流量</span>
+            <span className="overlay-label">{t('overlay.flow')}</span>
             <span className="overlay-tokens">
               ↑{traffic ? fmt(traffic.today_input_tokens) : '—'}
               <span className="overlay-dim">/</span>
@@ -109,13 +110,13 @@ function Overlay() {
                   onClick={() => void savePos()}
                   disabled={busy}
                 >
-                  {busy ? '…' : '保存'}
+                  {busy ? '…' : t('overlay.save')}
                 </button>
                 <span
                   className="overlay-grip"
                   onMouseDown={startDrag}
-                  title="按住拖动"
-                  aria-label="拖动悬浮窗"
+                  title={t('overlay.drag')}
+                  aria-label={t('overlay.drag')}
                 />
               </>
             )}
@@ -123,7 +124,7 @@ function Overlay() {
         )}
         {cfg?.show_client !== false && (
           <div className="overlay-row">
-            <span className="overlay-label">来源</span>
+            <span className="overlay-label">{t('overlay.source')}</span>
             <span className="overlay-client" title={`${client} · ${mode}`}>
               {client}
               <span className="overlay-dim">{mode}</span>
