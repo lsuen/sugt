@@ -266,6 +266,18 @@ function protocolLabel(protocol: ProviderProtocol) {
   return protocol === 'anthropic' ? t('common.protocolAnthropic') : t('common.protocolOpenai');
 }
 
+function editionLabel(trial?: TrialStatus): string {
+  if (!trial) return t('about.devMode');
+  switch (trial.edition) {
+    case 'public':
+      return t('about.editionPublic');
+    case 'self':
+      return t('about.editionSelf');
+    default:
+      return t('about.devMode');
+  }
+}
+
 function Modal({
   title,
   onClose,
@@ -307,6 +319,9 @@ function App() {
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
   const [skillsAgentFilter, setSkillsAgentFilter] = useState('');
+  const [trialDetail, setTrialDetail] = useState(false);
+  const versionClicks = useRef(0);
+  const versionClickTimer = useRef<number | null>(null);
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
@@ -323,6 +338,30 @@ function App() {
 
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  // 隐藏入口：连续点击版本号卡片 10 次，或 Ctrl+Alt+Shift+V，查看有效期详情
+  const onVersionCardClick = useCallback(() => {
+    versionClicks.current += 1;
+    if (versionClickTimer.current) window.clearTimeout(versionClickTimer.current);
+    versionClickTimer.current = window.setTimeout(() => {
+      versionClicks.current = 0;
+    }, 2000);
+    if (versionClicks.current >= 10) {
+      versionClicks.current = 0;
+      setTrialDetail(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === 'V' || e.key === 'v')) {
+        e.preventDefault();
+        setTrialDetail(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const refreshCore = useCallback(async () => {
@@ -695,13 +734,13 @@ function App() {
             <div className="about-logo">SUTAI</div>
             <h3>{t('about.title')}</h3>
             <p>{t('about.author')}</p>
-            <p className={status?.trial.valid ? 'trial-note' : 'trial-note expired'}>
-              {status?.trial.message ?? t('about.devMode')}
-            </p>
+            <p className="trial-note">{editionLabel(status?.trial)}</p>
             <div className="about-grid">
-              <div><strong>{t('about.version')}</strong><span>v{CURRENT_VERSION}</span></div>
+              <div className="about-version-card" onClick={onVersionCardClick}>
+                <strong>{t('about.version')}</strong><span>v{CURRENT_VERSION}</span>
+              </div>
               <div><strong>{t('about.product')}</strong><span>{status?.trial.product_label ?? t('about.full')}</span></div>
-              <div><strong>{t('about.license')}</strong><span>{status?.trial.message ?? t('about.devMode')}</span></div>
+              <div><strong>{t('about.license')}</strong><span>{editionLabel(status?.trial)}</span></div>
               <div><strong>{t('about.configDir')}</strong><span>{status?.config_dir}</span></div>
               <div><strong>{t('about.logFile')}</strong><span>{status?.log_file}</span></div>
               <div><strong>{t('about.listen')}</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
@@ -747,6 +786,22 @@ function App() {
           <div className="modal-actions">
             <button className="ghost" onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</button>
             <button className="danger" disabled={busy} onClick={confirmDelete}>{t('common.delete')}</button>
+          </div>
+        </Modal>
+      )}
+
+      {trialDetail && (
+        <Modal title={t('about.trialDetail')} onClose={() => setTrialDetail(false)} closeOnOverlay>
+          <div className="trial-detail-grid">
+            <div><strong>{t('about.edition')}</strong><span>{editionLabel(status?.trial)}</span></div>
+            <div><strong>{t('about.product')}</strong><span>{status?.trial.product_label ?? '-'}</span></div>
+            <div><strong>{t('about.buildId')}</strong><span>{status?.trial.build_id ?? '-'}</span></div>
+            <div><strong>{t('about.status')}</strong><span>{status?.trial.status ?? '-'}</span></div>
+            <div><strong>{t('about.valid')}</strong><span>{status?.trial.valid ? 'true' : 'false'}</span></div>
+            <div><strong>{t('about.trialEnabled')}</strong><span>{status?.trial.trial_enabled ? 'true' : 'false'}</span></div>
+            <div><strong>{t('about.expires')}</strong><span>{status?.trial.expires_date ?? '-'}</span></div>
+            <div><strong>{t('about.daysLeft')}</strong><span>{status?.trial.days_remaining ?? '-'}</span></div>
+            <div className="trial-detail-msg"><strong>{t('about.message')}</strong><span>{status?.trial.message ?? '-'}</span></div>
           </div>
         </Modal>
       )}

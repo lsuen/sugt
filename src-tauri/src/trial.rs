@@ -38,10 +38,10 @@ pub fn status(paths: &AppPaths) -> TrialStatusView {
     match check(paths, false) {
         Ok(status) => TrialStatusView::from(status),
         Err(err) => TrialStatusView {
-            edition: "trial".to_string(),
+            edition: edition_id().to_string(),
             product_line: product::product_line_id().to_string(),
             product_label: product::product_line_label().to_string(),
-            trial_enabled: true,
+            trial_enabled: trial_enabled(),
             valid: false,
             status: "error".to_string(),
             message: err.to_string(),
@@ -64,17 +64,14 @@ pub fn ensure_allowed(paths: &AppPaths) -> Result<()> {
 
 fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
     let build_id = build_id();
+    let mode = edition_mode();
 
-    if !trial_enabled() {
-        let mode = if has_trial_env() {
-            TrialMode::SelfUse
-        } else {
-            TrialMode::Dev
-        };
+    if !trial_enabled() || !windows_public_enforced(&mode) {
         let message = match mode {
             TrialMode::Dev => "开发模式，无有效期限制".to_string(),
             TrialMode::SelfUse => "异常设计自用版，无有效期限制".to_string(),
-            TrialMode::Trial => unreachable!(),
+            // macOS 公开版：无时间限制
+            TrialMode::Public => "公开版（macOS 无时间限制）".to_string(),
         };
         return Ok(TrialStatus {
             mode,
@@ -87,7 +84,7 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
         });
     }
 
-    let expires_at = expires_at().ok_or_else(|| anyhow!("试用版缺少有效期配置，请重新打包"))?;
+    let expires_at = expires_at().ok_or_else(|| anyhow!("公开版缺少有效期配置，请重新打包"))?;
     let now = Utc::now();
     let days_remaining = (expires_at.date_naive() - now.date_naive())
         .num_days()
@@ -95,10 +92,10 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
 
     if now > expires_at {
         return Ok(TrialStatus {
-            mode: TrialMode::Trial,
+            mode: TrialMode::Public,
             valid: false,
             status: "expired".to_string(),
-            message: "当前试用版已到期，请联系异常设计获取新版。".to_string(),
+            message: "当前公开版已到期，请联系作者或前往 GitHub 项目地址更新软件。".to_string(),
             build_id,
             expires_at: Some(expires_at),
             days_remaining: Some(0),
@@ -109,15 +106,15 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
     let state_path = paths.config_dir.join(STATE_FILE);
     let (mut state, reset) = load_trial_state(&state_path, &build_id, &machine_hash, now);
 
-    // 换新包 / 损坏状态：按当前编译期试用截止日重新起算，不阻塞关于页。
+    // 换新包 / 损坏状态：按当前编译期公开版截止日重新起算，不阻塞关于页。
     if reset {
         write_state(&state_path, &state)?;
     } else if state.machine_hash != machine_hash {
         return Ok(TrialStatus {
-            mode: TrialMode::Trial,
+            mode: TrialMode::Public,
             valid: false,
             status: "machine_mismatch".to_string(),
-            message: "当前试用版已绑定其他电脑，请联系异常设计获取新版。".to_string(),
+            message: "当前公开版已绑定其他电脑，请联系作者获取新版。".to_string(),
             build_id,
             expires_at: Some(expires_at),
             days_remaining: Some(days_remaining),
@@ -127,7 +124,7 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
     if !reset && now + Duration::minutes(CLOCK_ROLLBACK_TOLERANCE_MINUTES) < state.last_seen_at
     {
         return Ok(TrialStatus {
-            mode: TrialMode::Trial,
+            mode: TrialMode::Public,
             valid: false,
             status: "clock_rollback".to_string(),
             message: "检测到系统时间异常，请校准时间后重试。".to_string(),
@@ -142,9 +139,9 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
         write_state(&state_path, &state)?;
     }
 
-    let message = format!("异常设计试用版，有效期至 {}", expires_at.format("%Y-%m-%d"));
+    let message = "公开版".to_string();
     Ok(TrialStatus {
-        mode: TrialMode::Trial,
+        mode: TrialMode::Public,
         valid: true,
         status: "valid".to_string(),
         message,
@@ -152,6 +149,30 @@ fn check(paths: &AppPaths, update_state: bool) -> Result<TrialStatus> {
         expires_at: Some(expires_at),
         days_remaining: Some(days_remaining),
     })
+}
+
+/// 按编译期环境变量判定授权模式。
+/// SUGT_EDITION=public → 公开版；SUGT_EDITION=self → 自用版；否则为开发模式。
+fn edition_mode() -> TrialMode {
+    match option_env!("SUGT_EDITION") {
+        Some("public") | Some("trial") => TrialMode::Public,
+        Some("self") => TrialMode::SelfUse,
+        _ if has_trial_env() => TrialMode::SelfUse,
+        _ => TrialMode::Dev,
+    }
+}
+
+fn edition_id() -> &'static str {
+    match edition_mode() {
+        TrialMode::Dev => "dev",
+        TrialMode::SelfUse => "self",
+        TrialMode::Public => "public",
+    }
+}
+
+/// 公开版仅在 Windows（exe）上强制半年有效期；macOS 公开版无时间限制。
+fn windows_public_enforced(mode: &TrialMode) -> bool {
+    cfg!(windows) && mode == &TrialMode::Public
 }
 
 fn fresh_state(build_id: &str, machine_hash: &str, now: DateTime<Utc>) -> TrialState {
@@ -289,11 +310,11 @@ fn machine_guid() -> Option<String> {
 
 impl From<TrialStatus> for TrialStatusView {
     fn from(value: TrialStatus) -> Self {
-        let trial_enabled = matches!(value.mode, TrialMode::Trial);
+        let trial_enabled = matches!(value.mode, TrialMode::Public);
         let edition = match value.mode {
             TrialMode::Dev => "dev",
             TrialMode::SelfUse => "self",
-            TrialMode::Trial => "trial",
+            TrialMode::Public => "public",
         };
 
         Self {

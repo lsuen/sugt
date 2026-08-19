@@ -355,6 +355,11 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .trial-note.expired { color: #ff95a7; }
 .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; text-align: left; }
 .about-grid div { padding: 12px; border-radius: 12px; background: rgba(255,255,255,.04); display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.about-version-card { cursor: pointer; user-select: none; }
+.trial-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.trial-detail-grid div { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.trial-detail-grid strong { color: #8fb0c8; font-weight: 600; }
+.trial-detail-grid .trial-detail-msg { grid-column: 1 / -1; }
 
 .release-notes-frame {
   margin-top: 20px; padding: 16px; border-radius: 14px; text-align: left;

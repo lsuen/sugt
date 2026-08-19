@@ -39,7 +39,7 @@ cd src-tauri && cargo build --release --bin sugt-cli
 
 # 打包发布（PowerShell 脚本）
 npm run package:release:self          # 自用版
-npm run package:release:trial         # 试用版
+npm run package:release:public        # 公开版（Windows 半年有效期）
 npm run package:release:all           # 全部变体
 ```
 
@@ -50,10 +50,11 @@ npm run package:release:all           # 全部变体
 | 维度 | 取值 | 说明 |
 |------|------|------|
 | 产品线（编译期） | `feature` / `store` | 通过 `SUGT_PRODUCT` 环境变量控制；`store` 包含技能中控台 |
-| 授权变体（运行时） | `dev` / `self` / `trial` | 由打包脚本注入的 `build_id` 和 `trial-state.json` 决定 |
+| 授权变体（运行时） | `dev` / `self` / `public` | 由打包脚本注入的 `SUGT_EDITION` 和 `trial-state.json` 决定 |
 
-- `product.rs` 定义产品线枚举，`trial.rs` 管理授权检查与试用到期
-- 公开仓库不含试用注入脚本和技能中控台完整源码
+- `product.rs` 定义产品线枚举，`trial.rs` 管理授权检查与公开版到期提示
+- 公开版：Windows exe 半年有效期（到期提示去 GitHub 更新），macOS 无时间限制；自用版/开发版无限制
+- 公开仓库不含打包注入脚本和技能中控台完整源码
 
 ## 核心架构
 

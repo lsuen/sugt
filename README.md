@@ -15,6 +15,15 @@
 
 English: [README.en.md](README.en.md)
 
+## 版本与授权
+
+| 版本 | 有效期 | 说明 |
+| --- | --- | --- |
+| 公开版 | Windows 半年（180 天） | 到期后提示前往 GitHub 更新软件，功能不限制；macOS 无时间限制 |
+| 自用版 / 开发版 | 无限制 | 作者自用，不对外分发 |
+
+公开版即完整功能版本：本地 AI 网关、协议互转、客户端接管、技能中控台全部可用。Windows 公开版在半年后周期性提示更新软件，前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载新版即可继续使用，不影响数据与配置。
+
 ## 为什么做这个
 
 - **Key 一堆**：OpenAI、Anthropic、魔搭、火山……散落在各个客户端，泄漏、轮换、失效都难管理
