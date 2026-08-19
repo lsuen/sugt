@@ -1,6 +1,6 @@
-# SUGT
+# SUGT — Local AI Gateway & LLM Skill Console
 
-A local AI gateway and skill control plane for your desktop. SUGT centralizes API keys from multiple LLM providers behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models (official APIs, Chinese providers, self-hosted models) in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
+**SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
 
 - **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
 - **Swap upstreams freely**: OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, or your own models — no client-side reconfiguration.
@@ -120,7 +120,13 @@ The UI refreshes immediately after switching — every panel, dialog, toast, and
 
 ### Install
 
-**Windows** — download the installer from [GitHub Releases](https://github.com/lsuen/sugt/releases) and run it.
+**Windows (winget)** — once the manifest merges upstream, you can install with:
+
+```bash
+winget install lsuen.sugt
+```
+
+**Windows (direct)** — download the installer from [GitHub Releases](https://github.com/lsuen/sugt/releases) and run it.
 
 **macOS (Homebrew)** — the prebuilt app is published as a Homebrew cask:
 

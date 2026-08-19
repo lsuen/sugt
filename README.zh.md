@@ -1,6 +1,6 @@
-# SUTAI
+# SUTAI — 本地 AI 网关 & 大模型技能中控台
 
-朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key，通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
+朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
 
 - **一套 Key，处处可用**：所有 AI 客户端的 Base URL 与鉴权，收拢到本机一个网关。
 - **上游随意换**：官方 API、国内服务商（魔搭、火山引擎、硅基流动等）、自建模型，切换无需改动任何客户端。
@@ -114,7 +114,13 @@ SUTAI 内置 **中文 / English** 双语支持，所有界面文本均通过统�
 
 ### 下载安装
 
-**Windows**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 Windows x64 安装包，安装即可运行。
+**Windows（winget）**：manifest 合并上游后即可直接安装：
+
+```bash
+winget install lsuen.sugt
+```
+
+**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 Windows x64 安装包，安装即可运行。
 
 **macOS（Homebrew）**：已发布预编译 Homebrew cask：
 
