@@ -1,100 +1,161 @@
 # SUGT
 
-A local AI gateway for Windows. One place for upstream models, one-click agent takeover, and (in the full build) a Skills console you can download into, manage locally, and remount without losing your library.
+A local AI gateway and skill control plane for your desktop. SUGT centralizes API keys from multiple LLM providers behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models (official APIs, Chinese providers, self-hosted models) in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
 
-If you use Claude Code / Codex / OpenCode with Chinese or self-hosted providers, you should not have to re-edit Base URLs in every client. Point agents at localhost; swap upstreams in one panel.
+- **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
+- **Swap upstreams freely**: OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, or your own models — no client-side reconfiguration.
+- **Skills that stick**: discover, install, and mount Skills; unmounting never loses your library.
 
-| | |
-| --- | --- |
-| Version | 1.0.0 |
-| Author | Sun Wenlong · 异常设计 |
-| Open source | Feature core under [Apache-2.0](LICENSE) |
-| Current binary | [Full trial build](https://github.com/lsuen/sugt/releases/tag/v1.0.0-store-trial) (includes the skill console) |
+|                |                                                                       |
+| -------------- | --------------------------------------------------------------------- |
+| Version        | 1.1.1                                                                 |
+| Author         | Sun Wenlong · 异常设计                                                 |
+| Open source    | [Apache-2.0](LICENSE), fully open source                               |
+| Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)              |
 
 中文说明：[README.md](README.md)
 
 ## Why
 
-- API keys scattered across OpenAI, Anthropic, ModelScope, Volcengine, local models…
-- Every agent wants its own Base URL and auth setup
-- Skills live in different folders with no shared discover / mount / keep flow
+- **API keys scattered** across OpenAI, Anthropic, ModelScope, Volcengine, local models…
+- **Every agent wants its own Base URL and auth setup** — re-editing configs in each client is tedious and error-prone
+- **Skills live in different folders** with no shared discover / mount / keep flow; switching machines means redoing everything
 
-SUGT is intentionally small: a compatible local gateway, takeover for common agents, and a skill control plane in the full release.
+SUGT is intentionally small: a compatible local gateway, one-click takeover for common agents, and a skill control plane you can actually keep.
 
-## A note from the author (please read)
+## Features
 
-I will keep offering a **free** way to use this. The trial build is not a trap to force payment later.
+### Local AI Gateway
 
-Right now the Release asset is a **time-limited full build** because I still have ideas I want to finish, and I want more code review before I call anything “done.” It already helps with real setup pain, so I published it anyway. That felt like the responsible thing: if it can help, don’t sit on it.
+- Axum HTTP server embedded in the Tauri process, speaking **OpenAI Chat Completions**, **Anthropic Messages**, and **OpenAI Responses**
+- **Protocol bridging**: bidirectional request / response conversion between Anthropic and OpenAI, including SSE streaming
+- **Multi-upstream failover**: automatically falls back to the next provider in your `failover` order
+- **Hot-reload config**: edit `config.toml` and the next request picks it up — no restart needed
+- **Port fallback**: if the configured port is taken, the gateway binds the next available one
+- Built-in endpoints: `/health`, `/v1/models`, `/v1/_sugt/traffic`
 
-When things are steadier, I will publish a **permanent full build** (no trial countdown). The open feature-core source can also be built without trial injection; the author’s packaging/trial scripts are simply not in the public tree.
+### Model Management
 
-Some modules (mainly the skill console source) are still private for the same reason — polish and review — **not** because I plan to keep them closed forever. I intend to open the rest over time, and eventually all of it.
+- Built-in catalog of Chinese providers (ModelScope, Volcengine, SiliconFlow, and more) with standard Base URLs and model lists
+- Enable / disable providers, switch the default model, and test connectivity from one panel
 
-### Why this release took courage
+### One-Click Agent Takeover
 
-I’m not a young founder with investors, a team, or a big account behind me. I’m older than most people who casually drop repos on GitHub. The last few years have been hard — money, energy, and the quiet fear that work done alone might never be seen.
+- Automatically discovers installed agent clients on your machine
+- Sets environment variables and launch scripts so Claude Code / Codex / OpenCode point at the local gateway; releasing the takeover cleans everything up
 
-SUGT began as something I needed for my own days. Putting it online meant saying out loud: this might matter to someone else. That was not easy. I finally gathered the courage to open-source what I could, and to ship a usable build even while unfinished pieces remain.
+### Skills Console
 
-If it helps you, a star or a short Issue is enough. If it doesn’t, that’s okay. I’m not asking for pity — only for a fair look, and maybe a little patience while I keep improving it.
+- Refresh skill indexes from Git repositories, Gitee, or custom sources
+- Install, uninstall, mount, and unmount Skills — your library is always preserved
+- Mount the same Skill across multiple agents; Markdown-rendered skill panels
 
-## Download
+### Traffic Overlay
 
-Windows x64 full trial (~90 days, machine-bound):
+- Always-on-top, semi-transparent, mouse-through overlay showing today's token activity in real time
+- Landscape / portrait layout, resizable, with one-click restore to defaults
 
-**[SUGT 1.0.0 store trial](https://github.com/lsuen/sugt/releases/tag/v1.0.0-store-trial)**
+### Gateway Watchdog
 
-Config defaults to `Documents\.sugt\` (`SUGT_CONFIG_DIR` overrides it). Feedback: [Issues](https://github.com/lsuen/sugt/issues).
+- Detects gateway unavailability every 20 seconds and restarts it automatically
+- Manages a detached `sugt-cli serve` process via PID file (no window, background-only)
 
 ## Screenshots
 
 Console — start/stop, traffic, agent endpoints.
 
-![Console](docs/images/client.png)
+![Console](docs/images/english-client.png)
 
 Models — providers, default model, connectivity test.
 
-![Models](docs/images/client-llm.png)
+![Models](docs/images/english-client-llm.png)
 
 Clients — discover agents, take over or release.
 
-![Clients](docs/images/client-agents.png)
+![Clients](docs/images/english-client-agents.png)
 
-Skills (full build) — local mount and repo discover.
+Skills — local mount and repo discovery.
 
-![Local skills](docs/images/client-skills-local.png)
+![Local skills](docs/images/english-client-skills-local.png)
 
-![Discover skills](docs/images/client-skills-store.png)
+Settings — language, gateway, and overlay options.
 
-## Features
+![Settings](docs/images/english-settings.png)
 
-- Local gateway: Chat Completions, Anthropic Messages, OpenAI Responses (with fallback)
-- Protocol bridging between Anthropic and OpenAI shapes
-- Provider presets, enable/disable, default switch, test
-- One-click takeover for Claude Code / Codex / OpenCode and similar clients
-- Skill console in the full binary (refresh, install, mount; library stays even if you unmount)
-- Desktop UI (Tauri) and `sugt-cli`
+Logs — request and gateway activity.
 
-More: [open-source policy](docs/open-source.md) · [provider notes](docs/provider-vendors.md) · [build from source](docs/build.md)
+![Logs](docs/images/english-logs.png)
 
-## Build (feature core)
+## Internationalization
 
-Windows 10/11, Node 18+, Rust 1.78+, WebView2.
+SUGT ships with built-in **English / 中文** support. All UI text is rendered through a single dictionary layer with zero third-party dependencies.
 
-```cmd
-npm install
-npm run check
-npm run dev:app
-```
+**Switching languages**: open **Settings** → **Language** and pick one of:
 
-See [docs/build.md](docs/build.md). Public tree = feature core. For a no-trial full binary, build from the author’s full tree with a self/dev edition (trial injection is packaging-time, not a permanent lock on the idea of the product).
+| Option | Behavior |
+| --- | --- |
+| Follow system | Uses the OS language: Chinese systems show 中文, everything else shows English (default) |
+| 中文 | Always shows Chinese |
+| English | Always shows English |
+
+The UI refreshes immediately after switching — every panel, dialog, toast, and the traffic overlay updates with no gaps. The choice is persisted locally and survives restarts.
+
+**Implementation notes**:
+
+- All copy lives in the `zh` / `en` dictionaries in `src/i18n.ts`; components read it via `t('namespace.key')`
+- `{variable}` interpolation is supported for dynamic text (token counts, provider names, paths)
+- The preference is stored in `localStorage`, consistent with theme and other UI preferences
+- Adding a new language is a dictionary extension — no component changes required
+
+## Getting Started
+
+### Install
+
+Download the Windows x64 installer from [GitHub Releases](https://github.com/lsuen/sugt/releases) and run it.
+
+Configuration defaults to `Documents\.sugt\`; override with the `SUGT_CONFIG_DIR` environment variable.
+
+### CLI
 
 ```cmd
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
+sugt-cli env        # takeover management
+sugt-cli test       # connectivity test
 ```
+
+## Build from Source
+
+Requirements: Windows 10/11, Node 18+, Rust 1.78+, WebView2 runtime.
+
+```cmd
+npm install
+npm run check        # TypeScript type check
+npm run dev:app      # launch the Tauri app in dev mode
+```
+
+Production build:
+
+```cmd
+npm run build        # frontend production build
+npx tauri build      # full desktop bundle
+cd src-tauri && cargo build --release --bin sugt-cli   # standalone CLI
+```
+
+## Tech Stack
+
+| Layer | Choice |
+| --- | --- |
+| Desktop shell | Tauri 2.9 (WebView2) |
+| Frontend | React 18 + TypeScript 5.7 + Vite 6 |
+| Backend | Rust (edition 2021) + Axum 0.7 |
+| Gateway | Embedded Axum HTTP server, OpenAI / Anthropic protocol bridging |
+| CLI | `sugt-cli` (standalone binary: `serve` / `status` / `test` / `env` / `init`) |
+
+## Feedback & Contributions
+
+Questions and suggestions are welcome — open an [Issue](https://github.com/lsuen/sugt/issues). The project is under active polish; a star is the best encouragement.
 
 ## License
 
-Feature core: Apache-2.0. Remaining private modules are temporary and intended to be opened over time. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [docs/open-source.md](docs/open-source.md).
+[Apache-2.0](LICENSE) · [NOTICE](NOTICE)

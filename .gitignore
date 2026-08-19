@@ -20,6 +20,8 @@
 .DS_Store
 Thumbs.db
 /docs/dev/
+/docs/**/*.md
+/docs/images/dev_wallpaper.jpg
 /baks/
 /debug.md
 .MemoryForAI/
@@ -33,6 +35,15 @@ scripts/.notify-*.json
 # Local tool config (not part of the product)
 /.claude/
 /.codex/
+/.cursor/
+/.trae/
+/.codebase-index/
+
+# Dev-process documents (task breakdowns, local notes)
+/.task/
+
+# Author-side packaging / release scripts (not shipped)
+/scripts/
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)
