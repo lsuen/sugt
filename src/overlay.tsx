@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './overlay.css';
-import { t } from './i18n';
+import { t, type TKey } from './i18n';
 
 type OverlayConfigView = {
   enabled: boolean;
@@ -30,13 +30,19 @@ type Status = {
 
 const fmt = (n: number) => (n >= 10000 ? `${(n / 10000).toFixed(1)}w` : n.toLocaleString());
 
-const MODE_LABEL: Record<string, string> = {
-  anthropic_native: 'Anthropic 原生',
-  openai_adapter: 'OpenAI 适配',
-  openai_direct: 'OpenAI 直连',
-  responses_native: 'Responses 原生',
-  chat_completions_adapter: 'Chat 适配',
+/** 后端 ProxyHit.mode 实际协议路径 → i18n 键（与网关日志 mode= 一一对应） */
+const PROXY_MODE_KEY: Record<string, TKey> = {
+  anthropic_native: 'proto.anthropicNative',
+  openai_adapter: 'proto.openaiAdapter',
+  openai_direct: 'proto.openaiDirect',
+  responses_native: 'proto.responsesNative',
+  chat_completions_adapter: 'proto.chatAdapter',
 };
+
+/** 协议模式可读标签；未知名保持原样。t() 依赖文件底部 dict，须在调用时求值（模块级会 TDZ 报错） */
+function proxyModeLabel(mode: string): string {
+  return PROXY_MODE_KEY[mode] ? t(PROXY_MODE_KEY[mode]) : mode;
+}
 
 function Overlay() {
   const [cfg, setCfg] = useState<OverlayConfigView | null>(null);
@@ -75,9 +81,7 @@ function Overlay() {
 
   const traffic = status?.traffic;
   const client = status?.last_proxy_client ?? '—';
-  const mode = status?.last_proxy_mode
-    ? MODE_LABEL[status.last_proxy_mode] ?? status.last_proxy_mode
-    : '—';
+  const mode = status?.last_proxy_mode ? proxyModeLabel(status.last_proxy_mode) : '—';
 
   // 抓手按住拖动窗口：后端直调 window.start_dragging()（前端 startDragging 受 ACL 限制）
   const startDrag = (e: React.MouseEvent<HTMLSpanElement>) => {
