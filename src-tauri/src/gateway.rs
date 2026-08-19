@@ -607,12 +607,20 @@ async fn proxy_anthropic_request(
                     continue;
                 }
             },
-            // 自动模式：识别到 Claude 客户端且服务商有原生端点则优先原生，失败降级转换
+            // 自动模式：识别到 Claude 客户端且服务商有原生端点则优先原生，失败降级转换。
+            // 例外：Moonshot/Kimi —— 官方文档未披露 Anthropic 兼容端点，社区实测存在
+            // max_tokens 必传、tool_choice 不支持 "any"、不识别 betas 等多处不兼容，
+            // Claude Code 走原生端点常表现为空流无回复。因此 OpenAI 协议的 Kimi 在
+            // 自动模式下统一走 OpenAI 适配器（与 Try it now 同一已验证路径）；
+            // 显式把协议切为 Anthropic 的用户仍可走原生端点。
             AnthropicAccessMode::Auto => {
-                let prefers_native = provider.protocol == ProviderProtocol::Anthropic
-                    || (anthropic_client.is_some()
-                        && native_target.is_some()
-                        && !state.is_native_unsupported(&provider.id).await);
+                let kimi_skips_native = provider.provider.eq_ignore_ascii_case("moonshot")
+                    && provider.protocol == ProviderProtocol::OpenAi;
+                let prefers_native = !kimi_skips_native
+                    && (provider.protocol == ProviderProtocol::Anthropic
+                        || (anthropic_client.is_some()
+                            && native_target.is_some()
+                            && !state.is_native_unsupported(&provider.id).await));
 
                 if prefers_native {
                     match proxy_anthropic_native(
@@ -1138,6 +1146,7 @@ fn copy_forward_headers(
                 | "x-api-key"
                 | "anthropic-version"
                 | "anthropic-beta"
+                | "accept-encoding"
         ) {
             continue;
         }
