@@ -38,7 +38,7 @@ pub fn apply_github_proxy(prefix: &str, github_url: &str) -> String {
 
 pub fn test_github_proxy(prefix: &str) -> Result<String> {
     if !crate::store::repos::git_available() {
-        return Err(anyhow::anyhow!("未检测到 git，请先安装 Git for Windows"));
+        return Err(anyhow::anyhow!("{}", crate::store::repos::git_missing_hint()));
     }
     let url = apply_github_proxy(prefix, GITHUB_TEST_REPO_URL);
     let output = hidden_command("git")

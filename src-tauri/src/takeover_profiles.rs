@@ -560,6 +560,17 @@ pub fn resolve_cli_path(profile: &TakeoverProfile) -> Option<PathBuf> {
         candidates.push(PathBuf::from("/usr/local/bin").join(cmd));
         candidates.push(PathBuf::from("/opt/homebrew/bin").join(cmd));
         candidates.push(home.join(".npm-global").join("bin").join(cmd));
+        // nvm 安装的 node 全局 bin（~/.nvm/versions/node/<version>/bin/<cmd>）
+        let nvm_node = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(nvm_node) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("bin").join(cmd);
+                if bin.is_file() {
+                    candidates.push(bin);
+                    break;
+                }
+            }
+        }
     }
     candidates.into_iter().find(|p| p.is_file())
 }

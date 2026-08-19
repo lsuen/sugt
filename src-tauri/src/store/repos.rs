@@ -197,7 +197,7 @@ pub fn resolve_clone_url(repo: &SkillRepo, github_proxy_prefix: &str) -> String 
 
 pub fn test_repo_access(url: &str, branch: &str) -> Result<String> {
     if !git_available() {
-        return Err(anyhow!("未检测到 git，请先安装 Git for Windows"));
+        return Err(anyhow!("{}", git_missing_hint()));
     }
     let parsed = parse_git_url(url)?;
     let branch = branch.trim();
@@ -422,9 +422,21 @@ pub fn git_available() -> bool {
         .unwrap_or(false)
 }
 
+/// 按平台给出安装 Git 的指引文案
+pub fn git_missing_hint() -> String {
+    #[cfg(windows)]
+    {
+        "未检测到 git，请先安装 Git for Windows".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "未检测到 git，macOS 可在终端执行 xcode-select --install 安装".to_string()
+    }
+}
+
 pub fn refresh_repo(store_paths: &StorePaths, repo: &mut SkillRepo) -> Result<()> {
     if !git_available() {
-        return Err(anyhow!("未检测到 git，请先安装 Git for Windows"));
+        return Err(anyhow!("{}", git_missing_hint()));
     }
     let dest = store_paths.repo_cache_dir(&repo.id);
     let dest_str = dest.to_str().unwrap_or_default();

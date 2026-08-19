@@ -1,21 +1,37 @@
 use reqwest::StatusCode;
 
+/// POSIX errno（unix 平台）与 WSA 错误码（Windows）对应
+const ERRNO_ADDR_IN_USE: i32 = 48; // EADDRINUSE
+const WSA_ADDR_IN_USE: i32 = 10_048; // WSAEADDRINUSE
+const ERRNO_ACCESS_DENIED: i32 = 13; // EACCES
+const WSA_ACCESS_DENIED: i32 = 10_013; // WSAEACCES
+
 pub fn format_bind_error(addr: std::net::SocketAddr, err: &std::io::Error) -> String {
+    match err.raw_os_error() {
+        Some(ERRNO_ADDR_IN_USE) | Some(WSA_ADDR_IN_USE) => {
+            return format!("端口 {} 已被占用：请停止占用该端口的程序，或在配置中更换监听端口", addr.port());
+        }
+        Some(ERRNO_ACCESS_DENIED) | Some(WSA_ACCESS_DENIED) => {
+            return format!(
+                "端口 {} 无法监听（系统拒绝访问）：可能是权限不足或端口被系统保留，请在配置中更换监听端口，并点击「修复接管」",
+                addr.port()
+            );
+        }
+        _ => {}
+    }
     let text = err.to_string().to_lowercase();
     if text.contains("address already in use")
-        || text.contains("10048")
         || text.contains("addrinuse")
         || text.contains("通常每个套接字地址")
     {
         return format!("端口 {} 已被占用：请停止占用该端口的程序，或在配置中更换监听端口", addr.port());
     }
-    if text.contains("10013")
-        || text.contains("access denied")
+    if text.contains("access denied")
         || text.contains("拒绝访问")
         || text.contains("permission denied")
     {
         return format!(
-            "端口 {} 无法监听（系统拒绝访问）：Windows 可能保留了该端口段，请在配置中将 port 改为 9878 等未占用端口，并点击「修复接管」",
+            "端口 {} 无法监听（系统拒绝访问）：可能是权限不足或端口被系统保留，请在配置中更换监听端口，并点击「修复接管」",
             addr.port()
         );
     }

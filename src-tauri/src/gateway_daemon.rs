@@ -38,17 +38,26 @@ pub async fn wait_reachable(host: &str, port: u16, attempts: u32) -> bool {
 
 pub fn locate_cli_exe() -> Result<std::path::PathBuf> {
     let current = std::env::current_exe().context("无法定位当前可执行文件")?;
+    #[cfg(windows)]
+    let cli_name = "sugt-cli.exe";
+    #[cfg(not(windows))]
+    let cli_name = "sugt-cli";
     let name = current
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    if name.eq_ignore_ascii_case("sugt.exe") {
-        let cli = current.with_file_name("sugt-cli.exe");
+    #[cfg(windows)]
+    let is_app = name.eq_ignore_ascii_case("sugt.exe");
+    #[cfg(not(windows))]
+    let is_app = name == "sugt";
+    if is_app {
+        let cli = current.with_file_name(cli_name);
         if cli.exists() {
             return Ok(cli);
         }
         return Err(anyhow::anyhow!(
-            "未找到 sugt-cli.exe（应与 SUGT.exe 同目录）"
+            "未找到 {}（应与主程序同目录）",
+            cli_name
         ));
     }
     Ok(current)
@@ -68,6 +77,12 @@ pub fn spawn_detached(config_dir: &Path) -> Result<()> {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         // 覆盖 hidden_command 的 flags，额外分离进程
         cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // 独立进程组，避免随父进程退出被 SIGHUP 终止
+        cmd.process_group(0);
     }
     let child = cmd.spawn().context("后台启动 sugt-cli serve 失败")?;
     fs::write(
@@ -95,6 +110,15 @@ pub fn kill_sugt_cli_processes() {
         use std::process::Stdio;
         let _ = crate::process_util::hidden_command("taskkill")
             .args(["/IM", "sugt-cli.exe", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        use std::process::Stdio;
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "sugt-cli"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -133,7 +157,17 @@ fn is_pid_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn is_pid_running(pid: u32) -> bool {
+    // kill -0 不发送信号，仅探测进程是否存在
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(windows, unix)))]
 fn is_pid_running(_pid: u32) -> bool {
     false
 }
@@ -148,5 +182,15 @@ fn kill_pid(pid: u32) {
         .status();
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn kill_pid(pid: u32) {
+    use std::process::Stdio;
+    let _ = std::process::Command::new("kill")
+        .args([&pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(windows, unix)))]
 fn kill_pid(_pid: u32) {}

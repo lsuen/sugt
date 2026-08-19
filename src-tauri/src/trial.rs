@@ -303,7 +303,34 @@ fn machine_guid() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[cfg(not(windows))]
+/// macOS 通过 IOPlatformUUID 获取唯一机器标识（Windows 用注册表 MachineGuid）
+#[cfg(target_os = "macos")]
+fn machine_guid() -> Option<String> {
+    use std::process::Stdio;
+    let output = std::process::Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().find_map(|line| {
+        let idx = line.find("\"IOPlatformUUID\"")?;
+        let rest = &line[idx..];
+        let eq = rest.find('=')?;
+        let value = rest[eq + 1..].trim().trim_matches('"');
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn machine_guid() -> Option<String> {
     None
 }
