@@ -1,5 +1,7 @@
 # SUGT — Local AI Gateway & LLM Skill Console
 
+> Heads-up: my day job took a hit recently and I'm looking at delivery gigs for a while — updates will be sparse. The code is fully open source; fork it and play. Stars are few and I'm not chasing traffic — if this helped you and you're willing, a share would mean a lot.
+
 **SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, DashScope, and self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
 
 - **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
@@ -8,7 +10,7 @@
 
 |                |                                                                       |
 | -------------- | --------------------------------------------------------------------- |
-| Version        | 1.1.1                                                                 |
+| Version        | 1.1.2                                                                 |
 | Author         | Sun Wenlong · [异常设计](https://github.com/lsuen)                       |
 | Open source    | [Apache-2.0](LICENSE), fully open source                                |
 | Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)                |
