@@ -1,5 +1,7 @@
 # SUTAI — 本地 AI 网关 & 大模型技能中控台
 
+> 前段时间饭碗被砸，正琢磨要不要去送外卖，一时半会儿腾不出手再维护了。代码已全开源，自己玩就好；星不多，我也懒得做流量推广——要是帮到你、又愿意的，求顺手推广一下。
+
 朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
 
 - **一套 Key，处处可用**：所有 AI 客户端的 Base URL 与鉴权，收拢到本机一个网关。
@@ -8,7 +10,7 @@
 
 | | |
 | --- | --- |
-| 版本 | 1.1.1 |
+| 版本 | 1.1.2 |
 | 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
 | 开源 | [Apache-2.0](LICENSE)，全仓库开源 |
 | 当前下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |
