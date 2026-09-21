@@ -40,6 +40,7 @@ type ProviderOption = {
   api_key_masked: string
   protocol: 'openai' | 'anthropic' | 'open_ai'
   provider: string
+  experimental?: boolean
 }
 
 type Props = {

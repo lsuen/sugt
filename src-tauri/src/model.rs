@@ -143,7 +143,7 @@ pub struct AppConfig {
     /// 应保持接管的模板 ID 列表（退出清环境，下次按此恢复）
     #[serde(default)]
     pub active_takeover_ids: Vec<String>,
-    /// 用户已删除实验·OpenCode Zen，不再自动植入
+    /// 用户已删除实验·免费通道，不再自动植入
     #[serde(default)]
     pub experimental_zen_dismissed: bool,
     /// Anthropic 接入点的协议模式（auto / openai / anthropic）
@@ -154,7 +154,7 @@ pub struct AppConfig {
     pub overlay: OverlayConfig,
 }
 
-/// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示 token 交互
+/// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示请求统计同源数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayConfig {
     #[serde(default)]
@@ -169,11 +169,15 @@ pub struct OverlayConfig {
     pub show_tokens: bool,
     #[serde(default = "default_true")]
     pub show_client: bool,
+    #[serde(default = "default_true")]
+    pub show_channel: bool,
+    #[serde(default = "default_true")]
+    pub show_requests: bool,
     #[serde(default = "default_overlay_x")]
     pub x: i32,
     #[serde(default = "default_overlay_y")]
     pub y: i32,
-    /// 布局方向：row（横排单行）/ column（竖排两行）
+    /// 布局方向：row（横排）/ column（竖排）
     #[serde(default = "default_overlay_layout")]
     pub layout: String,
     #[serde(default = "default_overlay_width")]
@@ -190,6 +194,8 @@ impl Default for OverlayConfig {
             edit: false,
             show_tokens: default_true(),
             show_client: default_true(),
+            show_channel: default_true(),
+            show_requests: default_true(),
             // -1 表示「未定位」，由 overlay::apply 创建窗口时按主屏右上角初始化
             x: -1,
             y: -1,
@@ -221,11 +227,11 @@ fn default_overlay_layout() -> String {
 }
 
 fn default_overlay_width() -> f64 {
-    260.0
+    280.0
 }
 
 fn default_overlay_height() -> f64 {
-    76.0
+    108.0
 }
 
 fn default_gateway_client_api_key() -> String {
@@ -406,7 +412,7 @@ pub struct ProviderView {
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub auto_adapt_base_url: bool,
-    /// 实验性免费通道（可删；失效后可改 Key/地址继续用）
+    /// 实验性免费通道（内置只读，可删可开关）
     pub experimental: bool,
 }
 
@@ -428,8 +434,7 @@ impl From<&ProviderConfig> for ProviderView {
             last_checked_at: value.last_checked_at,
             last_error: value.last_error.clone(),
             auto_adapt_base_url: value.auto_adapt_base_url,
-            experimental: crate::experimental_zen::is_experimental_zen_id(&value.id)
-                || value.provider.eq_ignore_ascii_case(crate::experimental_zen::EXPERIMENTAL_ZEN_PROVIDER),
+            experimental: crate::experimental_free::is_experimental_free(value),
         }
     }
 }

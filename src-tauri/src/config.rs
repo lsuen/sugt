@@ -51,14 +51,14 @@ pub fn load_or_init_config() -> Result<(AppPaths, AppConfig)> {
     let paths = ensure_paths()?;
     if !paths.config_file.exists() {
         let mut config = default_config_from_env();
-        let _ = crate::experimental_zen::ensure_experimental_zen(&mut config);
+        let _ = crate::experimental_free::ensure_experimental_free(&mut config);
         normalize_config(&mut config);
         save_config(&paths, &config)?;
         return Ok((paths, config));
     }
 
     let mut config = load_config_file(&paths.config_file)?;
-    let seeded = crate::experimental_zen::ensure_experimental_zen(&mut config);
+    let seeded = crate::experimental_free::ensure_experimental_free(&mut config);
     normalize_config(&mut config);
     if seeded {
         let _ = save_config(&paths, &config);

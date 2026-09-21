@@ -417,6 +417,12 @@
           "markdownDescription": "Enables the install_clients_env command"
         },
         {
+          "description": "Enables the list_experimental_free_candidates command",
+          "type": "string",
+          "const": "allow-list-experimental-free-candidates",
+          "markdownDescription": "Enables the list_experimental_free_candidates command"
+        },
+        {
           "description": "Enables the list_provider_models command",
           "type": "string",
           "const": "allow-list-provider-models",
@@ -441,6 +447,12 @@
           "markdownDescription": "Enables traffic overlay commands"
         },
         {
+          "description": "Enables the probe_experimental_free_models command",
+          "type": "string",
+          "const": "allow-probe-experimental-free-models",
+          "markdownDescription": "Enables the probe_experimental_free_models command"
+        },
+        {
           "description": "Enables the quick_gateway_chat command",
           "type": "string",
           "const": "allow-quick-gateway-chat",
@@ -459,10 +471,10 @@
           "markdownDescription": "Enables the repair_clients_env command"
         },
         {
-          "description": "Enables the restore_experimental_zen command",
+          "description": "Enables the restore_experimental_free command",
           "type": "string",
-          "const": "allow-restore-experimental-zen",
-          "markdownDescription": "Enables the restore_experimental_zen command"
+          "const": "allow-restore-experimental-free",
+          "markdownDescription": "Enables the restore_experimental_free command"
         },
         {
           "description": "Enables the save_provider command",

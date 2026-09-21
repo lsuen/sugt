@@ -1,74 +1,117 @@
-/* 流量悬浮窗：半透明小窗，透明度 = 配置 opacity（inline 背景色驱动） */
+/* 流量悬浮窗：半透明 HUD，透明度由 inline 背景色驱动 */
 .overlay-box {
   width: 100%;
   height: 100%;
-  padding: 8px 12px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 5px;
-  background: rgba(7, 11, 20, 0.7);
-  border: 1px solid rgba(142, 232, 255, 0.28);
-  border-radius: 12px;
+  gap: 6px;
+  background: rgba(7, 11, 20, 0.72);
+  border: 1px solid rgba(142, 232, 255, 0.22);
+  border-radius: 10px;
   color: #edf7ff;
   user-select: none;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .overlay-box.editing {
   border-color: #16f1ff;
-  box-shadow: 0 0 12px rgba(22, 241, 255, 0.35);
+  box-shadow: 0 0 10px rgba(22, 241, 255, 0.3);
 }
-/* 竖排（默认）：两行上下排布 */
-.overlay-rows {
+
+.overlay-edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.overlay-body {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 5px;
+  gap: 6px;
 }
-/* 横排：两行内容并排成一行 */
-.overlay-rows-h {
-  flex: 1;
-  display: flex;
+.overlay-body.row {
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
   gap: 12px;
 }
-.overlay-rows-h .overlay-row {
+.overlay-body.row .overlay-block {
   flex: 1 1 0;
   min-width: 0;
 }
-.overlay-row {
+
+.overlay-block {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.overlay-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 12px;
-  line-height: 1.4;
-  min-height: 18px;
+  line-height: 1.35;
+  min-width: 0;
 }
-.overlay-label {
+
+.overlay-k {
   flex: 0 0 auto;
-  color: #94a9bd;
+  color: #8fa3b8;
+  font-size: 11px;
 }
-.overlay-tokens {
+
+.overlay-v {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.overlay-client {
-  flex: 1 1 auto;
-  min-width: 0;
+.overlay-v.tabular {
+  letter-spacing: 0.01em;
+}
+.overlay-v.trunc {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
+
 .overlay-dim {
-  margin-left: 6px;
-  color: #94a9bd;
+  margin: 0 3px;
+  color: #8fa3b8;
   font-weight: 400;
 }
+
+.overlay-fail {
+  flex: 0 0 auto;
+  color: #f87171;
+  font-size: 11px;
+  font-weight: 500;
+}
+.overlay-ok {
+  flex: 0 0 auto;
+  color: #4ade80;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.overlay-idle {
+  color: #8fa3b8;
+  font-size: 12px;
+  text-align: center;
+}
+
 .overlay-save {
   flex: 0 0 auto;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 3px 10px;
   font-size: 11px;
   cursor: pointer;
@@ -79,6 +122,7 @@
   opacity: 0.5;
   cursor: default;
 }
+
 .overlay-grip {
   flex: 0 0 auto;
   width: 18px;

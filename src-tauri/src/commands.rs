@@ -9,11 +9,13 @@ use crate::{
         AnthropicAccessMode, AppConfig, OverlayConfig, ProviderConfig, ProviderInput,
         ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
     },
+    quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
 };
 use anyhow::Result;
 use serde::Deserialize;
+use std::time::Instant;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -245,6 +247,27 @@ pub async fn save_provider(
     let mut config = runtime.config.write().await;
     let id = input.id.clone().unwrap_or_default();
 
+    // 实验通道只读：仅允许改 model_name / enabled
+    if crate::experimental_free::is_experimental_free_id(&id) {
+        let provider = config
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == id)
+            .ok_or_else(|| "实验免费通道不存在".to_string())?;
+        if input.model_name.trim().is_empty() {
+            return Err("请选择模型".to_string());
+        }
+        if crate::experimental_free::route_for_model(&input.model_name).is_none() {
+            return Err("该模型不在免费实验通道候选列表中".to_string());
+        }
+        provider.model_name = input.model_name.trim().to_string();
+        provider.enabled = input.enabled;
+        crate::experimental_free::apply_route(provider);
+        drop(config);
+        runtime.persist().await.map_err(|err| err.to_string())?;
+        return list_providers(runtime).await;
+    }
+
     if let Some(provider) = config
         .providers
         .iter_mut()
@@ -304,7 +327,7 @@ pub async fn delete_provider(
     id: String,
 ) -> Result<Vec<ProviderView>, String> {
     let mut config = runtime.config.write().await;
-    if crate::experimental_zen::is_experimental_zen_id(&id) {
+    if crate::experimental_free::is_experimental_free_id(&id) {
         config.experimental_zen_dismissed = true;
     }
     config.providers.retain(|provider| provider.id != id);
@@ -321,15 +344,62 @@ pub async fn delete_provider(
 }
 
 #[tauri::command]
-pub async fn restore_experimental_zen(
+pub async fn restore_experimental_free(
     runtime: State<'_, AppRuntime>,
 ) -> Result<Vec<ProviderView>, String> {
     {
         let mut config = runtime.config.write().await;
-        crate::experimental_zen::restore_experimental_zen(&mut config);
+        crate::experimental_free::restore_experimental_free(&mut config);
     }
     runtime.persist().await.map_err(|err| err.to_string())?;
     list_providers(runtime).await
+}
+
+#[tauri::command]
+pub fn list_experimental_free_candidates() -> Vec<String> {
+    crate::experimental_free::candidate_models()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+#[tauri::command]
+pub async fn probe_experimental_free_models(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
+    let probes = crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
+    {
+        let mut config = runtime.config.write().await;
+        if let Some(provider) = config
+            .providers
+            .iter_mut()
+            .find(|p| crate::experimental_free::is_experimental_free(p))
+        {
+            let available: Vec<&str> = probes
+                .iter()
+                .filter(|p| p.available)
+                .map(|p| p.name.as_str())
+                .collect();
+            if available.is_empty() {
+                provider.last_error =
+                    Some("免费实验通道暂无可用模型，请稍后重试".into());
+                provider.status = ProviderStatus::Unavailable;
+            } else {
+                if !available
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
+                {
+                    provider.model_name = available[0].to_string();
+                }
+                crate::experimental_free::apply_route(provider);
+                provider.last_error = None;
+                provider.status = ProviderStatus::Available;
+            }
+            provider.last_checked_at = Some(chrono::Utc::now());
+        }
+    }
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok(probes)
 }
 
 #[tauri::command]
@@ -353,25 +423,61 @@ pub async fn set_provider_enabled(
     id: String,
     enabled: bool,
 ) -> Result<Vec<ProviderView>, String> {
-    let mut config = runtime.config.write().await;
-    let provider = config
-        .providers
-        .iter_mut()
-        .find(|provider| provider.id == id)
-        .ok_or_else(|| "模型配置不存在".to_string())?;
-    provider.enabled = enabled;
-
-    if !enabled && config.active_provider_id.as_deref() == Some(&id) {
-        config.active_provider_id = config
+    let is_free = crate::experimental_free::is_experimental_free_id(&id);
+    {
+        let mut config = runtime.config.write().await;
+        let provider = config
             .providers
-            .iter()
-            .find(|provider| provider.enabled)
-            .map(|provider| provider.id.clone());
-    } else if enabled && config.active_provider_id.is_none() {
-        config.active_provider_id = Some(id);
+            .iter_mut()
+            .find(|provider| provider.id == id)
+            .ok_or_else(|| "模型配置不存在".to_string())?;
+        provider.enabled = enabled;
+
+        if !enabled && config.active_provider_id.as_deref() == Some(&id) {
+            config.active_provider_id = config
+                .providers
+                .iter()
+                .find(|provider| provider.enabled)
+                .map(|provider| provider.id.clone());
+        } else if enabled && config.active_provider_id.is_none() {
+            config.active_provider_id = Some(id.clone());
+        }
     }
 
-    drop(config);
+    // 仅实验免费通道：启用时并发探测（不碰用户自定义源）
+    if enabled && is_free {
+        let probes =
+            crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
+        let mut config = runtime.config.write().await;
+        if let Some(provider) = config
+            .providers
+            .iter_mut()
+            .find(|p| crate::experimental_free::is_experimental_free_id(&p.id))
+        {
+            let available: Vec<&str> = probes
+                .iter()
+                .filter(|p| p.available)
+                .map(|p| p.name.as_str())
+                .collect();
+            if available.is_empty() {
+                provider.last_error =
+                    Some("免费实验通道暂无可用模型，请稍后重试".into());
+                provider.status = ProviderStatus::Unavailable;
+            } else {
+                if !available
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
+                {
+                    provider.model_name = available[0].to_string();
+                }
+                crate::experimental_free::apply_route(provider);
+                provider.last_error = None;
+                provider.status = ProviderStatus::Available;
+            }
+            provider.last_checked_at = Some(chrono::Utc::now());
+        }
+    }
+
     runtime.persist().await.map_err(|err| err.to_string())?;
     list_providers(runtime).await
 }
@@ -1215,18 +1321,41 @@ fn open_path(path: &std::path::Path) -> Result<()> {
 }
 
 #[tauri::command]
+pub async fn get_quick_chat_history(
+    runtime: State<'_, AppRuntime>,
+) -> Result<ChatHistory, String> {
+    Ok(quick_chat::load_history(&runtime.paths))
+}
+
+#[tauri::command]
+pub async fn save_quick_chat_history(
+    runtime: State<'_, AppRuntime>,
+    history: ChatHistory,
+) -> Result<(), String> {
+    quick_chat::save_history(&runtime.paths, &history).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_quick_chat_history(
+    runtime: State<'_, AppRuntime>,
+) -> Result<(), String> {
+    quick_chat::clear_history(&runtime.paths).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn quick_gateway_chat(
     runtime: State<'_, AppRuntime>,
     message: String,
     provider_id: Option<String>,
-) -> Result<String, String> {
+    history: Option<Vec<HistoryMsg>>,
+) -> Result<ChatReply, String> {
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
     let message = message.trim().to_string();
     if message.is_empty() {
         return Err("消息不能为空".to_string());
     }
     let config = runtime.config.read().await.clone();
-    let provider = if let Some(id) = provider_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let mut provider = if let Some(id) = provider_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         config
             .providers
             .iter()
@@ -1241,13 +1370,20 @@ pub async fn quick_gateway_chat(
             .or_else(|| config.providers.iter().find(|p| p.enabled).cloned())
             .ok_or_else(|| "未配置可用上游模型，请先在模型页添加并启用".to_string())?
     };
+    if crate::experimental_free::is_experimental_free(&provider) {
+        crate::experimental_free::apply_route(&mut provider);
+    }
 
     let client = gateway::build_upstream_client(std::time::Duration::from_secs(60))
         .map_err(|e| e.to_string())?;
 
+    let prior = history.unwrap_or_default();
+    let messages = quick_chat::build_upstream_messages(&prior, &message);
+
     let anthropic_native = matches!(provider.protocol, ProviderProtocol::Anthropic)
         && provider.base_url.contains("anthropic.com");
 
+    let started = Instant::now();
     let response = if anthropic_native {
         let url = gateway::build_chat_url_for_provider(&provider);
         client
@@ -1258,64 +1394,59 @@ pub async fn quick_gateway_chat(
             .json(&serde_json::json!({
                 "model": provider.model_name,
                 "max_tokens": 1024,
-                "messages": [{"role": "user", "content": message}]
+                "messages": messages
             }))
             .send()
             .await
     } else {
         let url = gateway::build_chat_url_for_provider(&provider);
-        let mut req = client
-            .post(&url)
-            .bearer_auth(provider.api_key.trim())
-            .json(&serde_json::json!({
-                "model": provider.model_name,
-                "messages": [{"role": "user", "content": message}],
-                "stream": false,
-                "max_tokens": 1024
-            }));
-        if crate::experimental_zen::is_zen_upstream(&provider) {
-            // 复用网关侧 Zen 头，避免直连探测路径不一致
-            req = req
-                .header(
-                    reqwest::header::USER_AGENT,
-                    "opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
-                )
-                .header("x-opencode-client", "cli")
-                .header("x-opencode-project", "global");
+        let mut req = client.post(&url).json(&serde_json::json!({
+            "model": provider.model_name,
+            "messages": messages,
+            "stream": false,
+            "max_tokens": 1024
+        }));
+        if !provider.api_key.trim().is_empty() {
+            req = req.bearer_auth(provider.api_key.trim());
         }
         req.send().await
     }
     .map_err(|err| error_hint::classify_request_error(&err))?;
 
+    let latency_ms = started.elapsed().as_millis() as u64;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    extract_chat_text(status, &text)
-}
-
-fn extract_chat_text(status: reqwest::StatusCode, text: &str) -> Result<String, String> {
     if !status.is_success() {
-        return Err(error_hint::classify_http_error(status, text));
+        return Err(error_hint::classify_http_error(status, &text));
     }
     let body: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("响应不是 JSON：{}", e))?;
-    for pointer in [
-        "/choices/0/message/content",
-        "/choices/0/text",
-        "/content/0/text",
-    ] {
-        if let Some(content) = body
-            .pointer(pointer)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Ok(content.to_string());
-        }
-    }
-    Err(format!(
-        "模型未返回文本：{}",
-        text.chars().take(240).collect::<String>()
-    ))
+        serde_json::from_str(&text).map_err(|e| format!("响应不是 JSON：{}", e))?;
+    let content = quick_chat::extract_reply_text(&body).ok_or_else(|| {
+        format!(
+            "模型未返回文本：{}",
+            text.chars().take(240).collect::<String>()
+        )
+    })?;
+
+    let (input_tokens, output_tokens, tokens_estimated) =
+        if let Some((input, output)) = quick_chat::extract_usage(&body) {
+            (input, output, false)
+        } else {
+            (0, quick_chat::estimate_output_tokens(&content), true)
+        };
+    let tps = quick_chat::tokens_per_sec(output_tokens, latency_ms);
+
+    Ok(ChatReply {
+        content,
+        latency_ms,
+        input_tokens,
+        output_tokens,
+        tokens_per_sec: tps,
+        tokens_estimated,
+        provider_id: provider.id.clone(),
+        provider_name: provider.name.clone(),
+        model_name: provider.model_name.clone(),
+    })
 }
 
 pub fn load_runtime() -> Result<AppRuntime> {

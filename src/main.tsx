@@ -422,6 +422,10 @@ function App() {
   };
 
   const openEditProvider = (provider: ProviderView) => {
+    if (provider.experimental) {
+      pushToast(t('models.experimentalReadonly'), 'info');
+      return;
+    }
     setForm({
       id: provider.id,
       name: provider.name,
@@ -599,6 +603,7 @@ function App() {
                     api_key_masked: p.api_key_masked,
                     provider: p.provider,
                     protocol: p.protocol,
+                    experimental: p.experimental,
                   }))}
                 busy={busy}
                 onRefresh={() => refresh().catch(() => undefined)}
@@ -629,14 +634,14 @@ function App() {
             <div className="section-title">
               <h3>{t('models.title')}</h3>
               <div className="title-actions">
-                {!providers.some((p) => p.id === 'sugt-zen-free') && (
+                {!providers.some((p) => p.id === 'sugt-free' || p.id === 'sugt-zen-free') && (
                   <button
                     className="ghost tiny-btn"
                     disabled={busy}
                     title={t('models.restoreZenTitle')}
                     onClick={() =>
                       run(async () => {
-                        const list = await invoke<ProviderView[]>('restore_experimental_zen');
+                        const list = await invoke<ProviderView[]>('restore_experimental_free');
                         setProviders(list);
                       }, t('models.toastZenRestored'))
                     }
@@ -655,7 +660,11 @@ function App() {
                 const className = `provider${isActive ? ' active' : ''}${provider.enabled ? '' : ' disabled'}`;
                 return (
                   <div className={className} key={provider.id}>
-                    <div className="provider-main" onClick={() => openEditProvider(provider)}>
+                    <div
+                      className="provider-main"
+                      onClick={() => openEditProvider(provider)}
+                      style={provider.experimental ? { cursor: 'default' } : undefined}
+                    >
                       <div className="provider-title">
                         <strong>{provider.name}</strong>
                         {provider.experimental && <span className="badge inline" title={t('models.experimentalTitle')}>{t('models.experimental')}</span>}
@@ -663,10 +672,11 @@ function App() {
                         <span className={provider.enabled ? 'badge neutral inline' : 'badge stop inline'}>{provider.enabled ? t('common.enabled') : t('common.disabled')}</span>
                       </div>
                       <span className="provider-sub">{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
-                      {provider.experimental && (
+                      {provider.experimental ? (
                         <span className="hint compact">{t('models.restoreZenHint')}</span>
+                      ) : (
+                        <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       )}
-                      <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       {provider.last_error && <span className="error-text">{provider.last_error}</span>}
                     </div>
                     <div className="provider-actions">

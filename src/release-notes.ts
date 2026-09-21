@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.1.1';
+export const CURRENT_VERSION = '1.1.2';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,11 +6,9 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '正式发布 1.1.1：公开版（Windows 半年有效期、macOS 无时间限制），界面中不再展示有效期信息' },
-  { type: 'feat', text: '界面国际化，支持跟随系统 / 中文 / English 切换并实时刷新' },
-  { type: 'feat', text: '流量悬浮窗支持横竖排布局、尺寸调节与恢复默认' },
-  { type: 'fix', text: '修复 Moonshot/Kimi 自动模式下上游返回压缩流导致 AI 客户端空响应的问题' },
-  { type: 'feat', text: '技能发现默认推荐 Gitee 库，支持启动预热；Anthropic 官方技能可经 GitHub 代理同步' },
-  { type: 'feat', text: '客户端支持发现本机工具、高级页管理技能 / 插件 / 配置路径' },
-  { type: 'fix', text: '表单弹窗默认禁止点遮罩关闭，避免误触丢失编辑内容' },
+  { type: 'feat', text: '新增实验·免费通道（替代原 OpenCode Zen），内置只读免费上游并可探测可用性' },
+  { type: 'feat', text: '请求统计：调用来源展示 Token；新增调用通道汇总（请求数 / Token）' },
+  { type: 'fix', text: '修复非 2xx 上游响应未计入失败的问题' },
+  { type: 'feat', text: '重做流量悬浮窗：展示今日请求、成功率、Token、来源与通道（与请求统计同源）' },
+  { type: 'feat', text: '接入点支持「直接体验」快捷对话与代码范例' },
 ];

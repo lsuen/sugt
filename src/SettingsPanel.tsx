@@ -12,6 +12,8 @@ export type OverlayConfigView = {
   edit: boolean;
   show_tokens: boolean;
   show_client: boolean;
+  show_channel: boolean;
+  show_requests: boolean;
   x: number;
   y: number;
   layout: 'column' | 'row';
@@ -22,21 +24,23 @@ export type OverlayConfigView = {
 // -1 表示「未定位」，由后端 overlay::apply 创建时按主屏右上角初始化
 const DEFAULT_OVERLAY: OverlayConfigView = {
   enabled: false,
-  opacity: 0.7,
+  opacity: 0.72,
   edit: false,
   show_tokens: true,
   show_client: true,
+  show_channel: true,
+  show_requests: true,
   x: -1,
   y: -1,
   layout: 'column',
-  width: 260,
-  height: 76,
+  width: 280,
+  height: 108,
 };
 
 // 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
 const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
-  column: { width: 260, height: 76 },
-  row: { width: 420, height: 48 },
+  column: { width: 280, height: 108 },
+  row: { width: 520, height: 72 },
 };
 
 type AppConfigView = {
@@ -226,12 +230,20 @@ export function SettingsPanel({
             {config?.overlay?.enabled && (
               <>
                 <label className="switch-line">
+                  <span>{t('set.overlayShowRequests')}</span>
+                  <input type="checkbox" checked={config.overlay.show_requests !== false} onChange={(e) => setOverlay({ show_requests: e.target.checked })} />
+                </label>
+                <label className="switch-line">
                   <span>{t('set.overlayShowTokens')}</span>
                   <input type="checkbox" checked={config.overlay.show_tokens} onChange={(e) => setOverlay({ show_tokens: e.target.checked })} />
                 </label>
                 <label className="switch-line">
                   <span>{t('set.overlayShowClient')}</span>
                   <input type="checkbox" checked={config.overlay.show_client} onChange={(e) => setOverlay({ show_client: e.target.checked })} />
+                </label>
+                <label className="switch-line">
+                  <span>{t('set.overlayShowChannel')}</span>
+                  <input type="checkbox" checked={config.overlay.show_channel !== false} onChange={(e) => setOverlay({ show_channel: e.target.checked })} />
                 </label>
                 <div className="switch-line">
                   <span>{t('set.overlayOpacity', { p: Math.round(config.overlay.opacity * 100) })}</span>
@@ -289,7 +301,7 @@ export function SettingsPanel({
                   <input
                     type="range"
                     min={48}
-                    max={160}
+                    max={200}
                     step={4}
                     value={height}
                     onChange={(e) => setHeight(Number(e.target.value))}
@@ -336,7 +348,7 @@ export function SettingsPanel({
                 className="ghost tiny-btn"
                 onClick={() =>
                   run(async () => {
-                    await invoke('restore_experimental_zen');
+                    await invoke('restore_experimental_free');
                   }, t('models.toastZenRestored'))
                 }
               >

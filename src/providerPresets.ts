@@ -31,7 +31,19 @@ export type TrafficStats = {
     provider_name: string;
     model_name: string;
     request_count: number;
+    failed_count: number;
+    input_tokens: number;
+    output_tokens: number;
     last_path: string;
+    last_at: string;
+  }[];
+  recent_channels: {
+    provider_name: string;
+    request_count: number;
+    failed_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    last_model: string;
     last_at: string;
   }[];
 };

@@ -8,7 +8,7 @@
 
 | | |
 | --- | --- |
-| 版本 | 1.1.1 |
+| 版本 | 1.1.2 |
 | 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
 | 开源 | [Apache-2.0](LICENSE)，全仓库开源 |
 | 当前下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |

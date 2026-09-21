@@ -37,6 +37,11 @@ function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) 
   );
 }
 
+function formatToken(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}w`;
+  return n.toLocaleString();
+}
+
 function ClientsDetailModal({
   clients,
   onClose,
@@ -58,7 +63,18 @@ function ClientsDetailModal({
                 <div>
                   <strong>{client.label}</strong>
                   <span className="hint compact">
-                    {client.provider_name} · {client.model_name} · {t('trafstat.requests', { n: client.request_count })}
+                    {client.provider_name} · {client.model_name}
+                    {' · '}
+                    {t('trafstat.requests', { n: client.request_count })}
+                    {client.failed_count > 0
+                      ? ` · ${t('trafstat.failedN', { n: client.failed_count })}`
+                      : ''}
+                  </span>
+                  <span className="hint compact">
+                    {t('trafstat.tokensLine', {
+                      in: formatToken(client.input_tokens ?? 0),
+                      out: formatToken(client.output_tokens ?? 0),
+                    })}
                   </span>
                 </div>
                 <span className="hint compact traffic-client-meta">
@@ -75,9 +91,50 @@ function ClientsDetailModal({
   );
 }
 
-function formatToken(n: number): string {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}w`;
-  return n.toLocaleString();
+function ChannelsDetailModal({
+  channels,
+  onClose,
+}: {
+  channels: TrafficStats['recent_channels'];
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-compact traffic-clients-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{t('trafstat.channelTitle', { n: channels.length })}</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('common.close')}>×</button>
+        </div>
+        <div className="modal-body traffic-clients-modal-body">
+          <div className="store-mini-list traffic-client-list-scroll">
+            {channels.map((ch) => (
+              <div className="store-mini-row" key={`${ch.provider_name}-${ch.last_at}`}>
+                <div>
+                  <strong>{ch.provider_name}</strong>
+                  <span className="hint compact">
+                    {t('trafstat.requests', { n: ch.request_count })}
+                    {ch.failed_count > 0
+                      ? ` · ${t('trafstat.failedN', { n: ch.failed_count })}`
+                      : ''}
+                    {ch.last_model ? ` · ${ch.last_model}` : ''}
+                  </span>
+                  <span className="hint compact">
+                    {t('trafstat.tokensLine', {
+                      in: formatToken(ch.input_tokens ?? 0),
+                      out: formatToken(ch.output_tokens ?? 0),
+                    })}
+                  </span>
+                </div>
+                <span className="hint compact traffic-client-meta">
+                  {new Date(ch.last_at).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 type Props = {
@@ -89,6 +146,7 @@ type Props = {
 
 export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props) {
   const [clientsOpen, setClientsOpen] = useState(false);
+  const [channelsOpen, setChannelsOpen] = useState(false);
 
   if (!traffic) {
     return (
@@ -104,6 +162,7 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
     ? 100
     : ((traffic.success_count / traffic.total_requests) * 100);
   const empty = traffic.total_requests === 0 && traffic.today_requests === 0;
+  const channels = traffic.recent_channels ?? [];
 
   return (
     <div className="card traffic-card">
@@ -161,8 +220,8 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
             </p>
           )}
           <TrafficChart buckets={traffic.hourly_buckets} />
-          {traffic.recent_clients.length > 0 && (
-            <div className="traffic-clients">
+          <div className="traffic-clients">
+            {traffic.recent_clients.length > 0 && (
               <button
                 type="button"
                 className="ghost tiny-btn traffic-clients-toggle"
@@ -170,8 +229,17 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
               >
                 {t('trafstat.sourceTitle', { n: traffic.recent_clients.length })}
               </button>
-            </div>
-          )}
+            )}
+            {channels.length > 0 && (
+              <button
+                type="button"
+                className="ghost tiny-btn traffic-clients-toggle"
+                onClick={() => setChannelsOpen(true)}
+              >
+                {t('trafstat.channelTitle', { n: channels.length })}
+              </button>
+            )}
+          </div>
         </>
       )}
 
@@ -179,6 +247,12 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
         <ClientsDetailModal
           clients={traffic.recent_clients}
           onClose={() => setClientsOpen(false)}
+        />
+      )}
+      {channelsOpen && (
+        <ChannelsDetailModal
+          channels={channels}
+          onClose={() => setChannelsOpen(false)}
         />
       )}
     </div>

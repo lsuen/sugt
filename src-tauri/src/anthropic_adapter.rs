@@ -466,9 +466,13 @@ pub async fn openai_to_anthropic_response(
     response: ReqwestResponse,
     model: &str,
     stats: Option<GatewayStatsCollector>,
+    client_label: Option<&str>,
+    provider_name: Option<&str>,
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
+    let client_owned = client_label.map(str::to_string);
+    let provider_owned = provider_name.map(str::to_string);
 
     if !status.is_success() {
         let bytes = response.bytes().await?;
@@ -481,7 +485,13 @@ pub async fn openai_to_anthropic_response(
         let stream = response
             .bytes_stream()
             .map(|item| item.map_err(std::io::Error::other));
-        let converted = openai_sse_to_anthropic_sse(stream, model.to_string(), stats);
+        let converted = openai_sse_to_anthropic_sse(
+            stream,
+            model.to_string(),
+            stats,
+            client_owned,
+            provider_owned,
+        );
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header(
@@ -505,7 +515,9 @@ pub async fn openai_to_anthropic_response(
             .and_then(Value::as_u64)
             .unwrap_or(0);
         if input > 0 || output > 0 {
-            collector.record_tokens(input, output).await;
+            collector
+                .record_tokens_attributed(input, output, client_label, provider_name)
+                .await;
         }
     }
     Ok(Response::builder()
@@ -570,6 +582,8 @@ fn openai_sse_to_anthropic_sse(
     input: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
     model: String,
     stats: Option<GatewayStatsCollector>,
+    client_label: Option<String>,
+    provider_name: Option<String>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     stream! {
         let mut parser = SseLineParser::new();
@@ -593,7 +607,14 @@ fn openai_sse_to_anthropic_sse(
             let input_tokens = adapter.input_tokens;
             let output_tokens = adapter.output_tokens;
             if input_tokens > 0 || output_tokens > 0 {
-                collector.record_tokens(input_tokens, output_tokens).await;
+                collector
+                    .record_tokens_attributed(
+                        input_tokens,
+                        output_tokens,
+                        client_label.as_deref(),
+                        provider_name.as_deref(),
+                    )
+                    .await;
             }
         }
     }
@@ -1112,7 +1133,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None, None, None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {
@@ -1136,7 +1157,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None, None, None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {
@@ -1165,7 +1186,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None, None, None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {
@@ -1194,7 +1215,7 @@ mod tests {
             Ok(Bytes::from("data: [DONE]\n\n")),
         ];
         let stream = futures_util::stream::iter(chunks);
-        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None);
+        let out = openai_sse_to_anthropic_sse(stream, "target-model".to_string(), None, None, None);
         pin_mut!(out);
         let mut merged = String::new();
         while let Some(item) = out.next().await {

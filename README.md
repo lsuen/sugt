@@ -8,7 +8,7 @@
 
 |                |                                                                       |
 | -------------- | --------------------------------------------------------------------- |
-| Version        | 1.1.1                                                                 |
+| Version        | 1.1.2                                                                 |
 | Author         | Sun Wenlong · [异常设计](https://github.com/lsuen)                       |
 | Open source    | [Apache-2.0](LICENSE), fully open source                                |
 | Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)                |

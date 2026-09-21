@@ -29,9 +29,19 @@ description = "Enables the delete_provider command"
 commands.allow = ["delete_provider"]
 
 [[permission]]
-identifier = "allow-restore-experimental-zen"
-description = "Enables the restore_experimental_zen command"
-commands.allow = ["restore_experimental_zen"]
+identifier = "allow-restore-experimental-free"
+description = "Enables the restore_experimental_free command"
+commands.allow = ["restore_experimental_free"]
+
+[[permission]]
+identifier = "allow-list-experimental-free-candidates"
+description = "Enables the list_experimental_free_candidates command"
+commands.allow = ["list_experimental_free_candidates"]
+
+[[permission]]
+identifier = "allow-probe-experimental-free-models"
+description = "Enables the probe_experimental_free_models command"
+commands.allow = ["probe_experimental_free_models"]
 
 [[permission]]
 identifier = "allow-set-active-provider"

@@ -236,6 +236,7 @@ impl GatewayState {
         latency_ms: u64,
         headers: &HeaderMap,
         mode: &str,
+        success: bool,
     ) {
         let client = crate::gateway_stats::client_label_from_headers(headers);
         let hit = ProxyHit {
@@ -247,17 +248,29 @@ impl GatewayState {
             failover: provider_index > 0,
             at: chrono::Utc::now(),
         };
-        info!(
-            client = %client,
-            provider = %provider.name,
-            model = %provider.model_name,
-            path = %path,
-            failover = provider_index > 0,
-            latency_ms,
-            "inbound request ok"
-        );
+        if success {
+            info!(
+                client = %client,
+                provider = %provider.name,
+                model = %provider.model_name,
+                path = %path,
+                failover = provider_index > 0,
+                latency_ms,
+                "inbound request ok"
+            );
+        } else {
+            warn!(
+                client = %client,
+                provider = %provider.name,
+                model = %provider.model_name,
+                path = %path,
+                latency_ms,
+                "inbound request failed (non-2xx upstream)"
+            );
+        }
         *self.last_hit.write().await = Some(hit);
-        self.record_request_stats(true, latency_ms, headers, provider, path).await;
+        self.record_request_stats(success, latency_ms, headers, provider, path)
+            .await;
     }
 
     async fn record_inbound_denied(
@@ -670,6 +683,7 @@ async fn proxy_anthropic_request(
 
         match result {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+                let ok = response.status().is_success();
                 state.reset_circuit(&provider.id).await;
                 state
                     .record_proxy_hit(
@@ -679,6 +693,7 @@ async fn proxy_anthropic_request(
                         started.elapsed().as_millis() as u64,
                         &headers,
                         mode,
+                        ok,
                     )
                     .await;
                 return Ok(response);
@@ -726,7 +741,12 @@ async fn proxy_anthropic_native(
     );
 
     let response = builder.body(payload).send().await?;
-    into_axum_response(response, Some(state.stats.clone())).await
+    into_axum_response(
+        response,
+        Some(state.stats.clone()),
+        Some(token_attr_from(headers, provider)),
+    )
+    .await
 }
 
 async fn proxy_anthropic_via_openai(
@@ -735,11 +755,11 @@ async fn proxy_anthropic_via_openai(
     body: Bytes,
     provider: &ProviderConfig,
 ) -> Result<Response<Body>> {
+    let provider = prepare_upstream_provider(provider);
     let target = build_target_url(&provider.base_url, "v1/chat/completions", "");
     let payload = anthropic_adapter::anthropic_to_openai(body, &provider.model_name)?;
     let mut builder = state.client.post(&target);
     builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::OpenAi)?;
-    builder = maybe_zen_headers(builder, provider);
 
     info!(
         provider = %provider.name,
@@ -750,10 +770,13 @@ async fn proxy_anthropic_via_openai(
     );
 
     let response = builder.body(payload).send().await?;
+    let client = crate::gateway_stats::client_label_from_headers(headers);
     anthropic_adapter::openai_to_anthropic_response(
         response,
         &provider.model_name,
         Some(state.stats.clone()),
+        Some(client.as_str()),
+        Some(provider.name.as_str()),
     )
     .await
 }
@@ -795,46 +818,67 @@ async fn proxy_request(
             continue;
         }
 
-        let target = build_target_url(&provider.base_url, &path, &query);
-        let payload = rewrite_model(body_bytes.clone(), &provider.model_name);
-        let mut builder = state.client.request(method.clone(), &target);
-        builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
-        builder = maybe_zen_headers(builder, provider);
+        let attempts = upstream_attempts(provider);
+        for attempt in &attempts {
+            let target = build_target_url(&attempt.base_url, &path, &query);
+            let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
+            let mut builder = state.client.request(method.clone(), &target);
+            builder = copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
 
-        info!(
-            provider = %provider.name,
-            model = %provider.model_name,
-            path = %path,
-            "proxying request"
-        );
-        match builder.body(payload).send().await {
-            Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
-                // 成功时清除熔断状态
-                state.reset_circuit(&provider.id).await;
-                state
-                    .record_proxy_hit(
-                        provider,
-                        &path,
-                        index,
-                        started.elapsed().as_millis() as u64,
-                        &headers,
-                        "openai_direct",
+            info!(
+                provider = %attempt.name,
+                model = %attempt.model_name,
+                base_url = %attempt.base_url,
+                path = %path,
+                "proxying request"
+            );
+            match builder.body(payload).send().await {
+                Ok(response)
+                    if response.status().is_success() || response.status().as_u16() < 500 =>
+                {
+                    let ok = response.status().is_success();
+                    state.reset_circuit(&provider.id).await;
+                    state
+                        .record_proxy_hit(
+                            attempt,
+                            &path,
+                            index,
+                            started.elapsed().as_millis() as u64,
+                            &headers,
+                            "openai_direct",
+                            ok,
+                        )
+                        .await;
+                    return into_axum_response(
+                        response,
+                        Some(state.stats.clone()),
+                        Some(token_attr_from(&headers, attempt)),
                     )
                     .await;
-                return into_axum_response(response, Some(state.stats.clone())).await;
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    warn!(provider = %attempt.name, model = %attempt.model_name, %status, body = %text, "provider returned retryable error");
+                    last_error = Some(anyhow!("{} 返回 {}", attempt.name, status));
+                    // 实验通道：继续试下一条；自定义源：熔断后跳出
+                    if !crate::experimental_free::is_experimental_free(provider) {
+                        state.trip_circuit(&provider.id).await;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    warn!(provider = %attempt.name, error = %err, "provider request error");
+                    last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
+                    if !crate::experimental_free::is_experimental_free(provider) {
+                        state.trip_circuit(&provider.id).await;
+                        break;
+                    }
+                }
             }
-            Ok(response) => {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                warn!(provider = %provider.name, %status, body = %text, "provider returned retryable error");
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 返回 {}", provider.name, status));
-            }
-            Err(err) => {
-                warn!(provider = %provider.name, error = %err, "provider request error");
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
-            }
+        }
+        if crate::experimental_free::is_experimental_free(provider) {
+            state.trip_circuit(&provider.id).await;
         }
     }
 
@@ -868,6 +912,7 @@ async fn proxy_responses_via_chat(
             continue;
         }
 
+        let provider = prepare_upstream_provider(provider);
         let try_native = crate::openai_responses_adapter::should_try_native_responses(
             &provider.base_url,
             &provider.model_name,
@@ -894,7 +939,6 @@ async fn proxy_responses_via_chat(
             let mut builder = state.client.request(method.clone(), &target);
             builder =
                 copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
-            builder = maybe_zen_headers(builder, provider);
 
             info!(
                 provider = %provider.name,
@@ -913,18 +957,25 @@ async fn proxy_responses_via_chat(
                 Ok(response)
                     if response.status().is_success() || response.status().as_u16() < 500 =>
                 {
+                    let ok = response.status().is_success();
                     state.reset_circuit(&provider.id).await;
                     state
                         .record_proxy_hit(
-                            provider,
+                            &provider,
                             "v1/responses",
                             index,
                             started.elapsed().as_millis() as u64,
                             &headers,
                             "responses_native",
+                            ok,
                         )
                         .await;
-                    return into_axum_response(response, Some(state.stats.clone())).await;
+                    return into_axum_response(
+                        response,
+                        Some(state.stats.clone()),
+                        Some(token_attr_from(&headers, &provider)),
+                    )
+                    .await;
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -951,7 +1002,6 @@ async fn proxy_responses_via_chat(
         let target = build_target_url(&provider.base_url, "v1/chat/completions", query);
         let mut builder = state.client.request(method.clone(), &target);
         builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
-        builder = maybe_zen_headers(builder, provider);
 
         info!(
             provider = %provider.name,
@@ -968,15 +1018,17 @@ async fn proxy_responses_via_chat(
         if stream {
             let response = builder.body(chat_body).send().await?;
             if response.status().is_success() || response.status().as_u16() < 500 {
+                let ok = response.status().is_success();
                 state.reset_circuit(&provider.id).await;
                 state
                     .record_proxy_hit(
-                        provider,
+                        &provider,
                         "v1/responses",
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
                         "chat_completions_adapter",
+                        ok,
                     )
                     .await;
                 let status = response.status();
@@ -1015,12 +1067,13 @@ async fn proxy_responses_via_chat(
                 }
                 state
                     .record_proxy_hit(
-                        provider,
+                        &provider,
                         "v1/responses",
                         index,
                         started.elapsed().as_millis() as u64,
                         &headers,
                         "chat_completions_adapter",
+                        status.is_success(),
                     )
                     .await;
                 let bytes = if status.is_success() {
@@ -1155,9 +1208,12 @@ fn copy_forward_headers(
 
     match auth_mode {
         AuthMode::OpenAi => {
-            let auth = HeaderValue::from_str(&format!("Bearer {}", api_key))
-                .context("API Key 无法写入请求头")?;
-            builder = builder.header(http::header::AUTHORIZATION, auth);
+            // 实验免费通道等 keyless：空 Key 不发 Authorization
+            if !api_key.trim().is_empty() {
+                let auth = HeaderValue::from_str(&format!("Bearer {}", api_key))
+                    .context("API Key 无法写入请求头")?;
+                builder = builder.header(http::header::AUTHORIZATION, auth);
+            }
         }
         AuthMode::Anthropic => {
             builder = builder
@@ -1181,40 +1237,35 @@ pub fn build_upstream_client(timeout: Duration) -> Result<Client> {
         .build()?)
 }
 
-fn apply_zen_client_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| format!("{:x}", d.as_millis()))
-        .unwrap_or_else(|_| "0".into());
-    let rnd = uuid::Uuid::new_v4().simple().to_string();
-    let request_id = format!("msg_{ts}{}", &rnd[..12]);
-    let session_id = format!("ses_{ts}{}", &rnd[12..24.min(rnd.len())]);
-    builder
-        .header(
-            http::header::USER_AGENT,
-            "opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
-        )
-        .header("x-opencode-client", "cli")
-        .header("x-opencode-project", "global")
-        .header("x-opencode-request", request_id)
-        .header("x-opencode-session", session_id)
+/// 克隆并绑定实验免费通道路由；用户自定义源原样返回。
+fn prepare_upstream_provider(provider: &ProviderConfig) -> ProviderConfig {
+    let mut p = provider.clone();
+    if crate::experimental_free::is_experimental_free(&p) {
+        crate::experimental_free::apply_route(&mut p);
+    }
+    p
 }
 
-fn maybe_zen_headers(
-    builder: reqwest::RequestBuilder,
-    provider: &ProviderConfig,
-) -> reqwest::RequestBuilder {
-    if crate::experimental_zen::is_zen_upstream(provider) {
-        apply_zen_client_headers(builder)
-    } else {
-        builder
+/// 实验通道内部 failover 尝试序列；自定义源仅自身一次。
+fn upstream_attempts(provider: &ProviderConfig) -> Vec<ProviderConfig> {
+    let primary = prepare_upstream_provider(provider);
+    if !crate::experimental_free::is_experimental_free(provider) {
+        return vec![primary];
     }
+    let mut out = vec![primary.clone()];
+    for (base, model) in crate::experimental_free::failover_routes(&primary.model_name) {
+        let mut next = primary.clone();
+        next.base_url = base.to_string();
+        next.model_name = model.to_string();
+        out.push(next);
+    }
+    out
 }
 
 async fn into_axum_response(
     response: reqwest::Response,
     stats: Option<GatewayStatsCollector>,
+    token_attr: Option<(String, String)>,
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -1223,8 +1274,15 @@ async fn into_axum_response(
         let bytes = item.map_err(std::io::Error::other)?;
         if let Some((input, output)) = parse_usage_from_bytes(&bytes) {
             if let Some(collector) = stats.clone() {
+                let attr = token_attr.clone();
                 tokio::spawn(async move {
-                    collector.record_tokens(input, output).await;
+                    let (client, provider) = attr
+                        .as_ref()
+                        .map(|(c, p)| (Some(c.as_str()), Some(p.as_str())))
+                        .unwrap_or((None, None));
+                    collector
+                        .record_tokens_attributed(input, output, client, provider)
+                        .await;
                 });
             }
         }
@@ -1240,6 +1298,13 @@ async fn into_axum_response(
     }
 
     Ok(builder.body(Body::from_stream(mapped))?)
+}
+
+fn token_attr_from(headers: &HeaderMap, provider: &ProviderConfig) -> (String, String) {
+    (
+        crate::gateway_stats::client_label_from_headers(headers),
+        provider.name.clone(),
+    )
 }
 
 pub async fn list_openai_models(
@@ -1373,45 +1438,28 @@ pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig
 }
 
 async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
+    let provider = prepare_upstream_provider(provider);
     let chat_url = build_target_url(&provider.base_url, "v1/chat/completions", "");
-    let zen = crate::experimental_zen::is_zen_upstream(provider);
     tracing::info!(
         provider = %provider.name,
         base_url = %provider.base_url,
         chat_url = %chat_url,
-        auto_adapt = provider.auto_adapt_base_url,
-        zen,
+        model = %provider.model_name,
         "test_openai_connection"
     );
 
-    // Zen：流式探测，收到首包即成功（对齐 OpenCode 首字体验）；其它源仍用短非流式。
-    let body = if zen {
-        json!({
-            "model": provider.model_name,
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 8,
-            "stream": true
-        })
-    } else {
-        json!({
-            "model": provider.model_name,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 1,
-            "stream": false
-        })
-    };
-    let timeout = if zen {
-        Duration::from_secs(25)
-    } else {
-        Duration::from_secs(20)
-    };
+    let body = json!({
+        "model": provider.model_name,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8,
+        "stream": false
+    });
     let mut req = client
         .post(&chat_url)
-        .bearer_auth(&provider.api_key)
         .json(&body)
-        .timeout(timeout);
-    if zen {
-        req = apply_zen_client_headers(req);
+        .timeout(Duration::from_secs(20));
+    if !provider.api_key.trim().is_empty() {
+        req = req.bearer_auth(&provider.api_key);
     }
     let response = match req.send().await {
         Ok(response) => response,
@@ -1419,9 +1467,6 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
     };
 
     if response.status().is_success() {
-        if zen {
-            return wait_zen_stream_first_byte(response).await;
-        }
         return Ok(());
     }
 
@@ -1429,17 +1474,15 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
     let text = response.text().await.unwrap_or_default();
     warn!(provider = %provider.name, %status, body = %text, "chat completion test failed");
 
+    // 实验免费通道：无 models 兜底语义，直接报错
+    if crate::experimental_free::is_experimental_free(&provider) {
+        bail!(error_hint::classify_http_error(status, &text));
+    }
+
     let models_url = build_target_url(&provider.base_url, "v1/models", "");
-    let mut models_req = client
-        .get(&models_url)
-        .bearer_auth(&provider.api_key)
-        .timeout(if zen {
-            Duration::from_secs(12)
-        } else {
-            Duration::from_secs(12)
-        });
-    if zen {
-        models_req = apply_zen_client_headers(models_req);
+    let mut models_req = client.get(&models_url).timeout(Duration::from_secs(12));
+    if !provider.api_key.trim().is_empty() {
+        models_req = models_req.bearer_auth(&provider.api_key);
     }
     match models_req.send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -1461,42 +1504,6 @@ async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> R
             error_hint::classify_http_error(status, &text),
             error_hint::classify_request_error(&err)
         ),
-    }
-}
-
-/// 等 SSE 首包（含 data: / error），避免等完整生成。
-async fn wait_zen_stream_first_byte(response: reqwest::Response) -> Result<()> {
-    let mut stream = response.bytes_stream();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let mut buffered = String::new();
-    loop {
-        let next = tokio::time::timeout_at(deadline, stream.next()).await;
-        match next {
-            Ok(Some(Ok(chunk))) => {
-                buffered.push_str(&String::from_utf8_lossy(&chunk));
-                let lower = buffered.to_ascii_lowercase();
-                if lower.contains("\"error\"") && lower.contains("message") {
-                    bail!("Zen 返回错误：{}", buffered.chars().take(240).collect::<String>());
-                }
-                if buffered.contains("data:")
-                    || buffered.contains("delta")
-                    || buffered.contains("choices")
-                {
-                    return Ok(());
-                }
-                if buffered.len() > 4096 {
-                    return Ok(());
-                }
-            }
-            Ok(Some(Err(err))) => bail!(error_hint::classify_request_error(&err)),
-            Ok(None) => {
-                if buffered.trim().is_empty() {
-                    bail!("Zen 流式响应为空");
-                }
-                return Ok(());
-            }
-            Err(_) => bail!("连接超时：请检查网络、代理或 Base URL 是否可达"),
-        }
     }
 }
 
