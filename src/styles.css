@@ -1754,6 +1754,33 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .settings-group-wide { grid-column: 1 / -1; }
 .settings-info { background: rgba(22, 241, 255, .04); }
 
+.rules-layout { max-width: 900px; }
+.rules-textarea {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(0,0,0,.25);
+  color: #e8f1f7;
+  font: inherit;
+  line-height: 1.45;
+}
+.rules-textarea:focus {
+  outline: none;
+  border-color: #16f1ff;
+}
+.rules-textarea:disabled { opacity: 0.55; }
+.rules-save-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 /* 模板子分区 */
 .panel-section {
   margin-top: 16px;

@@ -54,7 +54,7 @@ type AppConfigView = {
   overlay?: OverlayConfigView;
 };
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'settings' | 'logs' | 'about';
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'rules' | 'settings' | 'logs' | 'about';
 type SettingsTab = 'basic' | 'advanced';
 
 type Props = {

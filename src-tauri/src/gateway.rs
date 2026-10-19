@@ -4,6 +4,7 @@ use crate::{
         AnthropicAccessMode, AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit,
     },
     provider_catalog,
+    workspace_rules::{self, RequestShape},
 };
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
@@ -423,6 +424,7 @@ fn build_router(state: GatewayState) -> Router {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/_sugt/traffic", get(traffic_endpoint))
+        .route("/v1/_sugt/notify", post(notify_endpoint))
         .route("/v1/messages", post(proxy_anthropic_messages))
         .route("/*path", any(proxy_openai))
         .layer(
@@ -446,6 +448,98 @@ async fn health(State(state): State<GatewayState>) -> impl IntoResponse {
 
 async fn traffic_endpoint(State(state): State<GatewayState>) -> impl IntoResponse {
     Json(state.traffic_stats().await)
+}
+
+/// 本地代发钉钉：webhook 只留在配置里，不进模型上下文。此端点要求显式 API Key。
+async fn notify_endpoint(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response<Body> {
+    let config = state.config().await;
+    if crate::gateway_auth::extract_client_api_key(&headers).is_none()
+        || !crate::gateway_auth::validate_client_request(&headers, &config)
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "ok": false, "error": "invalid or missing gateway api key" })),
+        )
+            .into_response();
+    }
+    let rules = &config.workspace_rules;
+    if !rules.enabled || !rules.dingtalk_enabled {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ok": false, "error": "dingtalk notify is disabled" })),
+        )
+            .into_response();
+    }
+    let webhook = rules.dingtalk_webhook.trim();
+    if webhook.is_empty() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ok": false, "error": "dingtalk webhook is empty" })),
+        )
+            .into_response();
+    }
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("SUGT");
+    let text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or(title);
+    match send_dingtalk_markdown(state.http_client(), webhook, title, text).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn send_dingtalk_markdown(
+    client: &Client,
+    webhook: &str,
+    title: &str,
+    text: &str,
+) -> Result<()> {
+    let payload = workspace_rules::dingtalk_markdown_payload(title, text);
+    let response = client
+        .post(webhook)
+        .json(&payload)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .context("钉钉 webhook 请求失败")?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("钉钉返回 HTTP {}: {}", status.as_u16(), body);
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(&body) {
+        if let Some(errcode) = v.get("errcode").and_then(|e| e.as_i64()) {
+            if errcode != 0 {
+                let errmsg = v
+                    .get("errmsg")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown");
+                bail!("钉钉 errcode={errcode}: {errmsg}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_workspace_rules(body: Bytes, config: &AppConfig, shape: RequestShape) -> Bytes {
+    workspace_rules::inject_into_request_body(
+        body,
+        &config.workspace_rules,
+        &config.listen_url(),
+        shape,
+    )
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -566,6 +660,7 @@ async fn proxy_anthropic_request(
 ) -> Result<Response<Body>> {
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
+    let body_bytes = apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages);
     // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
     let access_mode = config.anthropic_access_mode;
     let providers = ordered_providers(&config);
@@ -794,12 +889,16 @@ async fn proxy_request(
         .unwrap_or_default();
     let method = request.method().clone();
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
+    let config = state.config().await;
 
     if path == "v1/responses" || path.starts_with("v1/responses/") {
+        let body_bytes =
+            apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses);
         return proxy_responses_via_chat(state, headers, method, body_bytes, &query).await;
     }
 
-    let providers = ordered_providers(&state.config().await);
+    let body_bytes = apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat);
+    let providers = ordered_providers(&config);
 
     if providers.is_empty() {
         bail!("没有可用模型配置");

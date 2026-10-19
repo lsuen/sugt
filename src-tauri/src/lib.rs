@@ -31,5 +31,6 @@ pub mod process_util;
 pub mod sugt_skill;
 pub mod takeover_profiles;
 pub mod trial;
+pub mod workspace_rules;
 
 pub use app::run;

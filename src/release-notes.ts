@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.1.2';
+export const CURRENT_VERSION = '1.1.3';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,9 +6,6 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '新增实验·免费通道（替代原 OpenCode Zen），内置只读免费上游并可探测可用性' },
-  { type: 'feat', text: '请求统计：调用来源展示 Token；新增调用通道汇总（请求数 / Token）' },
-  { type: 'fix', text: '修复非 2xx 上游响应未计入失败的问题' },
-  { type: 'feat', text: '重做流量悬浮窗：展示今日请求、成功率、Token、来源与通道（与请求统计同源）' },
-  { type: 'feat', text: '接入点支持「直接体验」快捷对话与代码范例' },
+  { type: 'feat', text: '新增「全局规则」：跨 agent 软约束注入，可开关并持久化' },
+  { type: 'feat', text: '目录地图习惯提醒 + 钉钉 webhook 本地代发（/v1/_sugt/notify，密钥不进模型）' },
 ];

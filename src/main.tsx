@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, Users, X, XCircle, Settings2,
+  Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, Users, X, XCircle, Settings2,
 } from 'lucide-react';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
@@ -13,10 +13,11 @@ import { SkillsPanel } from './SkillsPanel';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
+import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
 import type { ProviderForm } from './providerPresets';
 import { lang, t } from './i18n';
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'settings' | 'logs' | 'about';
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'rules' | 'settings' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -93,6 +94,7 @@ type AppConfig = {
   port_fallback_ports?: number[];
   providers: unknown[];
   overlay?: OverlayConfigView;
+  workspace_rules?: WorkspaceRulesView;
 };
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
@@ -496,6 +498,7 @@ function App() {
     models: t('tab.models.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
+    rules: t('tab.rules.title'),
     settings: t('tab.settings.title'),
     logs: t('tab.logs.title'),
     about: t('tab.about.title'),
@@ -506,6 +509,7 @@ function App() {
     models: t('tab.models.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
+    rules: t('tab.rules.desc'),
     settings: t('tab.settings.desc'),
     logs: t('tab.logs.desc'),
     about: t('tab.about.desc'),
@@ -537,6 +541,7 @@ function App() {
         <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
         <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
         <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
+        <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
         <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
         <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />{t('nav.logs')}</button>
         <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />{t('nav.about')}</button>
@@ -613,6 +618,19 @@ function App() {
               />
             </div>
           </section>
+          </div>
+        )}
+
+        {tab === 'rules' && (
+          <div className="tab-body">
+            <WorkspaceRulesPanel
+              rules={config?.workspace_rules}
+              busy={busy}
+              run={run}
+              onSaved={(workspaceRules) => {
+                setConfig((prev) => (prev ? { ...prev, workspace_rules: workspaceRules } : prev));
+              }}
+            />
           </div>
         )}
 

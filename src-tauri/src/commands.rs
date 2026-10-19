@@ -8,6 +8,7 @@ use crate::{
     model::{
         AnthropicAccessMode, AppConfig, OverlayConfig, ProviderConfig, ProviderInput,
         ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
+        WorkspaceRules,
     },
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     trial,
@@ -1189,6 +1190,56 @@ pub async fn overlay_start_drag(app: tauri::AppHandle) -> Result<(), String> {
     window
         .start_dragging()
         .map_err(|e| format!("开始拖动失败: {e}"))
+}
+
+/// 更新全局工作区规则：持久化并热更新到网关。
+#[tauri::command]
+pub async fn set_workspace_rules(
+    runtime: State<'_, AppRuntime>,
+    mut rules: WorkspaceRules,
+) -> Result<AppConfig, String> {
+    rules.rules_text = rules.rules_text.trim().to_string();
+    rules.map_doc_path = {
+        let p = rules.map_doc_path.trim();
+        if p.is_empty() {
+            "docs/MAP.md".to_string()
+        } else {
+            p.to_string()
+        }
+    };
+    rules.dingtalk_webhook = rules.dingtalk_webhook.trim().to_string();
+    if rules.rules_text.chars().count() > 8000 {
+        return Err("全局规则过长（最多约 8000 字）".to_string());
+    }
+    {
+        let mut config = runtime.config.write().await;
+        config.workspace_rules = rules;
+    }
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok(runtime.config.read().await.clone())
+}
+
+/// 用当前配置的 webhook 发一条测试钉钉消息（不经模型）。
+#[tauri::command]
+pub async fn test_workspace_dingtalk(runtime: State<'_, AppRuntime>) -> Result<String, String> {
+    let config = runtime.config.read().await.clone();
+    let rules = &config.workspace_rules;
+    if !rules.dingtalk_enabled {
+        return Err("请先启用钉钉通知".to_string());
+    }
+    let webhook = rules.dingtalk_webhook.trim();
+    if webhook.is_empty() {
+        return Err("请先填写钉钉 webhook".to_string());
+    }
+    gateway::send_dingtalk_markdown(
+        runtime.gateway.http_client(),
+        webhook,
+        "SUGT 测试",
+        "### SUGT 全局规则\n钉钉通知已连通。",
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok("已发送测试消息".to_string())
 }
 
 /// 更新流量悬浮窗配置：持久化并即时应用（创建/更新/关闭窗口）。

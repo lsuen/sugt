@@ -152,6 +152,45 @@ pub struct AppConfig {
     /// 流量悬浮窗（置顶穿透小窗）配置
     #[serde(default)]
     pub overlay: OverlayConfig,
+    /// 全局工作区规则（软约束注入 + 少而精本地服务）
+    #[serde(default)]
+    pub workspace_rules: WorkspaceRules,
+}
+
+/// 走网关的 agent 共享纪律：规则文本注入模型上下文；密钥类能力（钉钉 webhook）仅留本地。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceRules {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 全局规则原文（注入 system / instructions，勿写密钥）
+    #[serde(default)]
+    pub rules_text: String,
+    #[serde(default)]
+    pub map_doc_enabled: bool,
+    #[serde(default = "default_map_doc_path")]
+    pub map_doc_path: String,
+    #[serde(default)]
+    pub dingtalk_enabled: bool,
+    /// 钉钉自定义机器人 webhook（不注入模型；由 /v1/_sugt/notify 代发）
+    #[serde(default)]
+    pub dingtalk_webhook: String,
+}
+
+impl Default for WorkspaceRules {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rules_text: String::new(),
+            map_doc_enabled: false,
+            map_doc_path: default_map_doc_path(),
+            dingtalk_enabled: false,
+            dingtalk_webhook: String::new(),
+        }
+    }
+}
+
+fn default_map_doc_path() -> String {
+    "docs/MAP.md".to_string()
 }
 
 /// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示请求统计同源数据
@@ -315,6 +354,7 @@ impl Default for AppConfig {
             experimental_zen_dismissed: false,
             anthropic_access_mode: AnthropicAccessMode::default(),
             overlay: OverlayConfig::default(),
+            workspace_rules: WorkspaceRules::default(),
         }
     }
 }
