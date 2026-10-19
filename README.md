@@ -43,7 +43,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - **Multi-upstream failover**: automatically falls back to the next provider in your `failover` order
 - **Hot-reload config**: edit `config.toml` and the next request picks it up — no restart needed
 - **Port fallback**: if the configured port is taken, the gateway binds the next available one
-- Built-in endpoints: `/health`, `/v1/models`, `/v1/_sugt/traffic`
+- Built-in endpoints: `/health`, `/v1/models`, `/v1/_sugt/traffic`, `/v1/_sugt/workspace-rules`, `/v1/_sugt/notify`
 
 ### Model Management
 
@@ -65,6 +65,14 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Always-on-top, semi-transparent, mouse-through overlay showing today's token activity in real time
 - Landscape / portrait layout, resizable, with one-click restore to defaults
+
+### Workspace Rules
+
+- A separate page with three independent switches: rules text, document habits, and webhook
+- Enabled rules and document habits are injected into OpenAI, Anthropic, and Responses requests that pass through the gateway. This is a soft prompt; it cannot force a client to read or write files
+- A fresh config includes a short general-purpose rules draft (switch off until you turn it on) and enables `AGENTS.md` plus `docs/MAP.md` by default. A non-empty purpose note is injected with that habit
+- Webhook stays off by default. The URL remains local and is relayed by `/v1/_sugt/notify`; it is never placed in the model context
+- Saved rules and checkboxes are left as you saved them. The same inject and relay path is used on Windows and macOS
 
 ### Gateway Watchdog
 

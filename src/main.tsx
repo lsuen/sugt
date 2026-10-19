@@ -40,6 +40,7 @@ type RuntimeStatus = {
   last_proxy_mode?: string | null;
   last_proxy_failover?: boolean;
   last_proxy_at?: string | null;
+  last_proxy_workspace_rules?: boolean | null;
   config_dir: string;
   log_file: string;
   trial: TrialStatus;
@@ -577,6 +578,8 @@ function App() {
                     {t('dash.recent')} {status.last_proxy_provider}
                     {status.last_proxy_failover ? t('dash.failover') : ''}
                     · {status.last_proxy_path ?? '-'}
+                    {status.last_proxy_workspace_rules === true ? ` · ${t('dash.rulesInjected')}` : ''}
+                    {status.last_proxy_workspace_rules === false ? ` · ${t('dash.rulesSkipped')}` : ''}
                     {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
                   </p>
                 )}

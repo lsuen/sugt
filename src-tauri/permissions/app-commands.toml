@@ -160,6 +160,17 @@ commands.allow = [
 ]
 
 [[permission]]
+identifier = "allow-workspace-rules-commands"
+description = "Enables workspace rules commands"
+commands.allow = [
+  "set_workspace_rules",
+  "set_workspace_inject_template",
+  "default_workspace_inject_template",
+  "preview_workspace_rules",
+  "test_workspace_notify"
+]
+
+[[permission]]
 identifier = "allow-store-commands"
 description = "Enables store edition commands"
 commands.allow = [

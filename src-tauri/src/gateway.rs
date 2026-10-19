@@ -238,6 +238,7 @@ impl GatewayState {
         headers: &HeaderMap,
         mode: &str,
         success: bool,
+        workspace_rules_injected: bool,
     ) {
         let client = crate::gateway_stats::client_label_from_headers(headers);
         let hit = ProxyHit {
@@ -247,6 +248,7 @@ impl GatewayState {
             client: client.clone(),
             mode: mode.to_string(),
             failover: provider_index > 0,
+            workspace_rules_injected,
             at: chrono::Utc::now(),
         };
         if success {
@@ -424,6 +426,7 @@ fn build_router(state: GatewayState) -> Router {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/_sugt/traffic", get(traffic_endpoint))
+        .route("/v1/_sugt/workspace-rules", get(workspace_rules_preview))
         .route("/v1/_sugt/notify", post(notify_endpoint))
         .route("/v1/messages", post(proxy_anthropic_messages))
         .route("/*path", any(proxy_openai))
@@ -450,35 +453,49 @@ async fn traffic_endpoint(State(state): State<GatewayState>) -> impl IntoRespons
     Json(state.traffic_stats().await)
 }
 
-/// 本地代发钉钉：webhook 只留在配置里，不进模型上下文。此端点要求显式 API Key。
+/// 预览当前会注入上游的全局规则文本（便于排查「勾了却没感觉」）。
+async fn workspace_rules_preview(State(state): State<GatewayState>) -> impl IntoResponse {
+    let config = state.config().await;
+    let rules = &config.workspace_rules;
+    let inject_text = workspace_rules::build_inject_text(rules, &config.listen_url());
+    Json(json!({
+        "enabled": rules.enabled,
+        "doc_habits": rules.doc_habits,
+        "notify_enabled": rules.notify_enabled,
+        "has_inject": inject_text.is_some(),
+        "inject_text": inject_text,
+    }))
+}
+
+/// 本地代发 webhook：密钥只留配置里。无 Key 时与本地网关其它接口一致放行；错误 Key 拒绝。
 async fn notify_endpoint(
     State(state): State<GatewayState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response<Body> {
     let config = state.config().await;
-    if crate::gateway_auth::extract_client_api_key(&headers).is_none()
-        || !crate::gateway_auth::validate_client_request(&headers, &config)
+    if crate::gateway_auth::extract_client_api_key(&headers).is_some()
+        && !crate::gateway_auth::validate_client_request(&headers, &config)
     {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "ok": false, "error": "invalid or missing gateway api key" })),
+            Json(json!({ "ok": false, "error": "invalid gateway api key" })),
         )
             .into_response();
     }
     let rules = &config.workspace_rules;
-    if !rules.enabled || !rules.dingtalk_enabled {
+    if !rules.notify_enabled {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "ok": false, "error": "dingtalk notify is disabled" })),
+            Json(json!({ "ok": false, "error": "webhook notify is disabled" })),
         )
             .into_response();
     }
-    let webhook = rules.dingtalk_webhook.trim();
+    let webhook = rules.notify_webhook.trim();
     if webhook.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "ok": false, "error": "dingtalk webhook is empty" })),
+            Json(json!({ "ok": false, "error": "webhook is empty" })),
         )
             .into_response();
     }
@@ -490,7 +507,7 @@ async fn notify_endpoint(
         .get("text")
         .and_then(|v| v.as_str())
         .unwrap_or(title);
-    match send_dingtalk_markdown(state.http_client(), webhook, title, text).await {
+    match send_webhook_markdown(state.http_client(), webhook, title, text).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_GATEWAY,
@@ -500,24 +517,24 @@ async fn notify_endpoint(
     }
 }
 
-pub async fn send_dingtalk_markdown(
+pub async fn send_webhook_markdown(
     client: &Client,
     webhook: &str,
     title: &str,
     text: &str,
 ) -> Result<()> {
-    let payload = workspace_rules::dingtalk_markdown_payload(title, text);
+    let payload = workspace_rules::webhook_markdown_payload(title, text);
     let response = client
         .post(webhook)
         .json(&payload)
         .timeout(Duration::from_secs(15))
         .send()
         .await
-        .context("钉钉 webhook 请求失败")?;
+        .context("webhook 请求失败")?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("钉钉返回 HTTP {}: {}", status.as_u16(), body);
+        bail!("webhook 返回 HTTP {}: {}", status.as_u16(), body);
     }
     if let Ok(v) = serde_json::from_str::<Value>(&body) {
         if let Some(errcode) = v.get("errcode").and_then(|e| e.as_i64()) {
@@ -526,20 +543,27 @@ pub async fn send_dingtalk_markdown(
                     .get("errmsg")
                     .and_then(|e| e.as_str())
                     .unwrap_or("unknown");
-                bail!("钉钉 errcode={errcode}: {errmsg}");
+                bail!("webhook errcode={errcode}: {errmsg}");
             }
         }
     }
     Ok(())
 }
 
-fn apply_workspace_rules(body: Bytes, config: &AppConfig, shape: RequestShape) -> Bytes {
-    workspace_rules::inject_into_request_body(
+/// 返回 (body, 是否注入了全局规则)。
+fn apply_workspace_rules(body: Bytes, config: &AppConfig, shape: RequestShape) -> (Bytes, bool) {
+    let injected = workspace_rules::build_inject_text(
+        &config.workspace_rules,
+        &config.listen_url(),
+    )
+    .is_some();
+    let body = workspace_rules::inject_into_request_body(
         body,
         &config.workspace_rules,
         &config.listen_url(),
         shape,
-    )
+    );
+    (body, injected)
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -660,7 +684,8 @@ async fn proxy_anthropic_request(
 ) -> Result<Response<Body>> {
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
-    let body_bytes = apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages);
+    let (body_bytes, rules_injected) =
+        apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages);
     // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
     let access_mode = config.anthropic_access_mode;
     let providers = ordered_providers(&config);
@@ -789,6 +814,7 @@ async fn proxy_anthropic_request(
                         &headers,
                         mode,
                         ok,
+                        rules_injected,
                     )
                     .await;
                 return Ok(response);
@@ -892,12 +918,21 @@ async fn proxy_request(
     let config = state.config().await;
 
     if path == "v1/responses" || path.starts_with("v1/responses/") {
-        let body_bytes =
+        let (body_bytes, rules_injected) =
             apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses);
-        return proxy_responses_via_chat(state, headers, method, body_bytes, &query).await;
+        return proxy_responses_via_chat(
+            state,
+            headers,
+            method,
+            body_bytes,
+            &query,
+            rules_injected,
+        )
+        .await;
     }
 
-    let body_bytes = apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat);
+    let (body_bytes, rules_injected) =
+        apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat);
     let providers = ordered_providers(&config);
 
     if providers.is_empty() {
@@ -946,6 +981,7 @@ async fn proxy_request(
                             &headers,
                             "openai_direct",
                             ok,
+                            rules_injected,
                         )
                         .await;
                     return into_axum_response(
@@ -990,6 +1026,7 @@ async fn proxy_responses_via_chat(
     method: http::Method,
     body_bytes: Bytes,
     query: &str,
+    rules_injected: bool,
 ) -> Result<Response<Body>> {
     let providers = ordered_providers(&state.config().await);
     if providers.is_empty() {
@@ -1067,6 +1104,7 @@ async fn proxy_responses_via_chat(
                             &headers,
                             "responses_native",
                             ok,
+                            rules_injected,
                         )
                         .await;
                     return into_axum_response(
@@ -1128,6 +1166,7 @@ async fn proxy_responses_via_chat(
                         &headers,
                         "chat_completions_adapter",
                         ok,
+                        rules_injected,
                     )
                     .await;
                 let status = response.status();
@@ -1173,6 +1212,7 @@ async fn proxy_responses_via_chat(
                         &headers,
                         "chat_completions_adapter",
                         status.is_success(),
+                        rules_injected,
                     )
                     .await;
                 let bytes = if status.is_success() {

@@ -93,6 +93,8 @@ pub fn normalize_config(config: &mut AppConfig) {
             .find(|provider| provider.enabled)
             .map(|provider| provider.id.clone());
     }
+
+    config.workspace_rules.normalize();
 }
 
 fn default_config_from_env() -> AppConfig {

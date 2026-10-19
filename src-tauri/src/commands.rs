@@ -145,6 +145,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         last_proxy_mode,
         last_proxy_failover,
         last_proxy_at,
+        last_proxy_workspace_rules,
     ) = if let Some(hit) = local_hit {
         (
             Some(hit.provider_name),
@@ -153,6 +154,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
             Some(hit.mode),
             hit.failover,
             Some(hit.at),
+            Some(hit.workspace_rules_injected),
         )
     } else if let Some(client) = traffic.recent_clients.first() {
         (
@@ -162,9 +164,10 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
             None,
             false,
             Some(client.last_at),
+            None,
         )
     } else {
-        (None, None, None, None, false, None)
+        (None, None, None, None, false, None, None)
     };
     let public_model_id = provider.as_ref().map(|p| p.public_model_id());
     Ok(RuntimeStatus {
@@ -187,6 +190,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
         last_proxy_mode,
         last_proxy_failover,
         last_proxy_at,
+        last_proxy_workspace_rules,
         config_dir: runtime.paths.config_dir.display().to_string(),
         log_file: runtime.paths.log_file.display().to_string(),
         trial: trial::status(&runtime.paths),
@@ -1199,17 +1203,12 @@ pub async fn set_workspace_rules(
     mut rules: WorkspaceRules,
 ) -> Result<AppConfig, String> {
     rules.rules_text = rules.rules_text.trim().to_string();
-    rules.map_doc_path = {
-        let p = rules.map_doc_path.trim();
-        if p.is_empty() {
-            "docs/MAP.md".to_string()
-        } else {
-            p.to_string()
-        }
-    };
-    rules.dingtalk_webhook = rules.dingtalk_webhook.trim().to_string();
+    rules.normalize();
     if rules.rules_text.chars().count() > 8000 {
         return Err("全局规则过长（最多约 8000 字）".to_string());
+    }
+    if rules.doc_habits.len() > 20 {
+        return Err("文档习惯最多 20 条".to_string());
     }
     {
         let mut config = runtime.config.write().await;
@@ -1219,23 +1218,81 @@ pub async fn set_workspace_rules(
     Ok(runtime.config.read().await.clone())
 }
 
-/// 用当前配置的 webhook 发一条测试钉钉消息（不经模型）。
+/// 只更新文档习惯注入文案。与默认相同则存空，表示跟随内置文案。
 #[tauri::command]
-pub async fn test_workspace_dingtalk(runtime: State<'_, AppRuntime>) -> Result<String, String> {
+pub async fn set_workspace_inject_template(
+    runtime: State<'_, AppRuntime>,
+    template: String,
+) -> Result<AppConfig, String> {
+    let template = template.trim().to_string();
+    if template.chars().count() > 8000 {
+        return Err("注入文案过长（最多约 8000 字）".to_string());
+    }
+    let stored = if template == crate::workspace_rules::default_inject_template() {
+        String::new()
+    } else {
+        template
+    };
+    {
+        let mut config = runtime.config.write().await;
+        config.workspace_rules.inject_template = stored;
+    }
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok(runtime.config.read().await.clone())
+}
+
+#[tauri::command]
+pub fn default_workspace_inject_template() -> String {
+    crate::workspace_rules::default_inject_template().to_string()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkspaceRulesPreview {
+    pub enabled: bool,
+    pub has_inject: bool,
+    pub inject_chars: usize,
+    pub inject_text: String,
+    pub listen_url: String,
+}
+
+/// 预览将注入上游的全局规则文本（可传入草稿；空则用已保存配置）。
+#[tauri::command]
+pub async fn preview_workspace_rules(
+    runtime: State<'_, AppRuntime>,
+    rules: Option<WorkspaceRules>,
+) -> Result<WorkspaceRulesPreview, String> {
+    let config = runtime.config.read().await.clone();
+    let mut rules = rules.unwrap_or(config.workspace_rules.clone());
+    rules.normalize();
+    let listen_url = config.listen_url();
+    let inject = crate::workspace_rules::build_inject_text(&rules, &listen_url);
+    let inject_text = inject.clone().unwrap_or_default();
+    Ok(WorkspaceRulesPreview {
+        enabled: rules.enabled,
+        has_inject: inject.is_some(),
+        inject_chars: inject_text.chars().count(),
+        inject_text,
+        listen_url,
+    })
+}
+
+/// 用当前配置的 webhook 发一条测试消息（不经模型）。
+#[tauri::command]
+pub async fn test_workspace_notify(runtime: State<'_, AppRuntime>) -> Result<String, String> {
     let config = runtime.config.read().await.clone();
     let rules = &config.workspace_rules;
-    if !rules.dingtalk_enabled {
-        return Err("请先启用钉钉通知".to_string());
+    if !rules.notify_enabled {
+        return Err("请先启用 Webhook 通知".to_string());
     }
-    let webhook = rules.dingtalk_webhook.trim();
+    let webhook = rules.notify_webhook.trim();
     if webhook.is_empty() {
-        return Err("请先填写钉钉 webhook".to_string());
+        return Err("请先填写 Webhook".to_string());
     }
-    gateway::send_dingtalk_markdown(
+    gateway::send_webhook_markdown(
         runtime.gateway.http_client(),
         webhook,
         "SUGT 测试",
-        "### SUGT 全局规则\n钉钉通知已连通。",
+        "### SUGT 全局规则\nWebhook 通知已连通。",
     )
     .await
     .map_err(|err| err.to_string())?;

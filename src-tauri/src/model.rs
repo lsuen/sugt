@@ -157,40 +157,152 @@ pub struct AppConfig {
     pub workspace_rules: WorkspaceRules,
 }
 
-/// 走网关的 agent 共享纪律：规则文本注入模型上下文；密钥类能力（钉钉 webhook）仅留本地。
+/// 走网关的 agent 共享纪律：规则文本注入模型上下文；webhook 仅留本地代发。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceRules {
     #[serde(default)]
     pub enabled: bool,
-    /// 全局规则原文（注入 system / instructions，勿写密钥）
+    /// 全局规则原文（注入 system / instructions）
     #[serde(default)]
     pub rules_text: String,
+    /// 文档习惯列表（可多条：AGENTS.md、目录地图等）
     #[serde(default)]
+    pub doc_habits: Vec<DocHabit>,
+    /// 文档习惯总开关。旧配置没有该字段时视为开启，避免已勾选的习惯失效。
+    #[serde(default = "default_true")]
+    pub docs_enabled: bool,
+    #[serde(default, alias = "dingtalk_enabled")]
+    pub notify_enabled: bool,
+    /// 自定义机器人 webhook（不注入模型；由 /v1/_sugt/notify 代发）
+    #[serde(default, alias = "dingtalk_webhook")]
+    pub notify_webhook: String,
+    /// 文档习惯注入文案。空表示使用内置默认；可用 {docs} 占位文档列表。
+    #[serde(default)]
+    pub inject_template: String,
+    // —— 旧字段：读入后迁移到 doc_habits，不再写出 ——
+    #[serde(default, skip_serializing)]
     pub map_doc_enabled: bool,
-    #[serde(default = "default_map_doc_path")]
+    #[serde(default, skip_serializing)]
     pub map_doc_path: String,
+}
+
+/// 单条文档习惯：开干前读、有变时更新。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocHabit {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub path: String,
+    /// 可选补充说明；空则用默认「阅读并更新」话术
     #[serde(default)]
-    pub dingtalk_enabled: bool,
-    /// 钉钉自定义机器人 webhook（不注入模型；由 /v1/_sugt/notify 代发）
-    #[serde(default)]
-    pub dingtalk_webhook: String,
+    pub note: String,
 }
 
 impl Default for WorkspaceRules {
     fn default() -> Self {
         Self {
             enabled: false,
-            rules_text: String::new(),
+            rules_text: default_rules_text(),
+            doc_habits: default_doc_habits(),
+            docs_enabled: true,
+            notify_enabled: false,
+            notify_webhook: String::new(),
+            inject_template: String::new(),
             map_doc_enabled: false,
-            map_doc_path: default_map_doc_path(),
-            dingtalk_enabled: false,
-            dingtalk_webhook: String::new(),
+            map_doc_path: String::new(),
         }
     }
 }
 
-fn default_map_doc_path() -> String {
-    "docs/MAP.md".to_string()
+/// 只放进全新配置。用户清空后保存的空字符串不要在 normalize 里填回。
+fn default_rules_text() -> String {
+    "用用户本次消息的语言回复。\n\
+只做当前要求的事；要扩大范围时先说明。\n\
+先查已有材料再动手。不知道就说明不知道，不要编造文件、接口、数据或已经完成的结果。\n\
+声称完成前先核对自己做过的改动；核不出就标明未核实。\n\
+未经明确要求，不要提交、推送、删除，也不要向外发送消息。\n"
+        .to_string()
+}
+
+fn default_doc_habits() -> Vec<DocHabit> {
+    vec![
+        DocHabit {
+            enabled: true,
+            path: "AGENTS.md".to_string(),
+            note: String::new(),
+        },
+        DocHabit {
+            enabled: true,
+            path: "docs/MAP.md".to_string(),
+            note: String::new(),
+        },
+    ]
+}
+
+impl WorkspaceRules {
+    /// 兼容旧 map_doc_*；清理空路径；补齐默认建议项（AGENTS.md / docs/MAP.md）。
+    pub fn normalize(&mut self) {
+        if self.map_doc_enabled || !self.map_doc_path.trim().is_empty() {
+            let path = {
+                let p = self.map_doc_path.trim();
+                if p.is_empty() {
+                    "docs/MAP.md".to_string()
+                } else {
+                    p.to_string()
+                }
+            };
+            if let Some(existing) = self
+                .doc_habits
+                .iter_mut()
+                .find(|h| h.path.eq_ignore_ascii_case(&path))
+            {
+                if self.map_doc_enabled {
+                    existing.enabled = true;
+                }
+            } else {
+                self.doc_habits.push(DocHabit {
+                    enabled: self.map_doc_enabled,
+                    path,
+                    note: String::new(),
+                });
+            }
+        }
+        self.map_doc_enabled = false;
+        self.map_doc_path.clear();
+
+        for habit in &mut self.doc_habits {
+            habit.path = habit.path.trim().to_string();
+            habit.note = habit.note.trim().to_string();
+        }
+        self.doc_habits.retain(|h| !h.path.is_empty());
+        if self.doc_habits.is_empty() {
+            self.doc_habits = default_doc_habits();
+        } else if let Some(index) = self
+            .doc_habits
+            .iter()
+            .position(|h| h.path.eq_ignore_ascii_case("AGENTS.md"))
+        {
+            if index != 0 {
+                let habit = self.doc_habits.remove(index);
+                self.doc_habits.insert(0, habit);
+            }
+        } else {
+            self.doc_habits.insert(
+                0,
+                DocHabit {
+                    enabled: false,
+                    path: "AGENTS.md".to_string(),
+                    note: String::new(),
+                },
+            );
+        }
+        self.notify_webhook = self.notify_webhook.trim().to_string();
+        let template = self.inject_template.trim().to_string();
+        self.inject_template = if template == crate::workspace_rules::default_inject_template() {
+            String::new()
+        } else {
+            template
+        };
+    }
 }
 
 /// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示请求统计同源数据
@@ -370,6 +482,9 @@ pub struct ProxyHit {
     /// responses_native / chat_completions_adapter
     pub mode: String,
     pub failover: bool,
+    /// 本请求是否注入了全局工作区规则
+    #[serde(default)]
+    pub workspace_rules_injected: bool,
     pub at: DateTime<Utc>,
 }
 
@@ -394,6 +509,8 @@ pub struct RuntimeStatus {
     pub last_proxy_mode: Option<String>,
     pub last_proxy_failover: bool,
     pub last_proxy_at: Option<DateTime<Utc>>,
+    /// 最近一次代理是否注入了全局规则（无命中或未知时为 None）
+    pub last_proxy_workspace_rules: Option<bool>,
     pub config_dir: String,
     pub log_file: String,
     pub trial: TrialStatusView,

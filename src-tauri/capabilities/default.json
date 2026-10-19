@@ -39,6 +39,7 @@
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
     "allow-overlay-commands",
+    "allow-workspace-rules-commands",
     "allow-takeover-commands",
     "allow-store-commands"
   ]
