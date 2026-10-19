@@ -10,21 +10,16 @@
 
 | | |
 | --- | --- |
-| 版本 | 1.1.2 |
+| 版本 | 1.1.3 |
 | 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
 | 开源 | [Apache-2.0](LICENSE)，全仓库开源 |
 | 当前下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |
 
 English: [README.md](README.md)
 
-## 版本与授权
+## 许可
 
-| 版本 | 有效期 | 说明 |
-| --- | --- | --- |
-| 公开版 | Windows 半年（180 天） | 到期后提示前往 GitHub 更新软件，功能不限制；macOS 无时间限制 |
-| 自用版 / 开发版 | 无限制 | 作者专用，不对外分发 |
-
-公开版即完整功能版本：本地 AI 网关、协议互转、客户端接管、技能中控台全部可用。Windows 半年内会周期性提示更新，前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载新版即可继续使用，不影响任何配置与数据。
+[GitHub Releases](https://github.com/lsuen/sugt/releases) 上的安装包就是完整功能：本地 AI 网关、协议互转、客户端接管、技能中控台。源码为 Apache-2.0。
 
 ## 为什么需要
 

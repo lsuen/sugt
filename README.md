@@ -10,21 +10,16 @@
 
 |                |                                                                       |
 | -------------- | --------------------------------------------------------------------- |
-| Version        | 1.1.2                                                                 |
+| Version        | 1.1.3                                                                 |
 | Author         | Sun Wenlong · [异常设计](https://github.com/lsuen)                       |
 | Open source    | [Apache-2.0](LICENSE), fully open source                                |
 | Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)                |
 
 中文文档：[README.zh.md](README.zh.md)
 
-## Edition & License
+## License
 
-| Edition | Validity | Notes |
-| ------- | -------- | ----- |
-| Public | Windows: 6 months (180 days) | After expiry SUGT prompts you to update from GitHub; all features remain available. macOS: no time limit |
-| Personal / Dev | Unlimited | Author-only builds, not distributed |
-
-The Public edition is the full-featured build: local AI gateway, protocol translation, client takeover, and the Skills console are all included. On Windows the Public edition periodically reminds you to update after 6 months — grab the latest release from [GitHub Releases](https://github.com/lsuen/sugt/releases); your data and config are untouched.
+The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, and the Skills console. Source is Apache-2.0.
 
 ## Why
 
