@@ -5,12 +5,12 @@
 
 pub mod common;
 
-#[cfg(windows)]
-pub mod windows;
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(windows)]
+pub mod windows;
 
 use std::path::{Path, PathBuf};
 
@@ -197,7 +197,12 @@ pub fn default_cli_search_paths(cmd: &str) -> Vec<PathBuf> {
                 out.push(appdata.join("npm").join(format!("{cmd}.cmd")));
                 out.push(appdata.join("npm").join(format!("{cmd}.exe")));
             }
-            out.push(home.join("AppData").join("Roaming").join("npm").join(format!("{cmd}.cmd")));
+            out.push(
+                home.join("AppData")
+                    .join("Roaming")
+                    .join("npm")
+                    .join(format!("{cmd}.cmd")),
+            );
             out.push(home.join(".local").join("bin").join(format!("{cmd}.exe")));
         }
         #[cfg(not(windows))]
@@ -287,26 +292,20 @@ impl CommandPlatformExt for Command {
 
 #[cfg(unix)]
 fn unix_read_user_env(name: &str) -> Option<String> {
-    let rc = std::fs::read_to_string(unix_shell_rc_path()).ok()?;
-    rc.lines()
-        .map(|l| l.trim_start())
-        .filter_map(|l| l.strip_prefix("export "))
-        .filter_map(|rest| rest.split_once('='))
-        .find(|(k, _)| k.trim() == name)
-        .map(|(_, v)| unix_unquote(v.trim()))
+    let path = unix_shell_rc_path();
+    let rc = std::fs::read_to_string(&path).ok()?;
+    read_rc(&rc, name, rc_is_fish(&path))
 }
 
 #[cfg(unix)]
 fn unix_set_user_env(name: &str, value: &str) -> Result<()> {
     let path = unix_shell_rc_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let rc = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<String> = rc
-        .lines()
-        .filter(|l| !unix_is_export_line(l, name))
-        .map(str::to_string)
-        .collect();
-    lines.push(format!("export {}={}", name, unix_shell_quote(value)));
-    std::fs::write(&path, lines.join("\n") + "\n")?;
+    let next = upsert_rc(&rc, name, value, rc_is_fish(&path));
+    std::fs::write(&path, next)?;
     std::env::set_var(name, value);
     Ok(())
 }
@@ -318,18 +317,78 @@ fn unix_unset_user_env(name: &str) -> Result<()> {
     if rc.is_empty() {
         return Ok(());
     }
+    let Some(next) = remove_rc(&rc, name, rc_is_fish(&path)) else {
+        return Ok(());
+    };
+    std::fs::write(&path, next)?;
+    std::env::remove_var(name);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn rc_is_fish(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("config.fish")
+}
+
+#[cfg(unix)]
+fn upsert_rc(rc: &str, name: &str, value: &str, fish: bool) -> String {
+    let mut lines: Vec<String> = rc
+        .lines()
+        .filter(|line| !is_managed_env_line(line, name, fish))
+        .map(str::to_string)
+        .collect();
+    lines.push(format_env_line(name, value, fish));
+    lines.join("\n") + "\n"
+}
+
+#[cfg(unix)]
+fn remove_rc(rc: &str, name: &str, fish: bool) -> Option<String> {
     let total = rc.lines().count();
     let kept: Vec<String> = rc
         .lines()
-        .filter(|l| !unix_is_export_line(l, name))
+        .filter(|line| !is_managed_env_line(line, name, fish))
         .map(str::to_string)
         .collect();
     if kept.len() == total {
-        return Ok(());
+        return None;
     }
-    std::fs::write(&path, kept.join("\n") + "\n")?;
-    std::env::remove_var(name);
-    Ok(())
+    if kept.is_empty() {
+        Some(String::new())
+    } else {
+        Some(kept.join("\n") + "\n")
+    }
+}
+
+#[cfg(unix)]
+fn read_rc(rc: &str, name: &str, fish: bool) -> Option<String> {
+    rc.lines().find_map(|line| {
+        if fish {
+            fish_value(line, name)
+        } else if unix_is_export_line(line, name) {
+            posix_export_value(line)
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(unix)]
+fn format_env_line(name: &str, value: &str, fish: bool) -> String {
+    let quoted = unix_shell_quote(value);
+    if fish {
+        format!("set -gx {name} {quoted}")
+    } else {
+        format!("export {name}={quoted}")
+    }
+}
+
+#[cfg(unix)]
+fn is_managed_env_line(line: &str, name: &str, fish: bool) -> bool {
+    if fish {
+        fish_sets_var(line, name)
+    } else {
+        unix_is_export_line(line, name)
+    }
 }
 
 #[cfg(unix)]
@@ -342,28 +401,85 @@ fn unix_is_export_line(line: &str, name: &str) -> bool {
 }
 
 #[cfg(unix)]
+fn posix_export_value(line: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix("export ")?;
+    let (_, value) = rest.split_once('=')?;
+    Some(unix_unquote(value.trim()))
+}
+
+#[cfg(unix)]
+fn fish_sets_var(line: &str, name: &str) -> bool {
+    fish_assignment(line).is_some_and(|(var, _)| var == name)
+}
+
+#[cfg(unix)]
+fn fish_value(line: &str, name: &str) -> Option<String> {
+    fish_assignment(line).and_then(|(var, value)| (var == name).then_some(value))
+}
+
+#[cfg(unix)]
+fn fish_assignment(line: &str) -> Option<(String, String)> {
+    let rest = line.trim_start().strip_prefix("set ")?;
+    let rest = rest.trim_start();
+    let rest = rest
+        .strip_prefix("-gx ")
+        .or_else(|| rest.strip_prefix("-xg "))
+        .or_else(|| rest.strip_prefix("-x "))?;
+    let (var, value) = rest.trim_start().split_once(char::is_whitespace)?;
+    Some((var.to_string(), unix_unquote(value.trim())))
+}
+
+#[cfg(unix)]
 fn unix_shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(unix)]
 fn unix_unquote(value: &str) -> String {
-    let b = value.as_bytes();
-    if b.len() >= 2 {
-        match (b[0], b[b.len() - 1]) {
-            (b'\'', b'\'') | (b'"', b'"') => return value[1..value.len() - 1].to_string(),
-            _ => {}
-        }
+    let value = value.trim();
+    if let Some(text) = value.strip_prefix('\'') {
+        return unescape_posix_single(text);
+    }
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        return value[1..value.len() - 1].to_string();
     }
     value.to_string()
 }
 
+/// 解析 `export` 用的单引号字符串，含 `'\''` 转义。
+#[cfg(unix)]
+fn unescape_posix_single(mut rest: &str) -> String {
+    let mut out = String::new();
+    loop {
+        if let Some(idx) = rest.find('\'') {
+            out.push_str(&rest[..idx]);
+            rest = &rest[idx + 1..];
+            if let Some(more) = rest.strip_prefix("\\''") {
+                out.push('\'');
+                rest = more;
+                continue;
+            }
+            break;
+        }
+        out.push_str(rest);
+        break;
+    }
+    out
+}
+
 #[cfg(unix)]
 fn unix_shell_rc_path() -> PathBuf {
-    use crate::common::home_dir;
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".zshrc")
+    #[cfg(target_os = "macos")]
+    {
+        return macos::shell_rc_path();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use crate::common::home_dir;
+        home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".zshrc")
+    }
 }
 
 #[cfg(unix)]
@@ -389,7 +505,7 @@ fn unix_kill_pid(pid: u32) {
 fn unix_kill_process_by_name(name: &str) {
     use std::process::Stdio;
     let _ = std::process::Command::new("pkill")
-        .args(["-f", name])
+        .args(["-x", name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -442,3 +558,50 @@ fn unix_write_launch_scripts(dir: &Path, listen_url: &str, key: &str) -> Result<
 
 // 这里导出一些函数，让现有模块可以通过 `platform::common::xxx` 调用。
 // 同时在本文件 `pub use` 最常用的几个。
+
+#[cfg(all(test, unix))]
+mod unix_env_tests {
+    use super::{format_env_line, read_rc, remove_rc, unix_shell_quote, unix_unquote, upsert_rc};
+
+    #[test]
+    fn posix_roundtrip_keeps_unrelated_lines_and_quotes() {
+        let original = "# comment\nexport OTHER='stay'\nexport ANTHROPIC_BASE_URL='old'\n";
+        let next = upsert_rc(
+            original,
+            "ANTHROPIC_BASE_URL",
+            "http://127.0.0.1:8787",
+            false,
+        );
+        assert!(next.contains("# comment\n"));
+        assert!(next.contains("export OTHER='stay'\n"));
+        assert!(!next.contains("old"));
+        assert_eq!(
+            read_rc(&next, "ANTHROPIC_BASE_URL", false).as_deref(),
+            Some("http://127.0.0.1:8787")
+        );
+        let removed = remove_rc(&next, "ANTHROPIC_BASE_URL", false).expect("removed");
+        assert!(read_rc(&removed, "ANTHROPIC_BASE_URL", false).is_none());
+        assert!(removed.contains("export OTHER='stay'"));
+    }
+
+    #[test]
+    fn single_quote_in_value_roundtrips() {
+        let line = format_env_line("OPENAI_API_KEY", "it's", false);
+        let rc = format!("{line}\n");
+        assert_eq!(
+            read_rc(&rc, "OPENAI_API_KEY", false).as_deref(),
+            Some("it's")
+        );
+        assert_eq!(unix_unquote(&unix_shell_quote("it's")), "it's");
+    }
+
+    #[test]
+    fn fish_roundtrip_uses_set_gx() {
+        let next = upsert_rc("", "ANTHROPIC_AUTH_TOKEN", "tok en", true);
+        assert!(next.starts_with("set -gx ANTHROPIC_AUTH_TOKEN "));
+        assert_eq!(
+            read_rc(&next, "ANTHROPIC_AUTH_TOKEN", true).as_deref(),
+            Some("tok en")
+        );
+    }
+}

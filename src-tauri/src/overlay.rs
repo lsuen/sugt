@@ -5,22 +5,41 @@
 
 use crate::commands::AppRuntime;
 use crate::model::OverlayConfig;
-use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 
 const LABEL: &str = "overlay";
 const MARGIN: f64 = 16.0;
 
-/// 主屏右上角逻辑坐标（取不到主屏时兜左上）
+/// 主屏右上角物理坐标。前端 `outerPosition()` 和 `set_position(PhysicalPosition)` 都是物理像素；
+/// Retina 上若把逻辑坐标当物理坐标用，悬浮窗会偏到屏幕内侧。
 fn top_right(app: &AppHandle, width: f64) -> (i32, i32) {
     let Some(m) = app.primary_monitor().ok().flatten() else {
         return (MARGIN as i32, MARGIN as i32);
     };
-    let scale = m.scale_factor().max(1.0);
-    let s = m.size();
-    let x = ((s.width as f64 / scale) - width - MARGIN).max(MARGIN) as i32;
-    (x, MARGIN as i32)
+    let origin = m.position();
+    top_right_physical(origin.x, origin.y, m.size().width, m.scale_factor(), width)
+}
+
+fn top_right_physical(
+    origin_x: i32,
+    origin_y: i32,
+    screen_width: u32,
+    scale: f64,
+    window_width: f64,
+) -> (i32, i32) {
+    let scale = scale.max(1.0);
+    let margin_px = MARGIN * scale;
+    let width_px = window_width * scale;
+    let x = origin_x + ((screen_width as f64) - width_px - margin_px).max(margin_px) as i32;
+    let y = origin_y + margin_px as i32;
+    (x, y)
+}
+
+fn point_inside(x: i32, y: i32, origin_x: i32, origin_y: i32, width: u32, height: u32) -> bool {
+    x >= origin_x
+        && x < origin_x.saturating_add_unsigned(width)
+        && y >= origin_y
+        && y < origin_y.saturating_add_unsigned(height)
 }
 
 /// 若 cfg.x/y 不在任一 monitor 范围内 → 修正为主屏右上角；坐标已被改写
@@ -32,8 +51,7 @@ async fn ensure_on_screen(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<()
         .any(|m| {
             let p = m.position();
             let s = m.size();
-            cfg.x >= p.x && cfg.x < p.x + s.width as i32
-                && cfg.y >= p.y && cfg.y < p.y + s.height as i32
+            point_inside(cfg.x, cfg.y, p.x, p.y, s.width, s.height)
         });
     if on {
         return Ok(());
@@ -74,9 +92,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             }
         }
         None if cfg.enabled => {
-            let (x, y) = top_right(app, cfg.width);
-            cfg.x = x;
-            cfg.y = y;
+            ensure_on_screen(app, cfg).await?;
             let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("overlay.html".into()))
                 .title("SUGT 流量")
                 .decorations(false)
@@ -85,9 +101,10 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .skip_taskbar(true)
                 .resizable(false)
                 .inner_size(cfg.width, cfg.height)
-                .position(x as f64, y as f64)
                 .build()
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;
+            w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
+                .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
             w.set_ignore_cursor_events(!cfg.edit)
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
@@ -97,4 +114,29 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
         None => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{point_inside, top_right_physical};
+
+    #[test]
+    fn retina_top_right_stays_in_physical_pixels() {
+        // 1512 逻辑点 × 2 = 3024 物理像素，窗口宽 280 逻辑点
+        let (x, y) = top_right_physical(0, 0, 3024, 2.0, 280.0);
+        assert_eq!(y, 32);
+        assert_eq!(x, 3024 - 560 - 32);
+    }
+
+    #[test]
+    fn scale_one_matches_logical_layout() {
+        let (x, y) = top_right_physical(0, 0, 1920, 1.0, 280.0);
+        assert_eq!((x, y), (1920 - 280 - 16, 16));
+    }
+
+    #[test]
+    fn offscreen_marker_is_not_inside_primary() {
+        assert!(!point_inside(-1, -1, 0, 0, 3024, 1964));
+        assert!(point_inside(2400, 32, 0, 0, 3024, 1964));
+    }
 }
