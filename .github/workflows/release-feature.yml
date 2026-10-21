@@ -1,13 +1,13 @@
 name: release-feature
 
-# Build and publish the feature (open-core) portable zip only.
-# Do not attach store-trial or store-self artifacts to this workflow.
+# Build and publish the Windows portable zip for a release tag.
+# Does not depend on author-only scripts under /scripts (gitignored).
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (for example v1.0.0)
+        description: Release tag (for example v1.1.4)
         required: true
         type: string
 
@@ -32,16 +32,44 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Package feature self zip
-        run: npm run package:release:self:zip
-        env:
-          SUGT_PRODUCT: feature
+      - name: Build app and CLI
+        shell: pwsh
+        run: |
+          npx tauri build
+          cargo build --release --bin sugt-cli --manifest-path src-tauri/Cargo.toml
+
+      - name: Zip Windows portable package
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          $version = $tag.TrimStart("v")
+          $outDir = "release"
+          $stage = Join-Path $outDir "stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $exe = "src-tauri/target/release/sugt.exe"
+          $cli = "src-tauri/target/release/sugt-cli.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          if (-not (Test-Path $cli)) { throw "missing $cli" }
+
+          Copy-Item $exe (Join-Path $stage "sugt.exe")
+          Copy-Item $cli (Join-Path $stage "sugt-cli.exe")
+
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($nsis) {
+            Copy-Item $nsis.FullName (Join-Path $stage $nsis.Name)
+          }
+
+          $zip = Join-Path $outDir "SUGT-$version-windows-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
+          Get-ChildItem $outDir -Filter *.zip | Format-Table Name, Length
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           files: release/*.zip
-          generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
