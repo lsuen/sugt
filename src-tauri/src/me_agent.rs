@@ -25,12 +25,13 @@ const LEGACY_SESSION_FILE: &str = "me-session.json";
 const CHATS_DIR: &str = "me-chats";
 const STOPPED: &str = "me_stopped";
 const DEFAULT_PROJECT: &str = "default";
-const STEP_LIMIT: usize = 8;
+const STEP_LIMIT: usize = 12;
 const FORMAT_RETRIES: usize = 2;
-const OUTPUT_CHARS: usize = 6_000;
+/// 回灌模型的命令输出上限；超限时头尾保留、中间省略（见 prune_shell_output）。
+const OUTPUT_CHARS: usize = 12_000;
 const COMMAND_CHARS: usize = 16_000;
 const HISTORY_LIMIT: usize = 80;
-const SHELL_TIMEOUT: Duration = Duration::from_secs(25);
+const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_MAX: usize = 3;
 const IMAGE_BYTES_MAX: usize = 2 * 1024 * 1024;
 const IMAGE_KEEP_USER_TURNS: usize = 1;
@@ -230,6 +231,38 @@ fn clip_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
+fn clip_chars_end(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return text.to_string();
+    }
+    text.chars().skip(count - limit).collect()
+}
+
+/// 超长 shell 输出：保留头尾，中间插入省略说明，并提示分段续读。
+/// 思路对齐 harness 类 agent 的 tool-result 裁剪，本地最小实现。
+pub fn prune_shell_output(output: &str, limit: usize) -> (String, bool) {
+    let count = output.chars().count();
+    if count <= limit {
+        return (output.to_string(), false);
+    }
+    let marker_budget = 280usize;
+    let budget = limit.saturating_sub(marker_budget).max(64);
+    let head_n = (budget * 2) / 3;
+    let tail_n = budget.saturating_sub(head_n).max(16);
+    let head = clip_chars(output, head_n);
+    let tail = clip_chars_end(output, tail_n);
+    let kept = head.chars().count() + tail.chars().count();
+    let omitted = count.saturating_sub(kept);
+    let lines = output.lines().count();
+    let marker = format!(
+        "\n\n…[omitted ~{omitted} chars / ~{lines} lines]…\n\
+续读请用 sed -n 'START,ENDp' FILE 或 head/tail，不要再次 cat 整文件。\n\
+To continue, use sed -n 'START,ENDp' FILE or head/tail — do not cat the whole file again.\n\n"
+    );
+    (format!("{head}{marker}{tail}"), true)
+}
+
 pub fn projects_root(config_dir: &Path) -> PathBuf {
     config_dir.join("projects")
 }
@@ -264,11 +297,35 @@ pub fn resolve_work_dir(config_dir: &Path, mode: &str, project: &str) -> PathBuf
 }
 
 fn shell_label() -> &'static str {
-    if cfg!(windows) {
-        "PowerShell"
-    } else {
+    #[cfg(windows)]
+    {
+        if windows_bash().is_some() {
+            "bash (Git Bash)"
+        } else {
+            "PowerShell"
+        }
+    }
+    #[cfg(not(windows))]
+    {
         "bash"
     }
+}
+
+#[cfg(windows)]
+fn windows_bash() -> Option<std::path::PathBuf> {
+    use crate::process_util::find_command_on_path;
+    if let Some(path) = find_command_on_path("bash.exe").or_else(|| find_command_on_path("bash")) {
+        return Some(path);
+    }
+    const CANDIDATES: &[&str] = &[
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ];
+    CANDIDATES
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_file())
 }
 
 pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, place: &str) -> String {
@@ -288,10 +345,18 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
 应用配置目录（config.toml 在这里，不要写进项目目录）：{config}\n\
 你现在在{place}。\n\
 实际执行的 shell 是 {shell}。代码块标签固定写 ```bash。\n\
+若 shell 是 PowerShell：不要用 bash heredoc，改用 Set-Content -Encoding utf8 或 Out-File -Encoding utf8 写文件。\n\
 \n\
 怎么回复：\n\
 - 需要跑命令时，回复里只放一个 bash 代码块。块前用一两句人话说明要动哪个路径、写什么。\n\
 - 只是说话或已经做完时，不要放代码块。\n\
+- 严禁使用任何「工具调用」标签或伪函数，例如 <|tool_call_start|>、<|tool_call_end|>、write(path=...)、read(path=...)、<tool_call>。这里没有那些工具；只有 bash 代码块会被执行。\n\
+- 不要输出 User Safety / Response Safety / Safety Categories 这类安全分类行；直接用人话或 bash 代码块回答。\n\
+- 不要把命令输出（exit、ls、pwd 结果）粘进你的回复正文；程序会单独展示过程。\n\
+- 在用户点「写吧」、你真正收到执行结果之前，不要说「已写好/搞定了」。需要改文件时只给人话说明 + 一个 bash 代码块即可。\n\
+- 想读文件：小文件可用 cat；大文件先用 wc -l / ls -la 摸清规模，再用 sed -n 'a,bp'、head、tail 分段读。不要无脑 cat 大文件。\n\
+- 若命令输出里出现「omitted … lines」，说明中间被裁掉了，请用 sed 指定行号续读，不要重复 cat 整文件。\n\
+- 想写文件：优先短小写入或 sed 定点改；少用整文件超长 heredoc。写入成功后程序可能自动跑一步只读「写后核对」，请根据核对结果说话，不要假装没看到。\n\
 - 每个代码块都是一次新的 shell，从当前工作目录重新开始。要进子目录，把 cd 和后面的命令写在同一个代码块里。\n\
 - 只读命令会被立刻执行，结果会回到你这里。\n\
 - 会创建、修改、删除文件的命令不会立刻执行。程序会先把命令给用户看，用户同意后才执行。不要自己再问「可以写吗」，把命令放进代码块即可。\n\
@@ -310,10 +375,18 @@ Projects directory: {projects}\n\
 App config directory (config.toml lives here; do not write it into a project): {config}\n\
 You are in {place}.\n\
 The shell that actually runs is {shell}. Always fence commands as ```bash.\n\
+If the shell is PowerShell: do not use bash heredocs; write files with Set-Content -Encoding utf8 or Out-File -Encoding utf8.\n\
 \n\
 How to reply:\n\
 - When you need a command, include exactly one bash fence. Before it, say the path and what will be written, in a sentence or two.\n\
 - When you are only talking, or you are done, do not include a fence.\n\
+- Never use tool-call tags or fake functions such as <|tool_call_start|>, <|tool_call_end|>, write(path=...), read(path=...), or <tool_call>. Those tools do not exist here; only a bash fence is executed.\n\
+- Do not emit User Safety / Response Safety / Safety Categories lines; answer in prose or with a bash fence.\n\
+- Do not paste command output (exit codes, ls, pwd) into your prose; the app shows that separately.\n\
+- Do not say files are written until the user confirms and you see the shell result. To change files, give a short note plus one bash fence.\n\
+- To read: cat is fine for small files; for large ones first wc -l / ls -la, then sed -n 'a,bp', head, or tail. Do not blindly cat huge files.\n\
+- If output contains \"omitted … lines\", the middle was pruned — continue with sed line ranges; do not cat the whole file again.\n\
+- To write: prefer short writes or sed in-place edits; avoid huge whole-file heredocs. After a successful write the app may auto-run a read-only verify step — use that output; do not pretend you did not see it.\n\
 - Each fence is a new shell, starting again in the working directory. To enter a subdirectory, put cd and the rest in the same fence.\n\
 - Read-only commands run immediately and their output comes back to you.\n\
 - Commands that create, change, or delete files do not run immediately. The app shows them to the user first. Do not ask for permission yourself; put the command in the fence.\n\
@@ -336,8 +409,9 @@ fn place_line(zh: bool, mode: &str, project: &str) -> String {
 }
 
 pub fn parse_model_action(text: &str) -> Result<ModelAction, ()> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let cleaned = strip_safety_lines(text);
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || is_safety_only_reply(text) {
         return Err(());
     }
     match extract_fence(trimmed) {
@@ -347,12 +421,179 @@ pub fn parse_model_action(text: &str) -> Result<ModelAction, ()> {
                 return Err(());
             }
             Ok(ModelAction::Run {
-                prose: prose.trim().to_string(),
+                prose: scrub_assistant_prose(prose.trim()),
                 command: command.to_string(),
             })
         }
-        None => Ok(ModelAction::Say(trimmed.to_string())),
+        None => {
+            if looks_like_unsupported_tools(trimmed)
+                || is_safety_only_reply(text)
+                || has_unclosed_fence(trimmed)
+                || looks_like_plan_without_command(trimmed)
+                || looks_like_false_completion(trimmed)
+            {
+                Err(())
+            } else {
+                Ok(ModelAction::Say(scrub_assistant_prose(trimmed)))
+            }
+        }
     }
+}
+
+fn has_unclosed_fence(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let tags = [
+        "```bash",
+        "```sh",
+        "```shell",
+        "```zsh",
+        "```pwsh",
+        "```powershell",
+        "```cmd",
+    ];
+    let Some((at, tag_len)) = tags
+        .iter()
+        .filter_map(|tag| lower.find(tag).map(|index| (index, tag.len())))
+        .min_by_key(|(index, _)| *index)
+    else {
+        return false;
+    };
+    let rest = &text[at + tag_len..];
+    let body = rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or(rest);
+    !body.contains("```")
+}
+
+/// 只说「我先读/再创建」却不给代码块：不能当回合结束，否则界面会停住。
+pub fn looks_like_plan_without_command(text: &str) -> bool {
+    if extract_fence(text).is_some() {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    const MARKERS: &[&str] = &[
+        "先读",
+        "再创建",
+        "然后创建",
+        "再写",
+        "我先",
+        "按规范",
+        "接下来",
+        "马上创建",
+        "我会",
+        "我来",
+        "创建 txt",
+        "创建个",
+        "写个",
+        "写入",
+        "写文件",
+        "let me",
+        "i'll",
+        "i will",
+        "first read",
+        "then create",
+        "going to create",
+        "going to write",
+    ];
+    let has_intent = MARKERS
+        .iter()
+        .any(|m| text.contains(m) || lower.contains(&m.to_ascii_lowercase()));
+    has_intent && text.chars().count() < 160
+}
+
+/// 宣称已完成，但没有可执行代码块（常见于模型空口「✅ 全部文件已准备妥当」）。
+pub fn looks_like_false_completion(text: &str) -> bool {
+    if extract_fence(text).is_some() {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    text.contains('✅')
+        || text.contains("已完成")
+        || text.contains("搞定")
+        || text.contains("写入完成")
+        || text.contains("都创建好了")
+        || text.contains("全部文件已")
+        || text.contains("均已按照")
+        || lower.contains("all done")
+        || lower.contains("created successfully")
+        || lower.contains("files are ready")
+}
+
+/// 模型误用 Cursor/Claude 式 tool_call 时，这里没有那些工具，不能当「说完了」。
+pub fn looks_like_unsupported_tools(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("<|tool_call")
+        || lower.contains("tool_call_start")
+        || lower.contains("tool_call_end")
+        || lower.contains("<tool_call")
+        || lower.contains("</tool_call>")
+        || lower.contains("write(path=")
+        || lower.contains("read(path=")
+        || lower.contains("search_replace(")
+        || lower.contains("apply_patch(")
+}
+
+fn is_safety_line(line: &str) -> bool {
+    let t = line.trim();
+    let lower = t.to_ascii_lowercase();
+    lower.starts_with("user safety:")
+        || lower.starts_with("response safety:")
+        || lower.starts_with("safety categories:")
+        || lower.starts_with("safety category:")
+}
+
+pub fn is_safety_only_reply(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    !lines.is_empty() && lines.iter().all(|line| is_safety_line(line))
+}
+
+fn strip_safety_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| !is_safety_line(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn scrub_assistant_prose(prose: &str) -> String {
+    let mut out = Vec::new();
+    for line in prose.lines() {
+        if is_shell_dump_line(line) || is_safety_line(line) {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        let zh_done = line.contains("搞定")
+            || line.contains("都创建好了")
+            || line.contains("已经写好")
+            || line.contains("已写入")
+            || line.contains("写好了")
+            || line.contains("写入完成");
+        let en_done = lower.contains("all done")
+            || lower.contains("created successfully")
+            || lower.contains("files are ready")
+            || lower.contains("already written");
+        if zh_done || en_done {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n").trim().to_string()
+}
+
+fn is_shell_dump_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    lower.starts_with("exit:")
+        || t.starts_with("===")
+        || (t.chars().all(|c| c == '-') && t.len() >= 3)
+        || lower.starts_with("total ")
+        || t.starts_with("drwx")
+        || t.starts_with("-rw")
+        || matches!(t.chars().next(), Some('d' | 'l' | '-') if t.len() > 10)
 }
 
 fn extract_fence(text: &str) -> Option<(String, String)> {
@@ -392,6 +633,185 @@ pub fn command_needs_confirm(script: &str) -> bool {
     split_segments(&stripped)
         .into_iter()
         .any(|segment| !segment_is_readonly(&segment))
+}
+
+/// 从写入类命令里尽量抽出目标路径，供写后只读核对。
+pub fn extract_write_paths(script: &str) -> Vec<String> {
+    let stripped = strip_comments(script);
+    let mut paths = Vec::new();
+    collect_redirect_paths(&stripped, &mut paths);
+    for segment in split_segments(&stripped) {
+        let Some(word) = command_word(&segment) else {
+            continue;
+        };
+        let word = word.to_ascii_lowercase();
+        match word.as_str() {
+            "touch" | "mkdir" => {
+                for token in path_tokens_after_command(&segment) {
+                    push_unique_path(&mut paths, token);
+                }
+            }
+            "tee" => {
+                if let Some(token) = path_tokens_after_command(&segment)
+                    .into_iter()
+                    .find(|t| !t.starts_with('-'))
+                {
+                    push_unique_path(&mut paths, token);
+                }
+            }
+            "cp" | "mv" | "install" => {
+                if let Some(token) = path_tokens_after_command(&segment).into_iter().last() {
+                    push_unique_path(&mut paths, token);
+                }
+            }
+            _ => {}
+        }
+    }
+    paths
+}
+
+fn push_unique_path(paths: &mut Vec<String>, path: String) {
+    if path.is_empty() || path == "-" || path.starts_with('-') {
+        return;
+    }
+    if !paths.iter().any(|p| p == &path) {
+        paths.push(path);
+    }
+}
+
+fn path_tokens_after_command(segment: &str) -> Vec<String> {
+    let mut parts = segment.split_whitespace();
+    let _ = parts.next();
+    let mut out = Vec::new();
+    for raw in parts {
+        let token = raw.trim_matches(|c| c == '"' || c == '\'');
+        if token.is_empty() {
+            continue;
+        }
+        if token.starts_with('-') {
+            continue;
+        }
+        if token.contains('=') && !token.starts_with('/') && !token.starts_with('.') {
+            continue;
+        }
+        if token == "<<" || token.starts_with("<<") {
+            break;
+        }
+        out.push(token.to_string());
+    }
+    out
+}
+
+fn collect_redirect_paths(script: &str, paths: &mut Vec<String>) {
+    let chars: Vec<char> = script.chars().collect();
+    let mut quote: Option<char> = None;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else if c == '\\' && q == '"' && i + 1 < chars.len() {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            i += 1;
+            continue;
+        }
+        if c == '>' {
+            let mut j = i + 1;
+            if j < chars.len() && chars[j] == '>' {
+                j += 1;
+            }
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && (chars[j] == '&' || chars[j] == '(') {
+                i = j;
+                continue;
+            }
+            let start = j;
+            while j < chars.len() && !chars[j].is_whitespace() && !matches!(chars[j], ';' | '|' | '&' | '<' | '>')
+            {
+                j += 1;
+            }
+            if j > start {
+                let raw: String = chars[start..j].iter().collect();
+                let path = raw.trim_matches(|ch| ch == '"' || ch == '\'');
+                push_unique_path(paths, path.to_string());
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn build_verify_command(paths: &[String]) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for path in paths.iter().take(6) {
+        let esc = path.replace('\'', "'\\''");
+        parts.push(format!(
+            "echo '=== {esc} ==='; \
+if [ -f '{esc}' ]; then wc -l '{esc}'; sed -n '1,40p' '{esc}'; \
+elif [ -e '{esc}' ]; then ls -la '{esc}'; \
+else echo MISSING; fi"
+        ));
+    }
+    Some(parts.join("\n"))
+}
+
+fn maybe_verify_after_write(
+    cwd: &Path,
+    write_command: &str,
+    write_step: &MeStep,
+    zh: bool,
+    limits: &LoopLimits,
+    notify: &mut impl FnMut(LoopNotice),
+    steps: &mut Vec<MeStep>,
+    used_steps: &mut usize,
+    cancel: &AtomicBool,
+) {
+    if write_step.exit_code != Some(0) || write_step.timed_out {
+        return;
+    }
+    if !command_needs_confirm(write_command) {
+        return;
+    }
+    if write_step.note.contains("写后核对") || write_step.note.contains("verify write") {
+        return;
+    }
+    if *used_steps >= limits.steps {
+        return;
+    }
+    let paths = extract_write_paths(write_command);
+    let Some(verify) = build_verify_command(&paths) else {
+        return;
+    };
+    if cancel.load(Ordering::SeqCst) {
+        return;
+    }
+    let note = say(zh, "写后核对", "verify write");
+    notify(LoopNotice {
+        kind: "running",
+        text: note.clone(),
+        command: verify.clone(),
+        output: String::new(),
+        exit_code: None,
+        timed_out: false,
+    });
+    let outcome = run_shell(cwd, &verify, limits.timeout, limits.output_chars);
+    let step = step_from(&verify, &note, outcome);
+    notify(ran_notice(&step));
+    steps.push(step);
+    *used_steps += 1;
 }
 
 fn segment_is_readonly(segment: &str) -> bool {
@@ -732,19 +1152,11 @@ fn finish_outcome(
     timed_out: bool,
     limit: usize,
 ) -> ShellOutcome {
-    let count = output.chars().count();
-    if count <= limit {
-        return ShellOutcome {
-            exit_code: code,
-            output,
-            truncated: false,
-            timed_out,
-        };
-    }
+    let (output, truncated) = prune_shell_output(&output, limit);
     ShellOutcome {
         exit_code: code,
-        output: format!("{}\n…", clip_chars(&output, limit)),
-        truncated: true,
+        output,
+        truncated,
         timed_out,
     }
 }
@@ -779,12 +1191,31 @@ fn read_pipe(pipe: Option<impl Read>) -> Vec<u8> {
 fn spawn_shell(cwd: &Path, command: &str) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
+        use crate::platform::CommandPlatformExt;
+        if let Some(bash) = windows_bash() {
+            return Command::new(bash)
+                .args(["-lc", command])
+                .current_dir(cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .no_window()
+                .spawn();
+        }
         Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", command])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                command,
+            ])
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .no_window()
             .spawn()
     }
     #[cfg(not(windows))]
@@ -805,10 +1236,12 @@ fn spawn_shell(cwd: &Path, command: &str) -> std::io::Result<std::process::Child
 fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
+        use crate::platform::CommandPlatformExt;
         let _ = Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .no_window()
             .status();
     }
     #[cfg(not(windows))]
@@ -856,6 +1289,7 @@ async fn run_loop<F, Fut, N>(
     pending_note: &str,
     prompt: &str,
     limits: LoopLimits,
+    auto_write: bool,
     cancel: &AtomicBool,
 ) -> Result<LoopResult, String>
 where
@@ -882,6 +1316,23 @@ where
         let step = step_from(&command, pending_note, outcome);
         notify(ran_notice(&step));
         steps.push(step);
+        if cancelled() {
+            return Ok(stopped_result(zh, steps));
+        }
+        let mut used = steps.len();
+        if let Some(last) = steps.last().cloned() {
+            maybe_verify_after_write(
+                cwd,
+                &command,
+                &last,
+                zh,
+                &limits,
+                &mut notify,
+                &mut steps,
+                &mut used,
+                cancel,
+            );
+        }
         if cancelled() {
             return Ok(stopped_result(zh, steps));
         }
@@ -925,6 +1376,24 @@ where
         }
         match parse_model_action(&text) {
             Err(()) => {
+                // 本轮已经成功跑过命令后，模型常回「✅ 搞定」——那是真收尾，不当假完成。
+                if looks_like_false_completion(&text)
+                    && !has_unclosed_fence(&text)
+                    && !looks_like_unsupported_tools(&text)
+                    && !is_safety_only_reply(&text)
+                    && steps.iter().any(|s| s.exit_code == Some(0) && !s.timed_out)
+                {
+                    let content = scrub_assistant_prose(&text);
+                    return Ok(LoopResult {
+                        content: if content.is_empty() {
+                            say(zh, "写好了。", "Done.")
+                        } else {
+                            content
+                        },
+                        steps,
+                        pending: None,
+                    });
+                }
                 format_errors += 1;
                 if format_errors > limits.format_retries {
                     return Ok(LoopResult {
@@ -937,22 +1406,59 @@ where
                         pending: None,
                     });
                 }
-                corrections.push(say(
-                    zh,
-                    "你的回复是空的，或代码块是空的。请用自然语言回答，或给出一个 bash 代码块。",
-                    "That reply was empty, or the fence was empty. Answer in prose, or give one bash fence.",
-                ));
+                let hint = if is_safety_only_reply(&text) {
+                    say(
+                        zh,
+                        "不要输出 User Safety / Response Safety 分类。请直接用人话回答，或给出一个 ```bash 代码块来读写文件。",
+                        "Do not emit User Safety / Response Safety labels. Answer in prose, or give one ```bash fence to read or write files.",
+                    )
+                } else if looks_like_unsupported_tools(&text) {
+                    say(
+                        zh,
+                        "这里没有 write/read 之类的工具标签，它们不会被执行。请改用一个 ```bash 代码块（例如用 cat/heredoc 写文件），或直接用人话回答。",
+                        "Tool-call tags like write/read are not available here and will not run. Use one ```bash fence (for example cat/heredoc to write a file), or answer in plain prose.",
+                    )
+                } else if has_unclosed_fence(&text) {
+                    say(
+                        zh,
+                        "你的 ```bash 代码块没有闭合（或被截断了），命令不会执行。请用更短的一条命令重发，并确保用 ``` 结束代码块。",
+                        "Your ```bash fence is unclosed (or truncated), so nothing will run. Resend a shorter command and close the fence with ```.",
+                    )
+                } else if looks_like_plan_without_command(&text) || looks_like_false_completion(&text)
+                {
+                    say(
+                        zh,
+                        "你只说了计划或宣称写好了，但没有可执行的代码块，文件不会出现。请立刻给出一个 ```bash 代码块（用 cat/heredoc 写文件），不要只口头说明，也不要假装已经写完。",
+                        "You only described a plan or claimed the write was done, but there is no executable fence, so no file will appear. Give one ```bash fence now (cat/heredoc to write), do not only talk, and do not pretend it is already written.",
+                    )
+                } else {
+                    say(
+                        zh,
+                        "你的回复是空的，或代码块是空的。请用自然语言回答，或给出一个 bash 代码块。",
+                        "That reply was empty, or the fence was empty. Answer in prose, or give one bash fence.",
+                    )
+                };
+                notify(LoopNotice {
+                    kind: "thinking",
+                    text: say(zh, "格式不对，我再催它一次", "Bad format; nudging again"),
+                    command: String::new(),
+                    output: String::new(),
+                    exit_code: None,
+                    timed_out: false,
+                });
+                corrections.push(hint);
             }
             Ok(ModelAction::Say(text)) => {
+                let content = scrub_assistant_prose(&text);
                 return Ok(LoopResult {
-                    content: text,
+                    content: if content.is_empty() { text } else { content },
                     steps,
                     pending: None,
                 });
             }
             Ok(ModelAction::Run { prose, command }) => {
                 format_errors = 0;
-                if command_needs_confirm(&command) {
+                if command_needs_confirm(&command) && !auto_write {
                     let content = if prose.is_empty() {
                         say(
                             zh,
@@ -979,11 +1485,27 @@ where
                     exit_code: None,
                     timed_out: false,
                 });
+                let was_write = command_needs_confirm(&command);
                 let outcome = run_shell(cwd, &command, limits.timeout, limits.output_chars);
                 let step = step_from(&command, &prose, outcome);
                 notify(ran_notice(&step));
                 steps.push(step);
                 used_steps += 1;
+                if was_write {
+                    if let Some(last) = steps.last().cloned() {
+                        maybe_verify_after_write(
+                            cwd,
+                            &command,
+                            &last,
+                            zh,
+                            &limits,
+                            &mut notify,
+                            &mut steps,
+                            &mut used_steps,
+                            cancel,
+                        );
+                    }
+                }
                 corrections.clear();
                 if cancelled() {
                     return Ok(stopped_result(zh, steps));
@@ -1051,8 +1573,8 @@ fn model_messages(
             "role": "user",
             "content": say(
                 zh,
-                "请根据上面的命令结果继续。做完了就用自然语言告诉我，不要重复已经成功的命令。",
-                "Continue from the command output above. When you are done, tell me in prose and do not repeat commands that already worked.",
+                "请根据上面的命令结果继续。若有「写后核对」输出，先据此确认文件内容是否正确。做完了就用自然语言告诉我，不要重复已经成功的命令。",
+                "Continue from the command output above. If there is a verify-write step, use it to confirm file contents. When you are done, tell me in prose and do not repeat commands that already worked.",
             )
         }));
     }
@@ -1438,7 +1960,7 @@ async fn complete_via_gateway(
         "model": model,
         "messages": messages,
         "stream": false,
-        "max_tokens": 4096
+        "max_tokens": 8192
     }));
     let response = tokio::select! {
         result = request.send() => result.map_err(|err| format!("模型请求失败：{err}"))?,
@@ -1488,6 +2010,7 @@ async fn speak(
     zh: bool,
     pending_command: Option<String>,
     pending_note: String,
+    auto_write: bool,
 ) -> Result<(), String> {
     begin_run();
     let config_dir = runtime.paths.config_dir.clone();
@@ -1542,6 +2065,7 @@ async fn speak(
         async move { complete_via_gateway(&listen, &key, &model, messages).await }
     };
     let notify = move |notice: LoopNotice| emit_step(&app_handle, &notice);
+    let ran_pending = pending_command.is_some();
     match run_loop(
         ask,
         notify,
@@ -1552,11 +2076,50 @@ async fn speak(
         &pending_note,
         &prompt,
         LoopLimits::default(),
+        auto_write,
         cancel_flag(),
     )
     .await
     {
-        Ok(result) => {
+        Ok(mut result) => {
+            if ran_pending {
+                if let Some(step) = result.steps.first() {
+                    let note = if step.exit_code == Some(0) && !step.timed_out {
+                        say(
+                            zh,
+                            &format!(
+                                "✓ 已写入当前目录：\n{}\n点上面「打开目录」可在访达里查看。",
+                                cwd.display()
+                            ),
+                            &format!(
+                                "✓ Wrote under:\n{}\nUse Open folder above to view in Finder.",
+                                cwd.display()
+                            ),
+                        )
+                    } else {
+                        say(
+                            zh,
+                            &format!(
+                                "写入未成功（exit {:?}{}）。工作目录仍是：\n{}",
+                                step.exit_code,
+                                if step.timed_out { ", timed out" } else { "" },
+                                cwd.display()
+                            ),
+                            &format!(
+                                "Write did not succeed (exit {:?}{}). Working directory is still:\n{}",
+                                step.exit_code,
+                                if step.timed_out { ", timed out" } else { "" },
+                                cwd.display()
+                            ),
+                        )
+                    };
+                    if result.content.trim().is_empty() {
+                        result.content = note;
+                    } else {
+                        result.content = format!("{note}\n\n{}", result.content);
+                    }
+                }
+            }
             session.pending = result.pending;
             push_message(session, "assistant", result.content, result.steps);
             Ok(())
@@ -1645,6 +2208,9 @@ pub async fn me_open_dir(runtime: State<'_, AppRuntime>) -> Result<(), String> {
         load_session(&config_dir)
     };
     let dir = ensure_work_dir(&config_dir, &session)?;
+    // 再 canonicalize 一次：若 Documents/.sugt 是指向 Application Support 的链接，
+    // 访达应打开真实本地目录，而不是 iCloud 文稿视图里的同名文件夹。
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     crate::platform::open_path(&dir).map_err(|err| err.to_string())
 }
 
@@ -1661,6 +2227,7 @@ pub async fn me_send(
     message: String,
     images: Option<Vec<MeImage>>,
     lang: String,
+    auto_write: Option<bool>,
 ) -> Result<MeView, String> {
     turn(
         &app,
@@ -1669,6 +2236,7 @@ pub async fn me_send(
         Turn::Send {
             message,
             images: images.unwrap_or_default(),
+            auto_write: auto_write.unwrap_or(false),
         },
     )
     .await
@@ -1696,6 +2264,7 @@ enum Turn {
     Send {
         message: String,
         images: Vec<MeImage>,
+        auto_write: bool,
     },
     Confirm,
     Dismiss,
@@ -1709,13 +2278,19 @@ async fn turn(
 ) -> Result<MeView, String> {
     let zh = is_zh(&lang);
     let config_dir = runtime.paths.config_dir.clone();
+    let mut auto_write = false;
     let prepared = {
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
         let mut session = load_session(&config_dir);
         let action = match turn {
             Turn::Confirm => Intake::Confirm,
             Turn::Dismiss => Intake::Dismiss,
-            Turn::Send { message, images } => {
+            Turn::Send {
+                message,
+                images,
+                auto_write: flag,
+            } => {
+                auto_write = flag;
                 let images = normalize_images(Some(images))?;
                 if message.trim().is_empty() && images.is_empty() {
                     return Ok(view_of(&config_dir, &session));
@@ -1799,7 +2374,7 @@ async fn turn(
         let place_mode = session.mode.clone();
         let place_project = session.project.clone();
         // 模型调用可能很久，不占着会话锁，避免界面上的状态查询卡住。
-        speak(app, runtime, &mut session, zh, command, note).await?;
+        speak(app, runtime, &mut session, zh, command, note, auto_write).await?;
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
         let latest = load_session(&config_dir);
         if latest.mode == place_mode && latest.project == place_project {
@@ -1897,6 +2472,76 @@ mod tests {
         assert!(matches!(intake("Go ahead"), Intake::Confirm));
         assert!(matches!(intake("先别写"), Intake::Dismiss));
         assert!(matches!(intake("写吧，但是换个名字"), Intake::Talk(_)));
+    }
+
+    #[test]
+    fn prune_shell_output_keeps_head_and_tail() {
+        let short = "hello\n";
+        let (kept, truncated) = prune_shell_output(short, 100);
+        assert!(!truncated);
+        assert_eq!(kept, short);
+
+        let mut body = String::new();
+        for i in 0..200 {
+            body.push_str(&format!("LINE-{i:03}-ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"));
+        }
+        let limit = 800;
+        let (pruned, truncated) = prune_shell_output(&body, limit);
+        assert!(truncated);
+        assert!(pruned.chars().count() <= limit);
+        assert!(pruned.starts_with("LINE-000-"));
+        assert!(pruned.contains("LINE-199-"));
+        assert!(pruned.contains("omitted"));
+        assert!(pruned.contains("sed -n"));
+        assert!(!pruned.contains("LINE-100-"));
+    }
+
+    #[test]
+    fn fake_tool_calls_are_not_treated_as_done_prose() {
+        let fake = "好的。<|tool_call_start|>[write(path='/tmp/a.md', content='hi')]<|tool_call_end|>";
+        assert!(looks_like_unsupported_tools(fake));
+        assert!(parse_model_action(fake).is_err());
+        assert!(matches!(
+            parse_model_action("就这样吧，先不动文件。"),
+            Ok(ModelAction::Say(_))
+        ));
+        assert!(matches!(
+            parse_model_action("写一下\n```bash\necho hi > a.md\n```"),
+            Ok(ModelAction::Run { .. })
+        ));
+    }
+
+    #[test]
+    fn safety_only_replies_are_rejected() {
+        let safety = "User Safety: unsafe\nResponse Safety: safe\nSafety Categories: Profanity";
+        assert!(is_safety_only_reply(safety));
+        assert!(parse_model_action(safety).is_err());
+        let mixed = "User Safety: safe\n好的，我来写文件。\n```bash\ntouch a.txt\n```";
+        assert!(matches!(
+            parse_model_action(mixed),
+            Ok(ModelAction::Run { .. })
+        ));
+    }
+
+    #[test]
+    fn plan_only_replies_are_rejected() {
+        assert!(looks_like_plan_without_command("好的，按规范先读文档，再创建 txt。"));
+        assert!(parse_model_action("好的，按规范先读文档，再创建 txt。").is_err());
+        assert!(looks_like_false_completion(
+            "✅ 已完成！\nexit: 0\ntotal 0\ndrwxr-xr-x 1 me staff 0 ."
+        ));
+        assert!(parse_model_action("✅ 全部文件已准备妥当！").is_err());
+        assert!(has_unclosed_fence(
+            "先读再写：\n```bash\ncat AGENTS.md && cat > /Users/sunwenlong/Documen"
+        ));
+        assert!(parse_model_action(
+            "先读再写：\n```bash\ncat AGENTS.md && cat > /Users/sunwenlong/Documen"
+        )
+        .is_err());
+        assert!(matches!(
+            parse_model_action("随便聊聊天气吧。"),
+            Ok(ModelAction::Say(_))
+        ));
     }
 
     #[test]
@@ -2058,6 +2703,7 @@ mod tests {
             "",
             "system",
             LoopLimits::default(),
+            false,
             &AtomicBool::new(false),
         )
         .await
@@ -2085,6 +2731,7 @@ mod tests {
             "",
             "system",
             LoopLimits::default(),
+            false,
             &AtomicBool::new(false),
         )
         .await
@@ -2092,6 +2739,40 @@ mod tests {
         assert!(held.pending.is_some());
         assert!(!dir.join("subdir").exists());
         assert!(held.content.contains("建一个目录"));
+
+        let auto_calls = Arc::new(AtomicUsize::new(0));
+        let auto_calls_ask = auto_calls.clone();
+        let ask_auto = move |_messages: Vec<Value>| {
+            let n = auto_calls_ask.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Ok("自动写\n```bash\nmkdir auto_subdir\n```".to_string())
+                } else {
+                    Ok("目录已经建上了。".to_string())
+                }
+            }
+        };
+        let autoed = run_loop(
+            ask_auto,
+            |_| {},
+            true,
+            &dir,
+            &[],
+            None,
+            "",
+            "system",
+            LoopLimits::default(),
+            true,
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+        assert!(autoed.pending.is_none());
+        assert!(dir.join("auto_subdir").is_dir());
+        // 写入成功后会多一步「写后核对」
+        assert!(autoed.steps.len() >= 2);
+        assert!(autoed.steps.iter().any(|s| s.note.contains("写后核对")));
+        assert!(autoed.content.contains("目录"));
 
         let command = held.pending.unwrap().command;
         let ask = |_messages: Vec<Value>| async { Ok("建好了".to_string()) };
@@ -2105,14 +2786,25 @@ mod tests {
             "建一个目录",
             "system",
             LoopLimits::default(),
+            false,
             &AtomicBool::new(false),
         )
         .await
         .unwrap();
         assert!(dir.join("subdir").is_dir());
         assert_eq!(done.content, "建好了");
-        assert_eq!(done.steps.len(), 1);
+        assert!(done.steps.len() >= 2);
+        assert!(done.steps.iter().any(|s| s.note.contains("写后核对")));
         assert!(done.pending.is_none());
+    }
+
+    #[test]
+    fn extract_write_paths_finds_redirects_and_mkdir() {
+        let paths = extract_write_paths("echo hi > notes.txt && mkdir -p docs/out");
+        assert!(paths.iter().any(|p| p == "notes.txt"));
+        assert!(paths.iter().any(|p| p == "docs/out"));
+        let tee = extract_write_paths("cat <<'EOF' > story.md\nhello\nEOF");
+        assert!(tee.iter().any(|p| p == "story.md"));
     }
 
     #[tokio::test]
@@ -2140,6 +2832,7 @@ mod tests {
             "",
             "system",
             LoopLimits::default(),
+            false,
             &AtomicBool::new(false),
         )
         .await
@@ -2154,7 +2847,7 @@ mod tests {
         let ask = |_messages: Vec<Value>| async { Ok("```bash\necho again\n```".to_string()) };
         let mut limits = LoopLimits::default();
         limits.steps = 2;
-        let result = run_loop(ask, |_| {}, true, &dir, &[], None, "", "system", limits, &AtomicBool::new(false))
+        let result = run_loop(ask, |_| {}, true, &dir, &[], None, "", "system", limits, false, &AtomicBool::new(false))
             .await
             .unwrap();
         assert_eq!(result.steps.len(), 2);
@@ -2234,6 +2927,7 @@ mod tests {
             "",
             "system",
             LoopLimits::default(),
+            false,
             &cancel,
         )
         .await

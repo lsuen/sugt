@@ -3,6 +3,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { Play, RefreshCw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
 
+/**
+ * 实验免费通道自动探测：仅「首次打开时已选中」或「用户主动选中」时触发，
+ * 不做定时轮询。会话内同一 provider 只自动探一次（手动刷新除外）。
+ */
+const sessionAutoProbed = new Set<string>()
+
 type ProviderOption = {
   id: string
   name: string
@@ -61,10 +67,12 @@ export function UpstreamSelector({
     })
   }, [activeProviderId, providers])
 
-  // 切到实验通道时自动拉候选并探测（不触碰自定义源）
+  // 打开控制台且当前已是实验通道 → 会话内自动探测一次（无定时）
   useEffect(() => {
     if (!upstreamProviderId || !isExperimental) return
-    void fetchModels()
+    if (sessionAutoProbed.has(upstreamProviderId)) return
+    sessionAutoProbed.add(upstreamProviderId)
+    void fetchModels({ silentSelect: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upstreamProviderId, isExperimental])
 
@@ -72,10 +80,15 @@ export function UpstreamSelector({
     setUpstreamProviderId(id)
     setModels([])
     setModelsLoaded(false)
+    const next = providers.find((p) => p.id === id)
+    // 用户主动选中实验通道 → 允许再探一次
+    if (next?.experimental) {
+      sessionAutoProbed.delete(id)
+    }
     onActiveProviderChange(id)
   }
 
-  const fetchModels = async () => {
+  const fetchModels = async (opts?: { silentSelect?: boolean }) => {
     const provider = providers.find((p) => p.id === upstreamProviderId)
     if (!provider) return
     setModelsBusy(true)
@@ -113,7 +126,10 @@ export function UpstreamSelector({
             (p) => p.name === provider.model_name,
           )
           if (!stillOk) {
-            await selectModel(sorted[0].name)
+            // 后台自动纠正当前模型时不要走全局 run()/busy，否则各页「添加」会一起变灰
+            await selectModel(sorted[0].name, {
+              silent: opts?.silentSelect === true,
+            })
           }
         }
         onRefresh()
@@ -138,28 +154,32 @@ export function UpstreamSelector({
     }
   }
 
-  const selectModel = async (model: string) => {
+  const selectModel = async (model: string, opts?: { silent?: boolean }) => {
     const provider = providers.find((p) => p.id === upstreamProviderId)
     if (!provider) return
-    await run(
-      () =>
-        invoke('save_provider', {
-          input: {
-            id: provider.id,
-            name: provider.name,
-            provider: provider.provider,
-            base_url: provider.base_url,
-            api_key: provider.api_key,
-            model_name: model,
-            model_alias: 'sutai',
-            protocol:
-              provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
-            enabled: provider.enabled,
-            auto_adapt_base_url: true,
-          },
-        }),
-      t('upstream.toastSwitched'),
-    )
+    const input = {
+      id: provider.id,
+      name: provider.name,
+      provider: provider.provider,
+      base_url: provider.base_url,
+      api_key: provider.api_key,
+      model_name: model,
+      model_alias: 'sutai',
+      protocol:
+        provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
+      enabled: provider.enabled,
+      auto_adapt_base_url: true,
+    }
+    if (opts?.silent) {
+      try {
+        await invoke('save_provider', { input })
+        onRefresh()
+      } catch (e) {
+        pushToast(String(e), 'error')
+      }
+      return
+    }
+    await run(() => invoke('save_provider', { input }), t('upstream.toastSwitched'))
     onRefresh()
   }
 
@@ -243,7 +263,10 @@ export function UpstreamSelector({
               type="button"
               className="tiny icon-only"
               disabled={modelsBusy}
-              onClick={() => void fetchModels()}
+              onClick={() => {
+                if (upstreamProviderId) sessionAutoProbed.add(upstreamProviderId)
+                void fetchModels({ silentSelect: false })
+              }}
               aria-label={t('upstream.fetchModels')}
             >
               <RefreshCw size={14} className={modelsBusy ? 'spin' : ''} />

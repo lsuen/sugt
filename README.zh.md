@@ -18,7 +18,7 @@ English: [README.md](README.md)
 
 ## 许可
 
-[GitHub Releases](https://github.com/lsuen/sugt/releases) 上的安装包就是完整功能：本地 AI 网关、协议互转、客户端接管、技能中控台，以及应用内的「我 / 小su」。源码为 Apache-2.0。
+[GitHub Releases](https://github.com/lsuen/sugt/releases) 上的安装包就是完整功能：本地 AI 网关、协议互转、客户端接管、技能中控台，以及应用内的 SOUL / 小su。源码为 Apache-2.0。
 
 ## 为什么需要
 
@@ -49,10 +49,10 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 - 自动发现本机已安装的 Agent 客户端
 - 通过环境变量与启动脚本，让 Claude Code / Codex / OpenCode 指向本地网关；解除接管时自动清理干净
 
-### 「我」/ 小su
+### SOUL / 小su
 
-- **「我」** 页里的轻量伙伴——是这款软件的灵魂与本体，不是另起一套「网关代理」
-- 可聊天、在 `Documents/.sugt/projects/` 建小项目、写文件，以及改应用或系统配置（写入前会先确认）
+- **SOUL** 页里的轻量伙伴——是这款软件的灵魂与本体，不是另起一套「网关代理」
+- 可聊天、在本地项目目录建小项目、写文件，以及改应用或系统配置（写入前会先确认；macOS 默认在 `~/Library/Application Support/sugt/projects/`，避开 iCloud 文稿）
 - 经本机网关，用**你配置的上游大模型**替小su思考；支持粘贴截图（需上游支持视觉）
 - 按工作目录分别保留对话；可中途停下；重活可交给 Claude Code 或 Codex
 
@@ -150,7 +150,7 @@ brew install --cask sugt
 
 > 应用未签名。首次启动时在 Finder 中右键 SUTAI.app 选择「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
-配置默认位于 `Documents\.sugt\`，可通过环境变量 `SUGT_CONFIG_DIR` 覆盖。
+配置目录：Windows / Linux 默认 `Documents/.sugt/`；macOS 默认 `~/Library/Application Support/sugt/`（若文稿已进 iCloud，会从旧的 `Documents/.sugt` 自动迁过去）。可用环境变量 `SUGT_CONFIG_DIR` 覆盖。
 
 ### CLI
 

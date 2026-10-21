@@ -10,7 +10,12 @@ const LAUNCHAGENT_LABEL: &str = "com.sugt.app";
 // ---------- 打开目录 / 文件 ----------
 
 pub fn open_path(path: &Path) -> Result<()> {
-    Command::new("open").arg(path).spawn()?;
+    // 规范化后再打开，避免相对路径 / iCloud「Mobile Documents」别名让访达跳到错误位置。
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let status = Command::new("open").arg(&path).status()?;
+    if !status.success() {
+        anyhow::bail!("open 失败：{}（status {status}）", path.display());
+    }
     Ok(())
 }
 

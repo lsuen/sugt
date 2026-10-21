@@ -18,7 +18,7 @@
 
 ## License
 
-The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, Skills console, and the in-app Me companion. Source is Apache-2.0.
+The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, Skills console, and the in-app SOUL companion. Source is Apache-2.0.
 
 ## Why
 
@@ -49,10 +49,10 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - Automatically discovers installed agent clients on your machine
 - Sets environment variables and launch scripts so Claude Code / Codex / OpenCode point at the local gateway; releasing the takeover cleans everything up
 
-### Me / su
+### SOUL / su
 
-- A lightweight companion on the **Me** tab — the soul of the app, not a separate “gateway agent”
-- Chat, create small projects under `Documents/.sugt/projects/`, write files, and edit app or system config with confirm-before-write
+- A lightweight companion on the **SOUL** tab — the soul of the app, not a separate “gateway agent”
+- Chat, create small projects under the local projects folder, write files, and edit app or system config with confirm-before-write (macOS defaults to `~/Library/Application Support/sugt/projects/`, away from iCloud Documents)
 - Reasons with **your** configured upstream model through the local gateway; paste screenshots when the model supports vision
 - Separate chat history per working place; stop a run mid-flight; hand heavier work to Claude Code or Codex
 
@@ -150,7 +150,7 @@ brew install --cask sugt
 
 > The app is unsigned. On first launch, right-click **SUTAI.app** in Finder and choose **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
 
-Configuration defaults to `Documents\.sugt\`; override with the `SUGT_CONFIG_DIR` environment variable.
+Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/Library/Application Support/sugt/` (auto-migrates from legacy `Documents/.sugt` when Documents is iCloud-synced). Override with `SUGT_CONFIG_DIR`.
 
 ### CLI
 

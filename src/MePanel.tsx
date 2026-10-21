@@ -159,6 +159,24 @@ const emptyEvent = (kind: string, text = '', command = ''): MeEvent => ({
   timed_out: false,
 });
 
+const AUTO_WRITE_KEY = 'sugt_me_auto_write';
+
+function loadAutoWrite(): boolean {
+  try {
+    return localStorage.getItem(AUTO_WRITE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveAutoWrite(on: boolean): void {
+  try {
+    localStorage.setItem(AUTO_WRITE_KEY, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
 export function tauriMeApi(): MeApi {
   const language = () => lang();
   return {
@@ -169,6 +187,7 @@ export function tauriMeApi(): MeApi {
       message,
       images: images && images.length > 0 ? images : null,
       lang: language(),
+      autoWrite: loadAutoWrite(),
     }),
     confirm: () => invoke<MeView>('me_confirm', { lang: language() }),
     dismiss: () => invoke<MeView>('me_dismiss', { lang: language() }),
@@ -385,6 +404,7 @@ export function MePanel({ api, onOpenClients }: Props) {
   const [clearArmed, setClearArmed] = useState(false);
   const [history, setHistory] = useState<PlaceHistoryItem[]>(() => loadPlaceHistory());
   const [placeOpen, setPlaceOpen] = useState(false);
+  const [autoWrite, setAutoWrite] = useState(() => loadAutoWrite());
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const placeMenuRef = useRef<HTMLDivElement>(null);
@@ -405,9 +425,9 @@ export function MePanel({ api, onOpenClients }: Props) {
     });
     client.subscribe((event) => {
       if (event.kind === 'thinking') setLive(event.text || t('me.thinking'));
-      if (event.kind === 'running') setLive(event.command || event.text || t('me.thinking'));
+      if (event.kind === 'running') setLive(event.command || event.text || t('me.working'));
       if (event.kind === 'ran') {
-        setLive(event.command);
+        setLive(event.command || t('me.working'));
         setLiveSteps((prev) => [...prev, {
           command: event.command,
           output: event.output,
@@ -663,6 +683,21 @@ export function MePanel({ api, onOpenClients }: Props) {
         )}
 
         <div className="me-desk-actions">
+          <button
+            type="button"
+            className={autoWrite ? 'tiny me-auto-write on' : 'tiny me-auto-write'}
+            aria-pressed={autoWrite}
+            title={autoWrite ? t('me.autoWriteOn') : t('me.autoWriteHint')}
+            disabled={busy}
+            onClick={() => {
+              const next = !autoWrite;
+              saveAutoWrite(next);
+              setAutoWrite(next);
+              if (next && session?.pending) {
+                void run(() => client.confirm(), true);
+              }
+            }}
+          >{t('me.autoWrite')}</button>
           <button type="button" className="tiny" disabled={busy || !session} onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}>
             <FolderOpen size={14} />{t('me.openDir')}
           </button>
@@ -788,7 +823,8 @@ export function MePanel({ api, onOpenClients }: Props) {
             void addImageFiles(files);
           }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+            if (event.key === 'Enter' && !event.shiftKey && !composing) {
               event.preventDefault();
               void send(draft);
             }
@@ -890,6 +926,7 @@ function PendingNote({
   return (
     <div className="me-note">
       <strong>{t('me.confirmTitle')}</strong>
+      <p className="me-note-hint">{t('me.confirmHint')} · {t('me.autoWriteHint')}</p>
       {files.length > 0 ? (
         <div className="me-files">
           {files.map((file) => (
