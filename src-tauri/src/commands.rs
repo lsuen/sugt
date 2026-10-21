@@ -199,8 +199,7 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
     })
 }
 
-#[tauri::command]
-pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, String> {
+pub(crate) async fn ensure_gateway_running(runtime: &AppRuntime) -> Result<String, String> {
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
     let config = runtime.config.read().await.clone();
     if gateway_is_reachable(&config).await {
@@ -211,10 +210,10 @@ pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, Str
         .start()
         .await
         .map_err(|err| error_hint::format_gateway_start_error(&err))?;
-    sync_gateway_port_if_changed(&runtime).await?;
+    sync_gateway_port_if_changed(runtime).await?;
     let config = runtime.config.read().await.clone();
     if gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
-        sync_gateway_port_if_changed(&runtime).await?;
+        sync_gateway_port_if_changed(runtime).await?;
         return Ok(runtime.config.read().await.listen_url());
     }
 
@@ -222,11 +221,16 @@ pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, Str
         return Err(err.to_string());
     }
     if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
-        sync_gateway_port_if_changed(&runtime).await?;
+        sync_gateway_port_if_changed(runtime).await?;
         Ok(runtime.config.read().await.listen_url())
     } else {
         Err("启动网关失败：健康检查未通过，请查看日志或更换监听端口".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, String> {
+    ensure_gateway_running(&runtime).await
 }
 
 #[tauri::command]
@@ -394,7 +398,11 @@ pub async fn probe_experimental_free_models(
                     .iter()
                     .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
                 {
-                    provider.model_name = available[0].to_string();
+                    if let Some(preferred) =
+                        crate::experimental_free::pick_preferred_model(&available)
+                    {
+                        provider.model_name = preferred.to_string();
+                    }
                 }
                 crate::experimental_free::apply_route(provider);
                 provider.last_error = None;
@@ -473,7 +481,11 @@ pub async fn set_provider_enabled(
                     .iter()
                     .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
                 {
-                    provider.model_name = available[0].to_string();
+                    if let Some(preferred) =
+                        crate::experimental_free::pick_preferred_model(&available)
+                    {
+                        provider.model_name = preferred.to_string();
+                    }
                 }
                 crate::experimental_free::apply_route(provider);
                 provider.last_error = None;

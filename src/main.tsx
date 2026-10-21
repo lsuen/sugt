@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, Users, X, XCircle, Settings2,
+  Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
 } from 'lucide-react';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
@@ -14,10 +14,11 @@ import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
+import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { lang, t } from './i18n';
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'rules' | 'settings' | 'logs' | 'about';
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -499,6 +500,7 @@ function App() {
     models: t('tab.models.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
+    me: t('tab.me.title'),
     rules: t('tab.rules.title'),
     settings: t('tab.settings.title'),
     logs: t('tab.logs.title'),
@@ -510,13 +512,43 @@ function App() {
     models: t('tab.models.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
+    me: t('tab.me.desc'),
     rules: t('tab.rules.desc'),
     settings: t('tab.settings.desc'),
     logs: t('tab.logs.desc'),
     about: t('tab.about.desc'),
   }[tab];
 
+  const devPreview = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+  const previewApi = useMemo(() => (devPreview ? createPreviewMeApi() : null), [devPreview]);
+
   if (!isTauriRuntime()) {
+    if (devPreview && previewApi) {
+      return (
+        <main className="app-shell">
+          <aside className="sidebar">
+            <div className="brand">
+              <div className="brand-logo">SA</div>
+              <div>
+                <h1>SUTAI</h1>
+                <span>{t('brand.tagline')}</span>
+              </div>
+            </div>
+            <button className="nav active" type="button"><UserRound size={18} />{t('nav.me')}</button>
+          </aside>
+          <section className="content">
+            <header className="topbar">
+              <div>
+                <h2>{t('tab.me.title')}</h2>
+              </div>
+            </header>
+            <div className="tab-body me-tab">
+              <MePanel api={previewApi} onOpenClients={() => undefined} />
+            </div>
+          </section>
+        </main>
+      );
+    }
     return (
       <main className="browser-only">
         <h2>{t('browser.title')}</h2>
@@ -538,14 +570,17 @@ function App() {
             <span>{t('brand.tagline')}</span>
           </div>
         </div>
+        <div className="nav-scroll">
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />{t('nav.dashboard')}</button>
         <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
         <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
         <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
+        <button className={tab === 'me' ? 'nav active' : 'nav'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
         <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
         <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
         <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />{t('nav.logs')}</button>
         <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />{t('nav.about')}</button>
+        </div>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
           <span>{t('about.brand')}</span>
@@ -556,7 +591,7 @@ function App() {
         <header className="topbar">
           <div>
             <h2>{tabTitle}</h2>
-            <p>{tabDesc}</p>
+            {tabDesc ? <p>{tabDesc}</p> : null}
           </div>
         </header>
 
@@ -621,6 +656,12 @@ function App() {
               />
             </div>
           </section>
+          </div>
+        )}
+
+        {tab === 'me' && (
+          <div className="tab-body me-tab">
+            <MePanel onOpenClients={() => setTab('clients')} />
           </div>
         )}
 

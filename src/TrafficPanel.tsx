@@ -151,8 +151,11 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
   if (!traffic) {
     return (
       <div className="card traffic-card">
-        <h3>{t('trafstat.title')}</h3>
-        <p className="hint compact">{t('trafstat.waiting')}</p>
+        <div className="section-title">
+          <h3>{t('trafstat.title')}</h3>
+          <span className="hint compact">{t('trafstat.waiting')}</span>
+        </div>
+        <TrafficEmptyState running={false} waiting />
       </div>
     );
   }
@@ -171,9 +174,7 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
         <span className="hint compact">{running ? t('trafstat.realtime') : t('trafstat.notRunning')}</span>
       </div>
       {empty ? (
-        <p className="hint compact traffic-empty">
-          {running ? t('trafstat.emptyRunning') : t('trafstat.emptyStopped')}
-        </p>
+        <TrafficEmptyState running={Boolean(running)} />
       ) : (
         <>
           <div className="traffic-metrics">
@@ -255,6 +256,60 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
           onClose={() => setChannelsOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+function TrafficEmptyState({
+  running,
+  waiting,
+}: {
+  running: boolean;
+  waiting?: boolean;
+}) {
+  const title = waiting
+    ? t('trafstat.waiting')
+    : running
+      ? t('trafstat.emptyRunning')
+      : t('trafstat.emptyStopped');
+  const hint = waiting
+    ? undefined
+    : running
+      ? t('trafstat.emptyRunningHint')
+      : t('trafstat.emptyStoppedHint');
+
+  return (
+    <div className="traffic-empty-state">
+      <div className="traffic-metrics traffic-metrics-ghost" aria-hidden>
+        {[
+          t('trafstat.today'),
+          t('trafstat.total'),
+          t('trafstat.avgLatency'),
+          t('trafstat.successRate'),
+          t('trafstat.failed'),
+          t('trafstat.sources'),
+          t('trafstat.tokenIn'),
+          t('trafstat.tokenOut'),
+        ].map((label) => (
+          <div className="traffic-metric" key={label}>
+            <span>{label}</span>
+            <strong>—</strong>
+          </div>
+        ))}
+      </div>
+      <div className="traffic-empty-chart" aria-hidden>
+        {Array.from({ length: 24 }, (_, i) => (
+          <div
+            className="traffic-empty-bar"
+            key={i}
+            style={{ height: `${18 + ((i * 7) % 28)}%` }}
+          />
+        ))}
+      </div>
+      <div className="traffic-empty-copy">
+        <strong>{title}</strong>
+        {hint && <span>{hint}</span>}
+      </div>
     </div>
   );
 }

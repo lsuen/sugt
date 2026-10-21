@@ -139,6 +139,21 @@ description = "Enables the quick_gateway_chat command"
 commands.allow = ["quick_gateway_chat"]
 
 [[permission]]
+identifier = "allow-me-commands"
+description = "Enables the Me tab (小su) commands"
+commands.allow = [
+  "me_status",
+  "me_set_place",
+  "me_create_project",
+  "me_send",
+  "me_confirm",
+  "me_dismiss",
+  "me_stop",
+  "me_clear",
+  "me_open_dir"
+]
+
+[[permission]]
 identifier = "allow-overlay-commands"
 description = "Enables traffic overlay commands"
 commands.allow = ["get_overlay_config", "set_overlay_config", "overlay_start_drag"]

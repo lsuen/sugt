@@ -18,6 +18,7 @@ pub mod gateway_listen;
 pub mod gateway_stats;
 pub mod gateway_watchdog;
 pub mod logging;
+pub mod me_agent;
 pub mod model;
 pub mod tray;
 pub mod product;

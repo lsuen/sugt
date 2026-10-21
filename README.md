@@ -10,7 +10,6 @@
 
 |                |                                                                       |
 | -------------- | --------------------------------------------------------------------- |
-| Version        | 1.1.3                                                                 |
 | Author         | Sun Wenlong · [异常设计](https://github.com/lsuen)                       |
 | Open source    | [Apache-2.0](LICENSE), fully open source                                |
 | Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)                |
@@ -19,7 +18,7 @@
 
 ## License
 
-The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, and the Skills console. Source is Apache-2.0.
+The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, Skills console, and the in-app Me companion. Source is Apache-2.0.
 
 ## Why
 
@@ -50,6 +49,13 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - Automatically discovers installed agent clients on your machine
 - Sets environment variables and launch scripts so Claude Code / Codex / OpenCode point at the local gateway; releasing the takeover cleans everything up
 
+### Me / su
+
+- A lightweight companion on the **Me** tab — the soul of the app, not a separate “gateway agent”
+- Chat, create small projects under `Documents/.sugt/projects/`, write files, and edit app or system config with confirm-before-write
+- Reasons with **your** configured upstream model through the local gateway; paste screenshots when the model supports vision
+- Separate chat history per working place; stop a run mid-flight; hand heavier work to Claude Code or Codex
+
 ### Skills Console
 
 - Refresh skill indexes from Git repositories, Gitee, or custom sources
@@ -60,6 +66,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Always-on-top, semi-transparent, mouse-through overlay showing today's token activity in real time
 - Landscape / portrait layout, resizable, with one-click restore to defaults
+- macOS: overlay position and mouse-through behave with the local desktop
 
 ### Workspace Rules
 

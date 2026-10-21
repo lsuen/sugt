@@ -94,12 +94,26 @@ export function UpstreamSelector({
           setModels([])
           pushToast(t('upstream.freeEmpty'), 'error')
         } else {
-          setModels(available.map((p) => ({ name: p.name, available: true })))
+          // 默认优先：openrouter/free → kilo-auto/free → 其余（与后端 ROUTES 一致）
+          const preferredOrder = [
+            'openrouter/free',
+            'kilo-auto/free',
+            'openai-fast',
+            'openai',
+            'fast',
+            'default',
+          ]
+          const sorted = [...available].sort((a, b) => {
+            const ia = preferredOrder.indexOf(a.name)
+            const ib = preferredOrder.indexOf(b.name)
+            return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+          })
+          setModels(sorted.map((p) => ({ name: p.name, available: true })))
           const stillOk = available.some(
             (p) => p.name === provider.model_name,
           )
           if (!stillOk) {
-            await selectModel(available[0].name)
+            await selectModel(sorted[0].name)
           }
         }
         onRefresh()
@@ -244,9 +258,6 @@ export function UpstreamSelector({
               <Play size={14} />
             </button>
           </div>
-          {isExperimental && (
-            <p className="hint compact">{t('upstream.freeHint')}</p>
-          )}
         </div>
       )}
     </>

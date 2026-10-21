@@ -1,33 +1,32 @@
-# SUTAI — 本地 AI 网关 & 大模型技能中控台
+# SUGT — 本地 AI 网关 & 大模型技能中控台
 
 > 前段时间饭碗被砸，正琢磨要不要去送外卖，一时半会儿腾不出手再维护了。代码已全开源，自己玩就好；星不多，我也懒得做流量推广——要是帮到你、又愿意的，求顺手推广一下。
 
-朴素的 AI 时代中控台：一个本地运行的 AI 网关与技能管理桌面应用。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本地网关访问任意上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台。
+**SUGT（su gateway）** 是一款本机 AI 网关与技能中控台。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek、DashScope、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本机端点，并在一个面板里切换上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台，卸下也不会丢库。
 
 - **一套 Key，处处可用**：所有 AI 客户端的 Base URL 与鉴权，收拢到本机一个网关。
-- **上游随意换**：官方 API、国内服务商（魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 等）、自建模型，切换无需改动任何客户端。
-- **技能不乱丢**：统一发现、安装、挂载，换机器也不重来。
+- **上游随意换**：OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 或自建模型，切换无需改动任何客户端。
+- **技能不乱丢**：统一发现、安装、挂载；卸载挂载也不会丢掉技能库。
 
 | | |
 | --- | --- |
-| 版本 | 1.1.3 |
 | 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
 | 开源 | [Apache-2.0](LICENSE)，全仓库开源 |
-| 当前下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |
+| 下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |
 
 English: [README.md](README.md)
 
 ## 许可
 
-[GitHub Releases](https://github.com/lsuen/sugt/releases) 上的安装包就是完整功能：本地 AI 网关、协议互转、客户端接管、技能中控台。源码为 Apache-2.0。
+[GitHub Releases](https://github.com/lsuen/sugt/releases) 上的安装包就是完整功能：本地 AI 网关、协议互转、客户端接管、技能中控台，以及应用内的「我 / 小su」。源码为 Apache-2.0。
 
 ## 为什么需要
 
-- **Key 分散**：OpenAI、Anthropic、魔搭、火山引擎、Moonshot Kimi、DeepSeek、本地模型散落在各客户端，泄漏后只能逐一失效，难以管控。
-- **Agent 一个接一个**：Claude Code、Codex、OpenCode 各自都要写 Base URL 和鉴权，每次配一套，繁琐易错。
-- **Skills 散落**：没有统一发现/挂载/保留机制，换机器就要全部重来。
+- **Key 分散**：OpenAI、Anthropic、魔搭、火山引擎、Moonshot Kimi、DeepSeek、本地模型散落在各客户端，难以统一管控。
+- **Agent 各配一套**：Claude Code、Codex、OpenCode 各自都要写 Base URL 和鉴权，繁琐易错。
+- **Skills 散落**：没有统一发现 / 挂载 / 保留机制，换机器就要全部重来。
 
-SUTAI 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接管，以及一个能真正留住不丢的技能中控台。
+SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接管，以及一个能真正留住不丢的技能中控台。
 
 ## 功能特性
 
@@ -50,16 +49,24 @@ SUTAI 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 - 自动发现本机已安装的 Agent 客户端
 - 通过环境变量与启动脚本，让 Claude Code / Codex / OpenCode 指向本地网关；解除接管时自动清理干净
 
+### 「我」/ 小su
+
+- **「我」** 页里的轻量伙伴——是这款软件的灵魂与本体，不是另起一套「网关代理」
+- 可聊天、在 `Documents/.sugt/projects/` 建小项目、写文件，以及改应用或系统配置（写入前会先确认）
+- 经本机网关，用**你配置的上游大模型**替小su思考；支持粘贴截图（需上游支持视觉）
+- 按工作目录分别保留对话；可中途停下；重活可交给 Claude Code 或 Codex
+
 ### 技能中控台
 
 - 从 Git 仓库、Gitee、自定义源刷新技能索引
-- 安装、卸载、挂载、卸载技能——技能库永远保留
+- 安装、卸载、挂载、取消挂载——技能库永远保留
 - 同一技能可挂载到多个 Agent；Markdown 渲染的技能面板
 
 ### 流量悬浮窗
 
 - 置顶 + 半透明 + 鼠标穿透，实时显示今日 Token 交互
 - 支持横竖排布局、尺寸调节与一键恢复默认
+- macOS：悬浮窗位置与鼠标穿透按本机桌面行为工作
 
 ### 全局规则
 
@@ -88,15 +95,21 @@ SUTAI 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 ![客户端接管](docs/images/client-agents.png)
 
-技能：本地挂载 + 仓库发现入库。
+技能：本地挂载与仓库发现。
 
 ![本地技能](docs/images/client-skills-local.png)
 
-![发现技能](docs/images/client-skills-store.png)
+设置：语言、网关与悬浮窗选项。
+
+![设置](docs/images/english-settings.png)
+
+日志：请求与网关活动。
+
+![日志](docs/images/english-logs.png)
 
 ## 国际化（Internationalization）
 
-SUTAI 内置 **中文 / English** 双语支持，所有界面文本均通过统一的字典层渲染，不依赖任何第三方 i18n 库（零额外依赖）。
+SUGT 内置 **中文 / English** 双语支持，所有界面文本均通过统一的字典层渲染，不依赖任何第三方 i18n 库（零额外依赖）。
 
 **语言切换方式**：打开「设置」→「语言」，在「跟随系统 / 中文 / English」三者间选择。
 
@@ -125,7 +138,7 @@ SUTAI 内置 **中文 / English** 双语支持，所有界面文本均通过统�
 winget install lsuen.sugt
 ```
 
-**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 Windows x64 安装包，安装即可运行。
+**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载安装包，安装即可运行。
 
 **macOS（Homebrew）**：已发布预编译 Homebrew cask：
 

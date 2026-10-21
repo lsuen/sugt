@@ -435,6 +435,12 @@
           "markdownDescription": "Enables the list_providers command"
         },
         {
+          "description": "Enables the Me tab (小su) commands",
+          "type": "string",
+          "const": "allow-me-commands",
+          "markdownDescription": "Enables the Me tab (小su) commands"
+        },
+        {
           "description": "Enables the open_config_dir command",
           "type": "string",
           "const": "allow-open-config-dir",

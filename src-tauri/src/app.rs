@@ -1,4 +1,4 @@
-use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, store, tray};
+use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, store, tray};
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
@@ -41,6 +41,15 @@ pub fn run() {
             commands::overlay_start_drag,
             commands::open_config_dir,
             commands::quick_gateway_chat,
+            me_agent::me_status,
+            me_agent::me_set_place,
+            me_agent::me_create_project,
+            me_agent::me_send,
+            me_agent::me_confirm,
+            me_agent::me_dismiss,
+            me_agent::me_stop,
+            me_agent::me_clear,
+            me_agent::me_open_dir,
             commands::get_quick_chat_history,
             commands::save_quick_chat_history,
             commands::clear_quick_chat_history,

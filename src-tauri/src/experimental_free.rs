@@ -16,8 +16,17 @@ struct FreeRoute {
     model: &'static str,
 }
 
-/// 候选路由（公开 keyless）。顺序即探测/failover 优先级。
+/// 候选路由（公开 keyless）。顺序即探测/默认/failover 优先级：
+/// openrouter/free → kilo-auto/free → 其余。
 const ROUTES: &[FreeRoute] = &[
+    FreeRoute {
+        base_url: "https://api.kilo.ai/api/gateway",
+        model: "openrouter/free",
+    },
+    FreeRoute {
+        base_url: "https://api.kilo.ai/api/gateway",
+        model: "kilo-auto/free",
+    },
     FreeRoute {
         base_url: "https://text.pollinations.ai/openai",
         model: "openai-fast",
@@ -34,14 +43,6 @@ const ROUTES: &[FreeRoute] = &[
         base_url: "https://api.llm7.io/v1",
         model: "default",
     },
-    FreeRoute {
-        base_url: "https://api.kilo.ai/api/gateway",
-        model: "kilo-auto/free",
-    },
-    FreeRoute {
-        base_url: "https://api.kilo.ai/api/gateway",
-        model: "openrouter/free",
-    },
 ];
 
 pub fn is_experimental_free_id(id: &str) -> bool {
@@ -57,6 +58,19 @@ pub fn is_experimental_free(provider: &ProviderConfig) -> bool {
 
 pub fn candidate_models() -> Vec<&'static str> {
     ROUTES.iter().map(|r| r.model).collect()
+}
+
+/// 在可用模型中按 ROUTES 优先级挑选默认项。
+pub fn pick_preferred_model<'a>(available: &[&'a str]) -> Option<&'a str> {
+    for route in ROUTES {
+        if let Some(name) = available
+            .iter()
+            .find(|m| m.eq_ignore_ascii_case(route.model))
+        {
+            return Some(*name);
+        }
+    }
+    available.first().copied()
 }
 
 pub fn route_for_model(model: &str) -> Option<(&'static str, &'static str)> {
@@ -238,7 +252,9 @@ pub async fn refresh_on_enable(
             .iter()
             .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
         {
-            provider.model_name = available[0].to_string();
+            if let Some(preferred) = pick_preferred_model(&available) {
+                provider.model_name = preferred.to_string();
+            }
         }
         apply_route(provider);
         provider.last_error = None;
@@ -306,6 +322,24 @@ mod tests {
     fn candidates_nonempty() {
         assert!(!candidate_models().is_empty());
         assert!(route_for_model("openai-fast").is_some());
+        assert_eq!(candidate_models()[0], "openrouter/free");
+        assert_eq!(candidate_models()[1], "kilo-auto/free");
+    }
+
+    #[test]
+    fn pick_preferred_respects_priority() {
+        assert_eq!(
+            pick_preferred_model(&["openai-fast", "kilo-auto/free", "openrouter/free"]),
+            Some("openrouter/free")
+        );
+        assert_eq!(
+            pick_preferred_model(&["openai", "kilo-auto/free"]),
+            Some("kilo-auto/free")
+        );
+        assert_eq!(
+            pick_preferred_model(&["fast", "openai-fast"]),
+            Some("openai-fast")
+        );
     }
 
     #[tokio::test]

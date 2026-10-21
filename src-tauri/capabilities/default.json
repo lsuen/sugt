@@ -38,6 +38,7 @@
     "allow-update-gateway-settings",
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
+    "allow-me-commands",
     "allow-overlay-commands",
     "allow-workspace-rules-commands",
     "allow-takeover-commands",
