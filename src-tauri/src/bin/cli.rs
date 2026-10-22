@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use sugt_lib::{
-    clients, config, gateway::GatewayState, gateway_daemon, logging,
+    clients, commands::AppRuntime, config, gateway::GatewayState, gateway_daemon, logging, me_agent,
     model::ProviderConfig, takeover_profiles, trial,
 };
 use std::time::Duration;
@@ -32,6 +32,11 @@ enum Command {
         port: Option<u16>,
     },
     Test,
+    /// 小su / SOUL：无界面发消息（自动检测本机 OS）
+    Me {
+        #[command(subcommand)]
+        command: MeCommand,
+    },
     Env {
         #[command(subcommand)]
         command: EnvCommand,
@@ -39,6 +44,37 @@ enum Command {
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MeCommand {
+    /// 查看当前工作目录与是否有待确认写入
+    Status,
+    /// 发一条消息给小su（走模型；长写入请用 run）
+    Send {
+        /// 用户消息
+        message: String,
+        /// 自动同意会改文件的命令（等同 UI「自动同意」）
+        #[arg(long)]
+        auto_write: bool,
+        /// 语言：zh / en（默认 zh）
+        #[arg(long, default_value = "zh")]
+        lang: String,
+        /// 切换到指定项目后再发
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// 在小su 当前工作目录直接跑 shell（不经模型；Win/macOS/Linux 用本机 shell）
+    Run {
+        /// shell 命令（macOS/Linux 为 bash；Windows 优先 Git Bash，否则 PowerShell）
+        command: String,
+        /// 切换到指定项目后再跑
+        #[arg(long)]
+        project: Option<String>,
+        /// 跑完后用系统默认应用打开该相对/绝对路径（跨平台）
+        #[arg(long)]
+        open: Option<String>,
     },
 }
 
@@ -155,6 +191,86 @@ async fn main() -> Result<()> {
             for provider in app_config.providers {
                 let status = gateway.test_provider(&provider.id).await?;
                 println!("{}: {:?}", provider.name, status);
+            }
+        }
+        Command::Me { command } => {
+            trial::ensure_allowed(&config::ensure_paths()?)?;
+            let runtime = AppRuntime::load_from_disk().map_err(|err| anyhow::anyhow!(err))?;
+            match command {
+                MeCommand::Status => {
+                    let view = me_agent::cli_status(&runtime)
+                        .await
+                        .map_err(|err| anyhow::anyhow!(err))?;
+                    println!("os_hint=auto (compiled for this host)");
+                    println!("mode={}", view.mode);
+                    println!("project={}", view.project);
+                    println!("work_dir={}", view.work_dir);
+                    println!("messages={}", view.messages.len());
+                    if let Some(pending) = view.pending {
+                        println!("pending=yes");
+                        println!("pending_prose={}", pending.prose);
+                        println!("pending_command={}", pending.command);
+                    } else {
+                        println!("pending=no");
+                    }
+                }
+                MeCommand::Send {
+                    message,
+                    auto_write,
+                    lang,
+                    project,
+                } => {
+                    let view = me_agent::cli_send(&runtime, message, &lang, auto_write, project)
+                        .await
+                        .map_err(|err| anyhow::anyhow!(err))?;
+                    if let Some(last) = view
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == "assistant")
+                    {
+                        println!("--- su ---");
+                        println!("{}", last.content);
+                        if !last.steps.is_empty() {
+                            println!("--- steps: {} ---", last.steps.len());
+                            for (i, step) in last.steps.iter().enumerate() {
+                                println!(
+                                    "[{}] exit={:?} timed_out={} :: {}",
+                                    i + 1,
+                                    step.exit_code,
+                                    step.timed_out,
+                                    step.command.lines().next().unwrap_or("")
+                                );
+                            }
+                        }
+                    }
+                    if let Some(pending) = view.pending {
+                        println!("--- pending (need confirm / use --auto-write) ---");
+                        println!("{}", pending.command);
+                    }
+                    println!("work_dir={}", view.work_dir);
+                }
+                MeCommand::Run {
+                    command,
+                    project,
+                    open,
+                } => {
+                    let result = me_agent::cli_run(&runtime, command, project, open)
+                        .await
+                        .map_err(|err| anyhow::anyhow!(err))?;
+                    println!("work_dir={}", result.work_dir);
+                    println!("exit={:?}", result.exit_code);
+                    if result.timed_out {
+                        println!("timed_out=true");
+                    }
+                    if !result.output.trim().is_empty() {
+                        println!("--- output ---");
+                        println!("{}", result.output);
+                    }
+                    if let Some(path) = result.opened {
+                        println!("opened={}", path);
+                    }
+                }
             }
         }
         Command::Skill { command } => {

@@ -543,7 +543,7 @@ function App() {
               </div>
             </header>
             <div className="tab-body me-tab">
-              <MePanel api={previewApi} onOpenClients={() => undefined} />
+              <MePanel api={previewApi} onOpenClients={() => undefined} onOpenModels={() => undefined} />
             </div>
           </section>
         </main>
@@ -661,7 +661,7 @@ function App() {
 
         {tab === 'me' && (
           <div className="tab-body me-tab">
-            <MePanel onOpenClients={() => setTab('clients')} />
+            <MePanel onOpenClients={() => setTab('clients')} onOpenModels={() => setTab('models')} />
           </div>
         )}
 

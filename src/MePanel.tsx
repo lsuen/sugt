@@ -189,7 +189,10 @@ export function tauriMeApi(): MeApi {
       lang: language(),
       autoWrite: loadAutoWrite(),
     }),
-    confirm: () => invoke<MeView>('me_confirm', { lang: language() }),
+    confirm: () => invoke<MeView>('me_confirm', {
+      lang: language(),
+      autoWrite: loadAutoWrite(),
+    }),
     dismiss: () => invoke<MeView>('me_dismiss', { lang: language() }),
     stop: () => invoke('me_stop'),
     clear: () => invoke<MeView>('me_clear'),
@@ -255,7 +258,13 @@ export function createPreviewMeApi(): MeApi {
       const text = message.trim();
       if (!text && images.length === 0) return view;
       onStep?.(emptyEvent('thinking', t('me.thinking')));
-      await wait(280);
+      await wait(120);
+      onStep?.(emptyEvent('delta', '我'));
+      await wait(80);
+      onStep?.(emptyEvent('delta', '我先'));
+      await wait(80);
+      onStep?.(emptyEvent('delta', '我先看一眼。'));
+      await wait(100);
       const user = {
         id: `u-${view.messages.length}`,
         role: 'user',
@@ -274,6 +283,33 @@ export function createPreviewMeApi(): MeApi {
           'from su',
           'EOF',
         ].join('\n');
+        if (loadAutoWrite()) {
+          onStep?.(emptyEvent('thinking', t('me.autoWriteOn')));
+          onStep?.(emptyEvent('running', '写到 notes/readme.txt', command));
+          await wait(180);
+          const step: MeStep = {
+            command,
+            output: '',
+            exit_code: 0,
+            truncated: false,
+            timed_out: false,
+            note: '写到 notes/readme.txt',
+          };
+          onStep?.({ ...emptyEvent('ran', step.note, command), exit_code: 0 });
+          view = {
+            ...view,
+            pending: null,
+            messages: [...view.messages, user, {
+              id: `a-${view.messages.length}`,
+              role: 'assistant',
+              content: '已自动写入 `notes/readme.txt`。',
+              steps: [step],
+              created_at: Date.now(),
+            }],
+          };
+          stash();
+          return view;
+        }
         view = {
           ...view,
           pending: { command, prose: '写到 notes/readme.txt' },
@@ -387,9 +423,25 @@ export function createPreviewMeApi(): MeApi {
 type Props = {
   api?: MeApi;
   onOpenClients: () => void;
+  onOpenModels?: () => void;
 };
 
-export function MePanel({ api, onOpenClients }: Props) {
+function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | null {
+  if (steps.length === 0) return null;
+  const failed = steps.find((step) => step.timed_out || (step.exit_code !== null && step.exit_code !== 0));
+  if (failed?.timed_out) {
+    return { ok: false, text: t('me.composerDoneTimeout', { count: steps.length }) };
+  }
+  if (failed) {
+    return {
+      ok: false,
+      text: t('me.composerDoneFail', { count: steps.length, code: failed.exit_code ?? '?' }),
+    };
+  }
+  return { ok: true, text: t('me.composerDoneOk', { count: steps.length }) };
+}
+
+export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
   const client = useMemo(() => api ?? tauriMeApi(), [api]);
   const [session, setSession] = useState<MeView | null>(null);
   const [draft, setDraft] = useState('');
@@ -405,13 +457,54 @@ export function MePanel({ api, onOpenClients }: Props) {
   const [history, setHistory] = useState<PlaceHistoryItem[]>(() => loadPlaceHistory());
   const [placeOpen, setPlaceOpen] = useState(false);
   const [autoWrite, setAutoWrite] = useState(() => loadAutoWrite());
+  const [liveDraft, setLiveDraft] = useState('');
+  const [modelLabel, setModelLabel] = useState('');
+  const [gatewayOn, setGatewayOn] = useState<boolean | null>(null);
+  const [runFlash, setRunFlash] = useState<{ ok: boolean; text: string } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const placeMenuRef = useRef<HTMLDivElement>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
+  const refreshStatus = () => {
+    void invoke<{
+      running?: boolean;
+      active_model?: string | null;
+      public_model_id?: string | null;
+      active_provider?: string | null;
+    }>('get_status')
+      .then((status) => {
+        const label =
+          (status.active_model && status.active_model.trim())
+          || (status.public_model_id && status.public_model_id.trim())
+          || (status.active_provider && status.active_provider.trim())
+          || '';
+        setModelLabel(label);
+        setGatewayOn(typeof status.running === 'boolean' ? status.running : null);
+      })
+      .catch(() => {
+        setModelLabel('');
+        setGatewayOn(null);
+      });
+  };
+
+  const showRunFlash = (flash: { ok: boolean; text: string } | null) => {
+    if (flashTimerRef.current != null) {
+      window.clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = null;
+    }
+    setRunFlash(flash);
+    if (!flash) return;
+    flashTimerRef.current = window.setTimeout(() => {
+      setRunFlash(null);
+      flashTimerRef.current = null;
+    }, 2800);
+  };
 
   useEffect(() => {
     let stop = false;
     let unlisten: (() => void) | undefined;
+    refreshStatus();
     client.load().then((view) => {
       if (stop) return;
       setSession(view);
@@ -424,9 +517,20 @@ export function MePanel({ api, onOpenClients }: Props) {
       if (!stop) setError(errorText(err));
     });
     client.subscribe((event) => {
-      if (event.kind === 'thinking') setLive(event.text || t('me.thinking'));
-      if (event.kind === 'running') setLive(event.command || event.text || t('me.working'));
+      if (event.kind === 'thinking') {
+        setLiveDraft('');
+        setLive(event.text || t('me.thinking'));
+      }
+      if (event.kind === 'delta') {
+        setLive('');
+        setLiveDraft(event.text || '');
+      }
+      if (event.kind === 'running') {
+        setLiveDraft('');
+        setLive(event.command || event.text || t('me.working'));
+      }
       if (event.kind === 'ran') {
+        setLiveDraft('');
         setLive(event.command || t('me.working'));
         setLiveSteps((prev) => [...prev, {
           command: event.command,
@@ -444,6 +548,7 @@ export function MePanel({ api, onOpenClients }: Props) {
     return () => {
       stop = true;
       unlisten?.();
+      if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
     };
   }, [client]);
 
@@ -451,7 +556,7 @@ export function MePanel({ api, onOpenClients }: Props) {
     const node = logRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [session, live, liveSteps, awaiting]);
+  }, [session, live, liveDraft, liveSteps, awaiting]);
 
   useEffect(() => {
     if (!clearArmed) return;
@@ -481,11 +586,15 @@ export function MePanel({ api, onOpenClients }: Props) {
     setAwaiting(waitForSu);
     if (waitForSu) {
       setLive(t('me.thinking'));
+      setLiveDraft('');
       setLiveSteps([]);
+      showRunFlash(null);
     }
     let ok = false;
+    let finished: MeView | null = null;
     try {
       const view = await task();
+      finished = view;
       setSession(view);
       setHistory(rememberPlace({
         mode: view.mode,
@@ -501,10 +610,17 @@ export function MePanel({ api, onOpenClients }: Props) {
         /* 保持当前画面 */
       }
     } finally {
+      if (waitForSu && ok && finished) {
+        const lastAssistant = [...finished.messages].reverse().find((message) => message.role === 'assistant');
+        const flash = summarizeRunSteps(lastAssistant?.steps ?? []);
+        if (flash) showRunFlash(flash);
+      }
       setBusy(false);
       setAwaiting(false);
       setLive('');
+      setLiveDraft('');
       setLiveSteps([]);
+      refreshStatus();
       inputRef.current?.focus();
     }
     return ok;
@@ -541,6 +657,19 @@ export function MePanel({ api, onOpenClients }: Props) {
     : [];
 
   const leaf = session ? pathLeaf(session.work_dir) : '…';
+  const placeLabel = session
+    ? (session.mode === 'config' ? t('me.placeConfig') : leaf)
+    : '';
+  const modelShort = modelLabel
+    ? (modelLabel.length > 28 ? `${modelLabel.slice(0, 27)}…` : modelLabel)
+    : '';
+  const statusHint = runFlash
+    ? runFlash.text
+    : awaiting
+      ? t('me.composerRunning', { count: Math.max(liveSteps.length, 1) })
+      : session?.pending
+        ? t('me.composerPending')
+        : t('me.composerHint');
   const recent = history.filter((item) => !(
     session
     && item.mode === session.mode
@@ -683,21 +812,6 @@ export function MePanel({ api, onOpenClients }: Props) {
         )}
 
         <div className="me-desk-actions">
-          <button
-            type="button"
-            className={autoWrite ? 'tiny me-auto-write on' : 'tiny me-auto-write'}
-            aria-pressed={autoWrite}
-            title={autoWrite ? t('me.autoWriteOn') : t('me.autoWriteHint')}
-            disabled={busy}
-            onClick={() => {
-              const next = !autoWrite;
-              saveAutoWrite(next);
-              setAutoWrite(next);
-              if (next && session?.pending) {
-                void run(() => client.confirm(), true);
-              }
-            }}
-          >{t('me.autoWrite')}</button>
           <button type="button" className="tiny" disabled={busy || !session} onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}>
             <FolderOpen size={14} />{t('me.openDir')}
           </button>
@@ -757,9 +871,10 @@ export function MePanel({ api, onOpenClients }: Props) {
         })}
         {awaiting && (
           <SuBubble
-            content=""
+            content={liveDraft}
             steps={liveSteps}
-            live={live || t('me.thinking')}
+            live={liveDraft ? (live || undefined) : (live || t('me.thinking'))}
+            streaming={Boolean(liveDraft)}
             pending={null}
             busy={busy}
             onConfirm={() => undefined}
@@ -826,6 +941,10 @@ export function MePanel({ api, onOpenClients }: Props) {
             const composing = event.nativeEvent.isComposing || event.keyCode === 229;
             if (event.key === 'Enter' && !event.shiftKey && !composing) {
               event.preventDefault();
+              if (session?.pending && !busy && !draft.trim() && draftImages.length === 0) {
+                void run(() => client.confirm(), true);
+                return;
+              }
               void send(draft);
             }
             if (event.key === 'Backspace' && !draft && draftImages.length > 0) {
@@ -850,21 +969,68 @@ export function MePanel({ api, onOpenClients }: Props) {
               void run(() => client.clear());
             }}
           >{clearArmed ? t('me.clearSure') : t('me.clear')}</button>
-          {awaiting ? (
+          <div className="me-composer-status" aria-live="polite">
+            {gatewayOn !== null && (
+              <span
+                className={gatewayOn ? 'me-gw-dot on' : 'me-gw-dot'}
+                title={gatewayOn ? t('me.gatewayOn') : t('me.gatewayOff')}
+                aria-label={gatewayOn ? t('me.gatewayOn') : t('me.gatewayOff')}
+              />
+            )}
+            {placeLabel && (
+              <button
+                type="button"
+                className="me-status-chip"
+                disabled={busy || !session}
+                title={session?.work_dir ? `${t('me.openPlaceHint')}\n${session.work_dir}` : t('me.openPlaceHint')}
+                onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}
+              >{placeLabel}</button>
+            )}
+            {modelShort && (
+              <button
+                type="button"
+                className="me-status-chip"
+                disabled={!onOpenModels}
+                title={modelLabel ? `${t('me.openModelHint')}\n${modelLabel}` : t('me.openModelHint')}
+                onClick={() => onOpenModels?.()}
+              >{modelShort}</button>
+            )}
+            <span className={runFlash ? (runFlash.ok ? 'me-status-hint ok' : 'me-status-hint bad') : 'me-status-hint'}>
+              {statusHint}
+            </span>
+          </div>
+          <div className="me-composer-right">
             <button
               type="button"
-              className="danger"
+              className={autoWrite ? 'tiny me-auto-write on' : 'tiny me-auto-write'}
+              aria-pressed={autoWrite}
+              title={autoWrite ? t('me.autoWriteOn') : t('me.autoWriteHint')}
+              disabled={busy}
               onClick={() => {
-                void client.stop().catch((err: unknown) => setError(errorText(err)));
+                const next = !autoWrite;
+                saveAutoWrite(next);
+                setAutoWrite(next);
+                if (next && session?.pending) {
+                  void run(() => client.confirm(), true);
+                }
               }}
-            >
-              <Square size={14} />{t('me.stop')}
-            </button>
-          ) : (
-            <button type="submit" className="primary" disabled={busy || (!draft.trim() && draftImages.length === 0)}>
-              <Send size={15} />{t('me.send')}
-            </button>
-          )}
+            >{t('me.autoWrite')}</button>
+            {awaiting ? (
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  void client.stop().catch((err: unknown) => setError(errorText(err)));
+                }}
+              >
+                <Square size={14} />{t('me.stop')}
+              </button>
+            ) : (
+              <button type="submit" className="primary" disabled={busy || (!draft.trim() && draftImages.length === 0)}>
+                <Send size={15} />{t('me.send')}
+              </button>
+            )}
+          </div>
         </div>
       </form>
     </div>
@@ -877,22 +1043,28 @@ type SuBubbleProps = {
   pending: MePending | null;
   busy: boolean;
   live?: string;
+  streaming?: boolean;
   onConfirm: () => void;
   onDismiss: () => void;
 };
 
-function SuBubble({ content, steps, pending, busy, live, onConfirm, onDismiss }: SuBubbleProps) {
-  const processOpen = Boolean(live);
+function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, onDismiss }: SuBubbleProps) {
+  const processOpen = Boolean(live) || Boolean(streaming);
   return (
     <article className="me-su">
-      <span className={live ? 'me-seal live' : 'me-seal'} aria-hidden>su</span>
+      <span className={live || streaming ? 'me-seal live' : 'me-seal'} aria-hidden>su</span>
       <div className="me-su-body">
         {live && <p className="me-live">{live}</p>}
-        {content && <MeMarkdown text={content} />}
+        {content && (
+          <div className={streaming ? 'me-stream' : undefined}>
+            <MeMarkdown text={content} />
+            {streaming && <span className="me-caret" aria-hidden />}
+          </div>
+        )}
         {steps.length > 0 && (
           <details className="me-process" open={processOpen}>
             <summary>
-              {live
+              {live || streaming
                 ? t('me.stepsLive', { count: steps.length })
                 : t('me.stepsSummary', { count: steps.length })}
             </summary>

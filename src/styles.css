@@ -2529,6 +2529,20 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .me-su-body { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .me-su-body > .me-md { margin-top: 0; }
 .me-live { margin: 0; color: #8ee8ff; font-size: 14px; }
+.me-stream { position: relative; }
+.me-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  opacity: 0.55;
+  animation: me-caret 1s steps(1) infinite;
+}
+@keyframes me-caret {
+  50% { opacity: 0; }
+}
 
 .me-process {
   border: 1px solid rgba(142, 232, 255, .14);
@@ -2712,7 +2726,81 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   line-height: 1.5;
   font: inherit;
 }
-.me-composer-actions { display: flex; justify-content: space-between; gap: 8px; }
+.me-composer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.me-composer-status {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8aa0b4;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.me-gw-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6a7d90;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25);
+}
+.me-gw-dot.on {
+  background: #4fd39a;
+  box-shadow: 0 0 0 2px rgba(79, 211, 154, .18);
+}
+.me-status-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #a8c0d4;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.me-status-chip:hover:not(:disabled) {
+  color: #d7ecff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.me-status-chip:disabled {
+  cursor: default;
+  opacity: .85;
+}
+.me-status-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #8aa0b4;
+}
+.me-status-hint.ok { color: #80f7c4; }
+.me-status-hint.bad { color: #ffb0bd; }
+.me-composer-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
 .me-input:focus-visible,
 .me-name:focus-visible,
 .me-projects:focus-visible {

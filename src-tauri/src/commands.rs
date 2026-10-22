@@ -111,6 +111,18 @@ pub struct AppRuntime {
 }
 
 impl AppRuntime {
+    /// 供 CLI 等无 Tauri 场景从磁盘加载运行时。
+    pub fn load_from_disk() -> Result<Self, String> {
+        let (paths, config) = config::load_or_init_config().map_err(|err| err.to_string())?;
+        let gateway = GatewayState::new(config.clone(), Some(paths.config_file.clone()))
+            .map_err(|err| err.to_string())?;
+        Ok(Self {
+            paths,
+            gateway,
+            config: Arc::new(RwLock::new(config)),
+        })
+    }
+
     pub async fn persist(&self) -> Result<()> {
         let config = self.config.read().await.clone();
         gateway::save_runtime_config(&self.paths, &config)?;

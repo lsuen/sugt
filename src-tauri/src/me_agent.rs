@@ -9,6 +9,7 @@
 
 use crate::commands::{ensure_gateway_running, AppRuntime};
 use crate::quick_chat;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -41,7 +42,44 @@ const READ_ONLY: &[&str] = &[
     "date", "uname", "whoami", "id", "env", "printenv", "find", "grep", "rg", "awk", "cut", "sort",
     "uniq", "diff", "true", "false", "dirname", "basename", "realpath", "readlink", "du", "df",
     "ps", "tree", "nl", "type", "command", "cd", "pushd", "popd",
+    // 用系统默认应用打开文件/URL（不改文件）
+    "open", "xdg-open", "invoke-item",
 ];
+
+fn host_os_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macOS"
+    }
+    #[cfg(windows)]
+    {
+        "Windows"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "Linux"
+    }
+}
+
+/// 告诉模型用哪条命令打开本地文件（按编译目标 OS + 实际 shell）。
+fn open_file_hint() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "open \"path/to/file.html\""
+    }
+    #[cfg(windows)]
+    {
+        if windows_bash().is_some() {
+            "cmd.exe /c start \"\" \"path\\\\to\\\\file.html\""
+        } else {
+            "Invoke-Item \"path\\to\\file.html\""
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "xdg-open \"path/to/file.html\""
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MeStep {
@@ -333,6 +371,8 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
     let projects = projects.display();
     let config = config.display();
     let shell = shell_label();
+    let host_os = host_os_label();
+    let open_hint = open_file_hint();
     if zh {
         format!(
             "你是小su，SUTAI 这款软件的灵魂和本体。你不是「网关」或后台服务，你就是用户身边的这个小伙伴。\n\
@@ -344,8 +384,10 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
 项目目录：{projects}\n\
 应用配置目录（config.toml 在这里，不要写进项目目录）：{config}\n\
 你现在在{place}。\n\
+主机操作系统：{host_os}（已由程序检测，不要再猜）。\n\
 实际执行的 shell 是 {shell}。代码块标签固定写 ```bash。\n\
 若 shell 是 PowerShell：不要用 bash heredoc，改用 Set-Content -Encoding utf8 或 Out-File -Encoding utf8 写文件。\n\
+在浏览器或默认应用中打开本地文件，请用：{open_hint}（把路径换成真实文件；这类打开命令可立刻执行）。\n\
 \n\
 怎么回复：\n\
 - 需要跑命令时，回复里只放一个 bash 代码块。块前用一两句人话说明要动哪个路径、写什么。\n\
@@ -357,10 +399,12 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
 - 想读文件：小文件可用 cat；大文件先用 wc -l / ls -la 摸清规模，再用 sed -n 'a,bp'、head、tail 分段读。不要无脑 cat 大文件。\n\
 - 若命令输出里出现「omitted … lines」，说明中间被裁掉了，请用 sed 指定行号续读，不要重复 cat 整文件。\n\
 - 想写文件：优先短小写入或 sed 定点改；少用整文件超长 heredoc。写入成功后程序可能自动跑一步只读「写后核对」，请根据核对结果说话，不要假装没看到。\n\
+- 用户要「小游戏 / H5 / 单页 demo」时：立刻给一个紧凑的单文件 HTML（建议 ≤120 行、可玩即可），用 cat <<'EOF' > game.html … EOF 写入，同一代码块末尾用上面的打开命令打开；不要先长篇计划、不要说做不到、不要拆成很多步空谈。\n\
 - 每个代码块都是一次新的 shell，从当前工作目录重新开始。要进子目录，把 cd 和后面的命令写在同一个代码块里。\n\
 - 只读命令会被立刻执行，结果会回到你这里。\n\
 - 会创建、修改、删除文件的命令不会立刻执行。程序会先把命令给用户看，用户同意后才执行。不要自己再问「可以写吗」，把命令放进代码块即可。\n\
 - 不要把项目文件写进应用配置目录。用户明确要改应用配置时，工作目录会切到配置目录。\n\
+- 若模型区分 reasoning 与 content：可执行的 bash 代码块与给人看的回复必须写在 content 里，不要只写在 reasoning。\n\
 - 一次一小步。"
         )
     } else {
@@ -374,8 +418,10 @@ Working directory: {work}\n\
 Projects directory: {projects}\n\
 App config directory (config.toml lives here; do not write it into a project): {config}\n\
 You are in {place}.\n\
+Host OS: {host_os} (detected by the app — do not guess).\n\
 The shell that actually runs is {shell}. Always fence commands as ```bash.\n\
 If the shell is PowerShell: do not use bash heredocs; write files with Set-Content -Encoding utf8 or Out-File -Encoding utf8.\n\
+To open a local file in the default app/browser, use: {open_hint} (swap in the real path; open commands run immediately).\n\
 \n\
 How to reply:\n\
 - When you need a command, include exactly one bash fence. Before it, say the path and what will be written, in a sentence or two.\n\
@@ -387,10 +433,12 @@ How to reply:\n\
 - To read: cat is fine for small files; for large ones first wc -l / ls -la, then sed -n 'a,bp', head, or tail. Do not blindly cat huge files.\n\
 - If output contains \"omitted … lines\", the middle was pruned — continue with sed line ranges; do not cat the whole file again.\n\
 - To write: prefer short writes or sed in-place edits; avoid huge whole-file heredocs. After a successful write the app may auto-run a read-only verify step — use that output; do not pretend you did not see it.\n\
+- When the user asks for a mini game / H5 / single-page demo: immediately emit one compact single-file HTML (aim ≤120 lines, playable), write with cat <<'EOF' > game.html … EOF, and open it at the end of the same fence with the open recipe above. Do not monologue a long plan, do not say you cannot, do not stall in empty steps.\n\
 - Each fence is a new shell, starting again in the working directory. To enter a subdirectory, put cd and the rest in the same fence.\n\
 - Read-only commands run immediately and their output comes back to you.\n\
 - Commands that create, change, or delete files do not run immediately. The app shows them to the user first. Do not ask for permission yourself; put the command in the fence.\n\
 - Do not write project files into the app config directory. When the user wants app config edited, the working directory is the config directory.\n\
+- If the model separates reasoning from content: put the user-visible reply and any ```bash fence in content, not only in reasoning.\n\
 - One small step at a time."
         )
     }
@@ -464,39 +512,62 @@ fn has_unclosed_fence(text: &str) -> bool {
 }
 
 /// 只说「我先读/再创建」却不给代码块：不能当回合结束，否则界面会停住。
+///
+/// 强意图（写/创建类）不限长度——免费模型常先吐一长段计划再卡死，旧的 160 字上限会把长计划误判成「说完了」。
+/// 弱意图（我会/我来/我先）仍只在短回复里触发，避免闲聊误催。
 pub fn looks_like_plan_without_command(text: &str) -> bool {
     if extract_fence(text).is_some() {
         return false;
     }
     let lower = text.to_ascii_lowercase();
-    const MARKERS: &[&str] = &[
+    const STRONG: &[&str] = &[
         "先读",
         "再创建",
         "然后创建",
         "再写",
-        "我先",
-        "按规范",
-        "接下来",
         "马上创建",
-        "我会",
-        "我来",
         "创建 txt",
         "创建个",
         "写个",
         "写入",
         "写文件",
+        "让我先写",
+        "我先写",
+        "我来写",
+        "我来创建",
+        "创建一个",
+        "创建一份",
+        "写一个",
+        "写一份",
+        "html文件",
+        "html 文件",
+        ".html",
+        "单文件",
+        "自包含",
         "let me",
-        "i'll",
-        "i will",
+        "i'll create",
+        "i'll write",
+        "i will create",
+        "i will write",
         "first read",
         "then create",
         "going to create",
         "going to write",
+        "create a",
+        "write a",
+        "write an",
     ];
-    let has_intent = MARKERS
+    const WEAK: &[&str] = &["我先", "按规范", "接下来", "我会", "我来", "i'll", "i will"];
+    let strong = STRONG
         .iter()
         .any(|m| text.contains(m) || lower.contains(&m.to_ascii_lowercase()));
-    has_intent && text.chars().count() < 160
+    if strong {
+        return true;
+    }
+    let weak = WEAK
+        .iter()
+        .any(|m| text.contains(m) || lower.contains(&m.to_ascii_lowercase()));
+    weak && text.chars().count() < 160
 }
 
 /// 宣称已完成，但没有可执行代码块（常见于模型空口「✅ 全部文件已准备妥当」）。
@@ -829,6 +900,11 @@ fn segment_is_readonly(segment: &str) -> bool {
         return !segment
             .split_whitespace()
             .any(|token| token == "-i" || token.starts_with("-i"));
+    }
+    // Windows: cmd.exe /c start "" file.html — 仅打开，不改文件
+    if word == "cmd" || word == "cmd.exe" {
+        let lower = segment.to_ascii_lowercase();
+        return lower.contains(" start ") || lower.contains("\tstart ");
     }
     READ_ONLY.iter().any(|item| *item == word)
 }
@@ -1270,6 +1346,128 @@ fn step_from(command: &str, note: &str, outcome: ShellOutcome) -> MeStep {
     }
 }
 
+/// 免费模型常写不全长 heredoc；对「写个 H5 小游戏并打开」类请求，用内置紧凑模板兜底。
+const DEMO_SNAKE_HTML: &str = r#"<!doctype html><meta charset=utf-8><title>Snake</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px sans-serif;text-align:center}canvas{background:#222;margin:12px;image-rendering:pixelated}#s{margin:8px}</style>
+<canvas id=c width=400 height=400></canvas><div id=s>Score: 0 · ←→↑↓ · Space restart</div>
+<script>
+const S=20,W=20,H=20,c=document.getElementById('c'),g=c.getContext('2d');
+let snake=[{x:10,y:10}],dir={x:1,y:0},food={x:15,y:10},score=0,dead=false;
+const rnd=()=>({x:0|Math.random()*W,y:0|Math.random()*H});
+function place(){do{food=rnd()}while(snake.some(p=>p.x==food.x&&p.y==food.y))}
+onkeydown=e=>{const k=e.key;if(k==='ArrowLeft'&&dir.x!==1)dir={x:-1,y:0};if(k==='ArrowRight'&&dir.x!==-1)dir={x:1,y:0};if(k==='ArrowUp'&&dir.y!==1)dir={x:0,y:-1};if(k==='ArrowDown'&&dir.y!==-1)dir={x:0,y:1};if(dead&&k===' '){snake=[{x:10,y:10}];dir={x:1,y:0};score=0;dead=false;place();document.getElementById('s').textContent='Score: 0 · ←→↑↓ · Space restart'}e.preventDefault()};
+setInterval(()=>{if(dead)return;const h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};if(h.x<0||h.y<0||h.x>=W||h.y>=H||snake.some(p=>p.x==h.x&&p.y==h.y)){dead=true;document.getElementById('s').textContent='Game over '+score+' · Space restart';return}snake.unshift(h);if(h.x==food.x&&h.y==food.y){score++;document.getElementById('s').textContent='Score: '+score+' · ←→↑↓ · Space restart';place()}else snake.pop();g.fillStyle='#222';g.fillRect(0,0,400,400);g.fillStyle='#4f4';snake.forEach(p=>g.fillRect(p.x*S,p.y*S,S-1,S-1));g.fillStyle='#f44';g.fillRect(food.x*S,food.y*S,S-1,S-1)},120);
+</script>
+"#;
+
+const DEMO_TETRIS_HTML: &str = r#"<!doctype html><meta charset=utf-8><title>Tetris</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px sans-serif;text-align:center}canvas{background:#222;margin:12px;image-rendering:pixelated}#s{margin:8px}</style>
+<div id=s>Score: 0 · ←→ move · ↑ rotate · ↓ soft · Space hard</div>
+<canvas id=c width=200 height=400></canvas>
+<script>
+const W=10,H=20,S=20,c=document.getElementById('c'),g=c.getContext('2d');
+const SHAPES=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[0,1,1],[1,1,0]],[[1,1,0],[0,1,1]]];
+let grid=[...Array(H)].map(()=>Array(W).fill(0)),piece,px,py,score=0;
+function spawn(){piece=SHAPES[0|Math.random()*SHAPES.length].map(r=>r.slice());px=3;py=0;if(hit(0,0)){grid=[...Array(H)].map(()=>Array(W).fill(0));score=0}}
+function hit(dx,dy,p=piece){for(let y=0;y<p.length;y++)for(let x=0;x<p[y].length;x++)if(p[y][x]&&(py+y+dy<0||py+y+dy>=H||px+x+dx<0||px+x+dx>=W||grid[py+y+dy][px+x+dx]))return true;return false}
+function merge(){for(let y=0;y<piece.length;y++)for(let x=0;x<piece[y].length;x++)if(piece[y][x])grid[py+y][px+x]=piece[y][x];grid=grid.filter(r=>r.some(v=>!v));while(grid.length<H)grid.unshift(Array(W).fill(0));score+=10;document.getElementById('s').textContent='Score: '+score+' · ←→ move · ↑ rotate · ↓ soft · Space hard'}
+function rot(){const n=piece[0].map((_,i)=>piece.map(r=>r[i]).reverse());if(!hit(0,0,n))piece=n}
+function draw(){g.fillStyle='#222';g.fillRect(0,0,200,400);const paint=(x,y,v)=>{if(!v)return;g.fillStyle='#6cf';g.fillRect(x*S,y*S,S-1,S-1)};grid.forEach((r,y)=>r.forEach((v,x)=>paint(x,y,v)));piece.forEach((r,y)=>r.forEach((v,x)=>paint(px+x,py+y,v)))}
+onkeydown=e=>{if(e.key==='ArrowLeft'&&!hit(-1,0))px--;if(e.key==='ArrowRight'&&!hit(1,0))px++;if(e.key==='ArrowDown'&&!hit(0,1))py++;if(e.key==='ArrowUp')rot();if(e.key===' '){while(!hit(0,1))py++;merge();spawn()}e.preventDefault()};
+spawn();setInterval(()=>{if(!hit(0,1))py++;else{merge();spawn()}draw()},500);draw();
+</script>
+"#;
+
+fn last_user_text(history: &[MeMessage]) -> String {
+    history
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.clone())
+        .unwrap_or_default()
+}
+
+/// 从用户话里认出常见「H5 小游戏」请求，返回 (文件名, HTML)。
+pub fn detect_mini_demo(ask: &str) -> Option<(&'static str, &'static str)> {
+    let lower = ask.to_ascii_lowercase();
+    let snake = ask.contains("贪吃蛇") || lower.contains("snake");
+    let tetris = ask.contains("俄罗斯方块") || ask.contains("方块") || lower.contains("tetris");
+    let h5ish = ask.contains("h5")
+        || lower.contains("html")
+        || ask.contains("小游戏")
+        || lower.contains("game")
+        || ask.contains("打开");
+    if snake && (h5ish || ask.contains("写")) {
+        return Some(("snake.html", DEMO_SNAKE_HTML));
+    }
+    if tetris && (h5ish || ask.contains("写")) {
+        return Some(("tetris.html", DEMO_TETRIS_HTML));
+    }
+    None
+}
+
+fn write_and_open_demo(
+    cwd: &Path,
+    file: &str,
+    html: &str,
+    zh: bool,
+    notify: &mut impl FnMut(LoopNotice),
+) -> Result<LoopResult, String> {
+    let path = cwd.join(file);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let note = say(
+        zh,
+        "模型写不全长代码块，我改用内置紧凑模板写好并打开。",
+        "The model could not finish a long fence; using a built-in compact template and opening it.",
+    );
+    let command = format!("# demo fallback → {file}");
+    notify(LoopNotice {
+        kind: "running",
+        text: note.clone(),
+        command: command.clone(),
+        output: String::new(),
+        exit_code: None,
+        timed_out: false,
+    });
+    fs::write(&path, html).map_err(|err| format!("写入 {file} 失败：{err}"))?;
+    let open_err = crate::platform::open_path(&path).err().map(|e| e.to_string());
+    let mut output = format!("wrote {} ({} bytes)", path.display(), html.len());
+    if let Some(err) = &open_err {
+        output.push_str(&format!("\nopen failed: {err}"));
+    } else {
+        output.push_str(&format!("\nopened {}", path.display()));
+    }
+    let step = MeStep {
+        command,
+        output,
+        exit_code: Some(if open_err.is_some() { 1 } else { 0 }),
+        truncated: false,
+        timed_out: false,
+        note: note.clone(),
+    };
+    notify(ran_notice(&step));
+    let content = if open_err.is_some() {
+        say(
+            zh,
+            &format!("已经写好 {file}，但自动打开失败了，你可以手动打开项目目录里的文件。"),
+            &format!("Wrote {file}, but auto-open failed — open it from the project folder."),
+        )
+    } else {
+        say(
+            zh,
+            &format!("好了，已写入 {file} 并用默认应用打开。方向键控制，玩吧。"),
+            &format!("Done — wrote {file} and opened it. Arrow keys to play."),
+        )
+    };
+    Ok(LoopResult {
+        content,
+        steps: vec![step],
+        pending: None,
+    })
+}
+
 struct LoopNotice {
     kind: &'static str,
     text: String,
@@ -1396,6 +1594,31 @@ where
                 }
                 format_errors += 1;
                 if format_errors > limits.format_retries {
+                    if let Some((file, html)) = detect_mini_demo(&last_user_text(history)) {
+                        match write_and_open_demo(cwd, file, html, zh, &mut notify) {
+                            Ok(mut demo) => {
+                                let mut all = steps;
+                                all.append(&mut demo.steps);
+                                demo.steps = all;
+                                return Ok(demo);
+                            }
+                            Err(err) => {
+                                return Ok(LoopResult {
+                                    content: say(
+                                        zh,
+                                        &format!(
+                                            "我想用内置模板兜底，但失败了：{err}。你换种说法，或交给 Claude Code / Codex。"
+                                        ),
+                                        &format!(
+                                            "Built-in demo fallback failed: {err}. Rephrase, or hand it to Claude Code / Codex."
+                                        ),
+                                    ),
+                                    steps,
+                                    pending: None,
+                                });
+                            }
+                        }
+                    }
                     return Ok(LoopResult {
                         content: say(
                             zh,
@@ -1421,8 +1644,8 @@ where
                 } else if has_unclosed_fence(&text) {
                     say(
                         zh,
-                        "你的 ```bash 代码块没有闭合（或被截断了），命令不会执行。请用更短的一条命令重发，并确保用 ``` 结束代码块。",
-                        "Your ```bash fence is unclosed (or truncated), so nothing will run. Resend a shorter command and close the fence with ```.",
+                        "你的 ```bash 代码块没有闭合（或被截断了），命令不会执行。请改成更短的可玩版（HTML 建议 ≤60 行），用 cat <<'EOF' > game.html … EOF，末尾 open game.html，并务必用 ``` 结束代码块。不要再写长计划。",
+                        "Your ```bash fence is unclosed (or truncated), so nothing will run. Resend a shorter playable HTML (≤60 lines), cat <<'EOF' > game.html … EOF, end with open game.html, and close the fence with ```. No long plans.",
                     )
                 } else if looks_like_plan_without_command(&text) || looks_like_false_completion(&text)
                 {
@@ -1476,6 +1699,16 @@ where
                 }
                 if cancelled() {
                     return Ok(stopped_result(zh, steps));
+                }
+                if command_needs_confirm(&command) && auto_write {
+                    notify(LoopNotice {
+                        kind: "thinking",
+                        text: say(zh, "已自动同意写入，正在执行…", "Auto-approving write…"),
+                        command: String::new(),
+                        output: String::new(),
+                        exit_code: None,
+                        timed_out: false,
+                    });
                 }
                 notify(LoopNotice {
                     kind: "running",
@@ -1928,18 +2161,56 @@ fn drop_pending_note(session: &mut MeSession, zh: bool) {
     }
 }
 
-fn emit_step(app: &AppHandle, notice: &LoopNotice) {
-    let _ = app.emit(
-        "sugt://me-step",
-        &MeEvent {
-            kind: notice.kind.to_string(),
-            text: notice.text.clone(),
-            command: notice.command.clone(),
-            output: notice.output.clone(),
-            exit_code: notice.exit_code,
-            timed_out: notice.timed_out,
+enum StepSink<'a> {
+    App(&'a AppHandle),
+    Cli,
+}
+
+fn emit_step(sink: &StepSink<'_>, notice: &LoopNotice) {
+    match sink {
+        StepSink::App(app) => {
+            let _ = app.emit(
+                "sugt://me-step",
+                &MeEvent {
+                    kind: notice.kind.to_string(),
+                    text: notice.text.clone(),
+                    command: notice.command.clone(),
+                    output: notice.output.clone(),
+                    exit_code: notice.exit_code,
+                    timed_out: notice.timed_out,
+                },
+            );
+        }
+        StepSink::Cli => match notice.kind {
+            "thinking" => {
+                if !notice.text.is_empty() {
+                    eprintln!("… {}", notice.text);
+                }
+            }
+            "delta" => {
+                // 流式：同一行刷新预览，避免刷屏
+                let preview = clip_chars(&notice.text.replace('\n', " "), 120);
+                eprint!("\r… {preview}");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+            }
+            "running" => {
+                eprintln!();
+                if !notice.text.is_empty() {
+                    eprintln!("› {}", notice.text);
+                }
+                eprintln!("$ {}", notice.command);
+            }
+            "ran" => {
+                let code = notice
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".into());
+                let flag = if notice.timed_out { " timeout" } else { "" };
+                eprintln!("✓ exit {code}{flag}");
+            }
+            _ => {}
         },
-    );
+    }
 }
 
 async fn complete_via_gateway(
@@ -1956,12 +2227,17 @@ async fn complete_via_gateway(
         .build()
         .map_err(|err| err.to_string())?;
     let url = format!("{}/v1/chat/completions", listen.trim_end_matches('/'));
-    let request = client.post(url).bearer_auth(key).json(&json!({
-        "model": model,
-        "messages": messages,
-        "stream": false,
-        "max_tokens": 8192
-    }));
+    let request = client
+        .post(url)
+        .bearer_auth(key)
+        .header("x-sugt-client", "me")
+        .header("x-sugt-skip-workspace-rules", "1")
+        .json(&json!({
+            "model": model,
+            "messages": messages,
+            "stream": false,
+            "max_tokens": 8192
+        }));
     let response = tokio::select! {
         result = request.send() => result.map_err(|err| format!("模型请求失败：{err}"))?,
         _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
@@ -1986,6 +2262,175 @@ async fn complete_via_gateway(
     reply_text(&body).ok_or_else(|| format!("模型没有返回文本：{}", clip_chars(&text, 240)))
 }
 
+/// 经本机网关拉流式 chat completions；`on_delta` 收到累计正文（便于 UI 边出边显）。
+/// 流式失败或空结果时回退到非流式，保证行为不比以前差。
+async fn stream_via_gateway(
+    listen: &str,
+    key: &str,
+    model: &str,
+    messages: Vec<Value>,
+    mut on_delta: impl FnMut(&str),
+) -> Result<String, String> {
+    if is_cancelled() {
+        return Err(STOPPED.to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let url = format!("{}/v1/chat/completions", listen.trim_end_matches('/'));
+    let payload = json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+        "max_tokens": 8192
+    });
+    let request = client
+        .post(&url)
+        .bearer_auth(key)
+        .header("x-sugt-client", "me")
+        .header("x-sugt-skip-workspace-rules", "1")
+        .json(&payload);
+    let response = tokio::select! {
+        result = request.send() => result.map_err(|err| format!("模型请求失败：{err}"))?,
+        _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let text = tokio::select! {
+            result = response.text() => result.unwrap_or_default(),
+            _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
+        };
+        // 上游拒流式时，退回一次性补全
+        let fallback_messages = payload
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        return complete_via_gateway(listen, key, model, fallback_messages)
+            .await
+            .or_else(|fallback| {
+                Err(format!(
+                    "模型返回 {}：{}（回退亦失败：{}）",
+                    status.as_u16(),
+                    clip_chars(&text, 280),
+                    fallback
+                ))
+            });
+    }
+
+    let mut byte_stream = response.bytes_stream();
+    let mut line_buf = String::new();
+    let mut assembled = String::new();
+    let mut saw_done = false;
+
+    loop {
+        if is_cancelled() {
+            return Err(STOPPED.to_string());
+        }
+        let next = tokio::select! {
+            item = byte_stream.next() => item,
+            _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
+        };
+        let Some(chunk) = next else { break };
+        let chunk = chunk.map_err(|err| format!("模型流式读取失败：{err}"))?;
+        line_buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(idx) = line_buf.find('\n') {
+            let mut line = line_buf[..idx].to_string();
+            line_buf.drain(..=idx);
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data == "[DONE]" {
+                saw_done = true;
+                break;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            if let Some(piece) = extract_stream_delta(&value) {
+                if !piece.is_empty() {
+                    assembled.push_str(&piece);
+                    on_delta(&assembled);
+                }
+            }
+        }
+        if saw_done {
+            break;
+        }
+    }
+
+    let trimmed = assembled.trim();
+    if trimmed.is_empty() {
+        let fallback_messages = payload
+            .get("messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        return complete_via_gateway(listen, key, model, fallback_messages).await;
+    }
+    Ok(assembled)
+}
+
+fn extract_stream_delta(chunk: &Value) -> Option<String> {
+    // OpenAI chat SSE: choices[0].delta.content（优先正文）
+    if let Some(content) = chunk.pointer("/choices/0/delta/content") {
+        if let Some(text) = content_value_to_text(content) {
+            return Some(text);
+        }
+    }
+    // 推理模型可能只推 reasoning / reasoning_content
+    for pointer in [
+        "/choices/0/delta/reasoning",
+        "/choices/0/delta/reasoning_content",
+        "/choices/0/message/content",
+        "/choices/0/message/reasoning",
+        "/choices/0/message/reasoning_content",
+    ] {
+        if let Some(content) = chunk.pointer(pointer) {
+            if let Some(text) = content_value_to_text(content) {
+                return Some(text);
+            }
+        }
+    }
+    // Anthropic-ish text delta forwarded as-is
+    if chunk.get("type").and_then(Value::as_str) == Some("content_block_delta") {
+        if let Some(text) = chunk.pointer("/delta/text").and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn content_value_to_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let parts = content.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter_map(|part| {
+            if let Some(t) = part.as_str() {
+                return Some(t.to_string());
+            }
+            part.get("text").and_then(Value::as_str).map(str::to_string)
+        })
+        .collect();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 fn reply_text(body: &Value) -> Option<String> {
     if let Some(text) = quick_chat::extract_reply_text(body) {
         return Some(text);
@@ -2004,7 +2449,7 @@ fn reply_text(body: &Value) -> Option<String> {
 }
 
 async fn speak(
-    app: &AppHandle,
+    sink: StepSink<'_>,
     runtime: &AppRuntime,
     session: &mut MeSession,
     zh: bool,
@@ -2016,7 +2461,7 @@ async fn speak(
     let config_dir = runtime.paths.config_dir.clone();
     let cwd = ensure_work_dir(&config_dir, session)?;
     emit_step(
-        app,
+        &sink,
         &LoopNotice {
             kind: "thinking",
             text: say(zh, "我去接通网关", "Connecting the gateway"),
@@ -2057,14 +2502,50 @@ async fn speak(
         &place_line(zh, &session.mode, &session.project),
     );
     let history = session.messages.clone();
-    let app_handle = app.clone();
+    let sink_cli = matches!(sink, StepSink::Cli);
+    let app_for_delta = match &sink {
+        StepSink::App(app) => Some((*app).clone()),
+        StepSink::Cli => None,
+    };
     let ask = move |messages: Vec<Value>| {
         let listen = listen.clone();
         let key = key.clone();
         let model = model.clone();
-        async move { complete_via_gateway(&listen, &key, &model, messages).await }
+        let app_for_delta = app_for_delta.clone();
+        let sink_cli = sink_cli;
+        async move {
+            stream_via_gateway(&listen, &key, &model, messages, |acc| {
+                let notice = LoopNotice {
+                    kind: "delta",
+                    text: acc.to_string(),
+                    command: String::new(),
+                    output: String::new(),
+                    exit_code: None,
+                    timed_out: false,
+                };
+                if let Some(app) = &app_for_delta {
+                    emit_step(&StepSink::App(app), &notice);
+                } else if sink_cli {
+                    emit_step(&StepSink::Cli, &notice);
+                }
+            })
+            .await
+        }
     };
-    let notify = move |notice: LoopNotice| emit_step(&app_handle, &notice);
+    let notify = {
+        let app_for_notify = match &sink {
+            StepSink::App(app) => Some((*app).clone()),
+            StepSink::Cli => None,
+        };
+        let sink_cli = sink_cli;
+        move |notice: LoopNotice| {
+            if let Some(app) = &app_for_notify {
+                emit_step(&StepSink::App(app), &notice);
+            } else if sink_cli {
+                emit_step(&StepSink::Cli, &notice);
+            }
+        }
+    };
     let ran_pending = pending_command.is_some();
     match run_loop(
         ask,
@@ -2082,6 +2563,9 @@ async fn speak(
     .await
     {
         Ok(mut result) => {
+            if matches!(sink, StepSink::Cli) {
+                eprintln!();
+            }
             if ran_pending {
                 if let Some(step) = result.steps.first() {
                     let note = if step.exit_code == Some(0) && !step.timed_out {
@@ -2247,8 +2731,17 @@ pub async fn me_confirm(
     app: AppHandle,
     runtime: State<'_, AppRuntime>,
     lang: String,
+    auto_write: Option<bool>,
 ) -> Result<MeView, String> {
-    turn(&app, &runtime, lang, Turn::Confirm).await
+    turn(
+        &app,
+        &runtime,
+        lang,
+        Turn::Confirm {
+            auto_write: auto_write.unwrap_or(false),
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2266,12 +2759,128 @@ enum Turn {
         images: Vec<MeImage>,
         auto_write: bool,
     },
-    Confirm,
+    Confirm {
+        auto_write: bool,
+    },
     Dismiss,
 }
 
 async fn turn(
     app: &AppHandle,
+    runtime: &AppRuntime,
+    lang: String,
+    turn: Turn,
+) -> Result<MeView, String> {
+    turn_with_sink(StepSink::App(app), runtime, lang, turn).await
+}
+
+/// CLI / 无 UI：发一条消息给小su（可自动同意写入）。
+pub async fn cli_send(
+    runtime: &AppRuntime,
+    message: String,
+    lang: &str,
+    auto_write: bool,
+    project: Option<String>,
+) -> Result<MeView, String> {
+    let zh = is_zh(lang);
+    if let Some(name) = project {
+        let _ = me_set_place_inner(runtime, "project", Some(name), zh)?;
+    }
+    turn_with_sink(
+        StepSink::Cli,
+        runtime,
+        lang.to_string(),
+        Turn::Send {
+            message,
+            images: Vec::new(),
+            auto_write,
+        },
+    )
+    .await
+}
+
+pub async fn cli_status(runtime: &AppRuntime) -> Result<MeView, String> {
+    with_session(runtime, |config_dir, session| view_of(config_dir, session))
+}
+
+#[derive(Debug, Clone)]
+pub struct MeCliRunResult {
+    pub work_dir: String,
+    pub output: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub opened: Option<String>,
+}
+
+/// CLI：不经模型，在小su 工作目录执行命令；可选再用本机默认应用打开文件。
+pub async fn cli_run(
+    runtime: &AppRuntime,
+    command: String,
+    project: Option<String>,
+    open: Option<String>,
+) -> Result<MeCliRunResult, String> {
+    if let Some(name) = project {
+        let _ = me_set_place_inner(runtime, "project", Some(name), true)?;
+    }
+    let config_dir = runtime.paths.config_dir.clone();
+    let (work_dir, outcome) = {
+        let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
+        let mut session = load_session(&config_dir);
+        let cwd = ensure_work_dir(&config_dir, &mut session)?;
+        let outcome = run_shell(&cwd, &command, SHELL_TIMEOUT, OUTPUT_CHARS);
+        (cwd, outcome)
+    };
+    let mut opened = None;
+    if let Some(rel) = open {
+        let path = {
+            let p = std::path::PathBuf::from(&rel);
+            if p.is_absolute() {
+                p
+            } else {
+                work_dir.join(p)
+            }
+        };
+        if !path.exists() {
+            return Err(format!("要打开的路径不存在：{}", path.display()));
+        }
+        crate::platform::open_path(&path).map_err(|err| err.to_string())?;
+        opened = Some(path.display().to_string());
+    }
+    Ok(MeCliRunResult {
+        work_dir: work_dir.display().to_string(),
+        output: outcome.output,
+        exit_code: outcome.exit_code,
+        timed_out: outcome.timed_out,
+        opened,
+    })
+}
+
+fn me_set_place_inner(
+    runtime: &AppRuntime,
+    mode: &str,
+    project: Option<String>,
+    zh: bool,
+) -> Result<MeView, String> {
+    Ok(with_session(runtime, |config_dir, session| -> Result<MeView, String> {
+        let next_mode = if mode == "config" { "config" } else { "project" };
+        let next_project = if next_mode == "config" {
+            session.project.clone()
+        } else {
+            project
+                .as_deref()
+                .and_then(|name| sanitize_project_name(name).ok())
+                .unwrap_or_else(|| session.project.clone())
+        };
+        if session.mode != next_mode || (next_mode != "config" && session.project != next_project) {
+            switch_place(session, config_dir, next_mode, &next_project, zh)?;
+        }
+        let _ = ensure_work_dir(config_dir, session);
+        Ok(view_of(config_dir, session))
+    })??)
+}
+
+async fn turn_with_sink(
+    sink: StepSink<'_>,
     runtime: &AppRuntime,
     lang: String,
     turn: Turn,
@@ -2283,7 +2892,10 @@ async fn turn(
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
         let mut session = load_session(&config_dir);
         let action = match turn {
-            Turn::Confirm => Intake::Confirm,
+            Turn::Confirm { auto_write: flag } => {
+                auto_write = flag;
+                Intake::Confirm
+            }
             Turn::Dismiss => Intake::Dismiss,
             Turn::Send {
                 message,
@@ -2373,12 +2985,19 @@ async fn turn(
     if let Some((command, note)) = follow_up {
         let place_mode = session.mode.clone();
         let place_project = session.project.clone();
-        // 模型调用可能很久，不占着会话锁，避免界面上的状态查询卡住。
-        speak(app, runtime, &mut session, zh, command, note, auto_write).await?;
+        speak(
+            sink,
+            runtime,
+            &mut session,
+            zh,
+            command,
+            note,
+            auto_write,
+        )
+        .await?;
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
         let latest = load_session(&config_dir);
         if latest.mode == place_mode && latest.project == place_project {
-            // 调用期间用户可能清过对话。只有历史还在，才把这一轮补回去。
             if latest.messages.len() >= session.messages.len().saturating_sub(1) {
                 let mut merged = latest;
                 merged.messages = session.messages;
@@ -2389,7 +3008,6 @@ async fn turn(
                 session = latest;
             }
         } else {
-            // 跑的时候换过地方：结果写回原来的聊天，界面仍显示当前地方。
             save_chat(
                 &config_dir,
                 &place_mode,
@@ -2456,6 +3074,10 @@ mod tests {
         assert!(!command_needs_confirm("sed -n '1p' readme"));
         assert!(!command_needs_confirm("echo \"a > b\""));
         assert!(!command_needs_confirm("ls # rm -rf /"));
+        assert!(!command_needs_confirm("open tetris.html"));
+        assert!(!command_needs_confirm("xdg-open ./game.html"));
+        assert!(!command_needs_confirm("Invoke-Item .\\tetris.html"));
+        assert!(!command_needs_confirm("cmd.exe /c start \"\" tetris.html"));
         assert!(command_needs_confirm("echo hi > notes.txt"));
         assert!(command_needs_confirm("rm -rf tmp"));
         assert!(command_needs_confirm("mkdir notes"));
@@ -2464,6 +3086,69 @@ mod tests {
         assert!(command_needs_confirm("git commit -m \"x\""));
         assert!(command_needs_confirm("sed -i 's/a/b/' f"));
         assert!(command_needs_confirm("echo $(pwd)"));
+    }
+
+    #[test]
+    fn system_prompt_names_detected_host_os_and_open_recipe() {
+        let dir = temp_dir("prompt-os");
+        let prompt = system_prompt(true, &dir, &dir.join("projects"), &dir, "项目里");
+        assert!(prompt.contains(host_os_label()));
+        assert!(prompt.contains(open_file_hint()));
+    }
+
+    #[test]
+    fn stream_delta_reads_openai_content_and_text_parts() {
+        let plain = json!({"choices":[{"delta":{"content":"你好"}}]});
+        assert_eq!(extract_stream_delta(&plain).as_deref(), Some("你好"));
+        let parts = json!({"choices":[{"delta":{"content":[
+            {"type":"text","text":"Hi "},
+            {"type":"text","text":"su"}
+        ]}}]});
+        assert_eq!(extract_stream_delta(&parts).as_deref(), Some("Hi su"));
+        let role_only = json!({"choices":[{"delta":{"role":"assistant"}}]});
+        assert!(extract_stream_delta(&role_only).is_none());
+        let anth = json!({
+            "type":"content_block_delta",
+            "delta":{"type":"text_delta","text":"流"}
+        });
+        assert_eq!(extract_stream_delta(&anth).as_deref(), Some("流"));
+    }
+
+    #[tokio::test]
+    async fn auto_write_keeps_running_a_second_write_in_the_same_loop() {
+        let dir = temp_dir("loop-auto-multi");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_ask = calls.clone();
+        let ask = move |_messages: Vec<Value>| {
+            let n = calls_ask.fetch_add(1, Ordering::SeqCst);
+            async move {
+                match n {
+                    0 => Ok("```bash\nmkdir one\n```".to_string()),
+                    1 => Ok("```bash\nmkdir two\n```".to_string()),
+                    _ => Ok("两个都建好了".to_string()),
+                }
+            }
+        };
+        let result = run_loop(
+            ask,
+            |_| {},
+            true,
+            &dir,
+            &[],
+            None,
+            "",
+            "system",
+            LoopLimits::default(),
+            true,
+            &AtomicBool::new(false),
+        )
+        .await
+        .unwrap();
+        assert!(result.pending.is_none());
+        assert!(dir.join("one").is_dir());
+        assert!(dir.join("two").is_dir());
+        assert!(result.content.contains("两个"));
+        assert!(calls.load(Ordering::SeqCst) >= 3);
     }
 
     #[test]
@@ -2542,6 +3227,23 @@ mod tests {
             parse_model_action("随便聊聊天气吧。"),
             Ok(ModelAction::Say(_))
         ));
+        // 长计划（曾因 <160 字限制被误判成说完）必须催出代码块
+        let long_plan = "用户要求写一个H5贪吃蛇小游戏并打开。我需要在当前工作目录 \
+/Users/x/Library/Application Support/sugt/projects/snake-play 创建一个HTML文件，然后打开它。\n\n\
+让我先写一个完整的贪吃蛇游戏HTML文件。游戏应该包含：\n- 得分\n\n\
+I'll create a single self-contained HTML file.";
+        assert!(looks_like_plan_without_command(long_plan));
+        assert!(parse_model_action(long_plan).is_err());
+    }
+
+    #[test]
+    fn detect_mini_demo_recognizes_snake_and_tetris() {
+        let snake = detect_mini_demo("帮我写个h5的贪吃蛇小游戏并打开").expect("snake");
+        assert_eq!(snake.0, "snake.html");
+        assert!(snake.1.contains("Snake"));
+        let tetris = detect_mini_demo("写个俄罗斯方块 html 打开").expect("tetris");
+        assert_eq!(tetris.0, "tetris.html");
+        assert!(detect_mini_demo("今天天气怎么样").is_none());
     }
 
     #[test]

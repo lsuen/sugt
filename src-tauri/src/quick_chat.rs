@@ -98,17 +98,37 @@ pub fn extract_reply_text(body: &Value) -> Option<String> {
         "/choices/0/message/content",
         "/choices/0/text",
         "/content/0/text",
+        // 部分推理模型把正文放在 reasoning（content 为空）
+        "/choices/0/message/reasoning",
+        "/choices/0/message/reasoning_content",
+        "/choices/0/delta/reasoning",
     ] {
-        if let Some(content) = body
-            .pointer(pointer)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(content.to_string());
+        if let Some(content) = body.pointer(pointer).and_then(value_as_nonempty_text) {
+            return Some(content);
         }
     }
     None
+}
+
+fn value_as_nonempty_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(text.to_string());
+    }
+    let parts = value.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter_map(|part| {
+            part.as_str()
+                .map(str::to_string)
+                .or_else(|| part.get("text").and_then(Value::as_str).map(str::to_string))
+        })
+        .collect();
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 pub fn extract_usage(body: &Value) -> Option<(u64, u64)> {

@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.1.3';
+export const CURRENT_VERSION = '1.1.6';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,7 +6,7 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '新增「全局规则」：规则正文、文档习惯、Webhook 各自开关' },
-  { type: 'feat', text: '新配置预置通用规则（默认不注入），并默认开启 AGENTS.md 与 docs/MAP.md' },
-  { type: 'feat', text: '文档习惯可写「作用与说明」；Webhook 只在本地代发，不进入模型上下文' },
+  { type: 'feat', text: 'SOUL：流式回复、自动同意写入、跨平台打开文件；CLI me send / me run' },
+  { type: 'feat', text: 'SOUL：中文路径、写后核对、小游戏兜底；底栏显示项目/模型/网关与快捷键' },
+  { type: 'fix', text: 'SOUL：长计划不再误判为说完；未闭合代码块会催促并必要时用内置模板' },
 ];

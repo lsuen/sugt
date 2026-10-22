@@ -550,8 +550,32 @@ pub async fn send_webhook_markdown(
     Ok(())
 }
 
+fn skip_workspace_rules(headers: &HeaderMap) -> bool {
+    let flag = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| {
+                v == "1"
+                    || v.eq_ignore_ascii_case("true")
+                    || v.eq_ignore_ascii_case("me")
+                    || v.eq_ignore_ascii_case("soul")
+            })
+            .unwrap_or(false)
+    };
+    flag("x-sugt-skip-workspace-rules") || flag("x-sugt-client")
+}
+
 /// 返回 (body, 是否注入了全局规则)。
-fn apply_workspace_rules(body: Bytes, config: &AppConfig, shape: RequestShape) -> (Bytes, bool) {
+fn apply_workspace_rules(
+    body: Bytes,
+    config: &AppConfig,
+    shape: RequestShape,
+    headers: &HeaderMap,
+) -> (Bytes, bool) {
+    if skip_workspace_rules(headers) {
+        return (body, false);
+    }
     let injected = workspace_rules::build_inject_text(
         &config.workspace_rules,
         &config.listen_url(),
@@ -685,7 +709,7 @@ async fn proxy_anthropic_request(
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
     let (body_bytes, rules_injected) =
-        apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages);
+        apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages, &headers);
     // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
     let access_mode = config.anthropic_access_mode;
     let providers = ordered_providers(&config);
@@ -919,7 +943,7 @@ async fn proxy_request(
 
     if path == "v1/responses" || path.starts_with("v1/responses/") {
         let (body_bytes, rules_injected) =
-            apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses);
+            apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses, &headers);
         return proxy_responses_via_chat(
             state,
             headers,
@@ -932,7 +956,7 @@ async fn proxy_request(
     }
 
     let (body_bytes, rules_injected) =
-        apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat);
+        apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat, &headers);
     let providers = ordered_providers(&config);
 
     if providers.is_empty() {
