@@ -43,6 +43,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Built-in catalog of Chinese providers (ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, and more) with standard Base URLs and model lists
 - Enable / disable providers, switch the default model, and test connectivity from one panel
+- Experimental free channels: auto-probe once when you open the console or select that upstream (no background polling); refresh manually anytime
 
 ### One-Click Agent Takeover
 
@@ -53,6 +54,8 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - A lightweight companion on the **SOUL** tab — the soul of the app, not a separate “gateway agent”
 - Chat, create small projects under the local projects folder, write files, and edit app or system config with confirm-before-write (macOS defaults to `~/Library/Application Support/sugt/projects/`, away from iCloud Documents)
+- Optional **auto-approve writes** for trusted sessions; after a write, su re-reads the file to verify
+- Long shell output is trimmed (head + tail kept) so context stays usable on larger projects
 - Reasons with **your** configured upstream model through the local gateway; paste screenshots when the model supports vision
 - Separate chat history per working place; stop a run mid-flight; hand heavier work to Claude Code or Codex
 
@@ -132,23 +135,28 @@ The UI refreshes immediately after switching — every panel, dialog, toast, and
 
 ### Install
 
-**Windows (winget)** — once the manifest merges upstream, you can install with:
+**Windows (winget)** — once the manifest merges upstream:
 
 ```bash
-winget install lsuen.sugt
+winget install lsuen.SUGT
 ```
 
-**Windows (direct)** — download the installer from [GitHub Releases](https://github.com/lsuen/sugt/releases) and run it.
+**Windows (direct)** — download the NSIS installer (`SUTAI_*_x64-setup.exe`) or the zip from [GitHub Releases](https://github.com/lsuen/sugt/releases).
 
-**macOS (Homebrew)** — the prebuilt app is published as a Homebrew cask:
+**macOS (Homebrew)** — prebuilt cask from the open-source tap:
 
 ```bash
+# first install
 brew tap lsuen/homebrew-sugt
-brew trust lsuen/sugt        # one-time: trust the unsigned open-source tap
+brew trust lsuen/sugt        # one-time: trust this unsigned tap
 brew install --cask sugt
+
+# later updates
+brew update
+brew upgrade --cask sugt
 ```
 
-> The app is unsigned. On first launch, right-click **SUTAI.app** in Finder and choose **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
+Launch from Applications as **SUTAI**. The app is unsigned: on first launch, right-click → **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
 
 Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/Library/Application Support/sugt/` (auto-migrates from legacy `Documents/.sugt` when Documents is iCloud-synced). Override with `SUGT_CONFIG_DIR`.
 

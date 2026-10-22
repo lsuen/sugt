@@ -43,6 +43,7 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 - 内置国内服务商目录（魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 等），提供标准 Base URL 与模型列表
 - 启停服务商、切换默认模型、一键测连通性
+- 实验免费通道：打开控制台或选中该上游时自动探测一次（无后台定时轮询）；需要时可手动刷新
 
 ### 客户端一键接管
 
@@ -53,6 +54,8 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 - **SOUL** 页里的轻量伙伴——是这款软件的灵魂与本体，不是另起一套「网关代理」
 - 可聊天、在本地项目目录建小项目、写文件，以及改应用或系统配置（写入前会先确认；macOS 默认在 `~/Library/Application Support/sugt/projects/`，避开 iCloud 文稿）
+- 可选**自动同意写入**（信任会话时用）；写入后会再读一遍文件核对
+- 过长的终端输出会裁掉头尾保留，大项目里上下文更稳
 - 经本机网关，用**你配置的上游大模型**替小su思考；支持粘贴截图（需上游支持视觉）
 - 按工作目录分别保留对话；可中途停下；重活可交给 Claude Code 或 Codex
 
@@ -132,23 +135,28 @@ SUGT 内置 **中文 / English** 双语支持，所有界面文本均通过统�
 
 ### 下载安装
 
-**Windows（winget）**：manifest 合并上游后即可直接安装：
+**Windows（winget）**：manifest 合并上游后：
 
 ```bash
-winget install lsuen.sugt
+winget install lsuen.SUGT
 ```
 
-**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载安装包，安装即可运行。
+**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 NSIS 安装包（`SUTAI_*_x64-setup.exe`）或 zip。
 
-**macOS（Homebrew）**：已发布预编译 Homebrew cask：
+**macOS（Homebrew）**：开源 tap 预编译 cask：
 
 ```bash
+# 首次安装
 brew tap lsuen/homebrew-sugt
 brew trust lsuen/sugt        # 一次性：信任本开源 tap
 brew install --cask sugt
+
+# 以后更新
+brew update
+brew upgrade --cask sugt
 ```
 
-> 应用未签名。首次启动时在 Finder 中右键 SUTAI.app 选择「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
+从「应用程序」打开 **SUTAI**。应用未签名：首次启动请右键 →「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
 配置目录：Windows / Linux 默认 `Documents/.sugt/`；macOS 默认 `~/Library/Application Support/sugt/`（若文稿已进 iCloud，会从旧的 `Documents/.sugt` 自动迁过去）。可用环境变量 `SUGT_CONFIG_DIR` 覆盖。
 
