@@ -163,6 +163,54 @@ pub fn estimate_output_tokens(text: &str) -> u64 {
     units.ceil().max(1.0) as u64
 }
 
+/// 粗估 Chat Completions 请求的入站 token：消息正文 + tools schema（不计 JSON 外壳噪音）。
+/// Codex 每轮都会带全量 tools + 历史，因此「短句」也会到数万，这是上下文体积而非统计错误。
+pub fn estimate_chat_input_tokens(chat_json: &str) -> u64 {
+    let Ok(value) = serde_json::from_str::<Value>(chat_json) else {
+        return estimate_output_tokens(chat_json);
+    };
+    let mut total = 0u64;
+    if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        for msg in messages {
+            total = total.saturating_add(estimate_message_tokens(msg));
+        }
+    }
+    if let Some(tools) = value.get("tools") {
+        total = total.saturating_add(estimate_output_tokens(&tools.to_string()));
+    }
+    if let Some(system) = value.get("instructions").and_then(Value::as_str) {
+        total = total.saturating_add(estimate_output_tokens(system));
+    }
+    total.max(1)
+}
+
+fn estimate_message_tokens(msg: &Value) -> u64 {
+    let mut n = 4; // role / 结构开销
+    match msg.get("content") {
+        Some(Value::String(s)) => n += estimate_output_tokens(s),
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                if let Some(t) = part.get("text").and_then(Value::as_str) {
+                    n += estimate_output_tokens(t);
+                } else if let Some(t) = part.as_str() {
+                    n += estimate_output_tokens(t);
+                } else {
+                    n += estimate_output_tokens(&part.to_string());
+                }
+            }
+        }
+        Some(other) => n += estimate_output_tokens(&other.to_string()),
+        None => {}
+    }
+    if let Some(tools) = msg.get("tool_calls") {
+        n += estimate_output_tokens(&tools.to_string());
+    }
+    if let Some(args) = msg.get("function_call") {
+        n += estimate_output_tokens(&args.to_string());
+    }
+    n
+}
+
 pub fn tokens_per_sec(output_tokens: u64, latency_ms: u64) -> f64 {
     if output_tokens == 0 || latency_ms == 0 {
         return 0.0;
@@ -210,6 +258,10 @@ mod tests {
     #[test]
     fn estimate_and_history_build() {
         assert!(estimate_output_tokens("你好世界") >= 4);
+        let chat = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"x","parameters":{}}}]}"#;
+        let n = estimate_chat_input_tokens(chat);
+        assert!(n > 1);
+        assert!(n < estimate_output_tokens(chat));
         let hist = [
             HistoryMsg {
                 role: "user".into(),

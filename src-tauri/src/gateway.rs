@@ -16,7 +16,7 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::{
@@ -1181,6 +1181,9 @@ async fn proxy_responses_via_chat(
         );
 
         if stream {
+            let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
+                std::str::from_utf8(&chat_body).unwrap_or(""),
+            );
             let response = builder.body(chat_body).send().await?;
             if response.status().is_success() || response.status().as_u16() < 500 {
                 let ok = response.status().is_success();
@@ -1204,18 +1207,25 @@ async fn proxy_responses_via_chat(
                         response.bytes_stream(),
                         model,
                         tool_meta,
+                        estimated_input,
                     );
+                let stats = Some(state.stats.clone());
+                let token_attr = Some(token_attr_from(&headers, &provider));
+                let tapped = tap_stream_for_token_stats(mapped, stats, token_attr);
                 return Ok(Response::builder()
                     .status(status)
                     .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
                     .header(http::header::CACHE_CONTROL, "no-cache")
-                    .body(Body::from_stream(mapped))?);
+                    .body(Body::from_stream(tapped))?);
             }
             state.trip_circuit(&provider.id).await;
             last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
             continue;
         }
 
+        let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
+            std::str::from_utf8(&chat_body).unwrap_or(""),
+        );
         match builder.body(chat_body).send().await {
             Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
                 state.reset_circuit(&provider.id).await;
@@ -1245,6 +1255,27 @@ async fn proxy_responses_via_chat(
                         rules_injected,
                     )
                     .await;
+                if status.is_success() {
+                    let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
+                        .unwrap_or_else(|| {
+                            (
+                                estimated_input,
+                                crate::quick_chat::estimate_output_tokens(&body_text),
+                            )
+                        });
+                    if input > 0 || output > 0 {
+                        let attr = token_attr_from(&headers, &provider);
+                        state
+                            .stats
+                            .record_tokens_attributed(
+                                input,
+                                output,
+                                Some(attr.0.as_str()),
+                                Some(attr.1.as_str()),
+                            )
+                            .await;
+                    }
+                }
                 let bytes = if status.is_success() {
                     crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
                         &body_text,
@@ -1439,9 +1470,34 @@ async fn into_axum_response(
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
-    let stream = response.bytes_stream();
-    let mapped = stream.map(move |item| {
-        let bytes = item.map_err(std::io::Error::other)?;
+    let mapped = tap_stream_for_token_stats(
+        response.bytes_stream().map(|item| item.map_err(std::io::Error::other)),
+        stats,
+        token_attr,
+    );
+    let mut builder = Response::builder().status(status);
+
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+
+    Ok(builder.body(Body::from_stream(mapped))?)
+}
+
+/// 从响应字节流中拾取 usage 并记入请求统计（Chat SSE / Responses SSE 均可）。
+fn tap_stream_for_token_stats<S>(
+    stream: S,
+    stats: Option<GatewayStatsCollector>,
+    token_attr: Option<(String, String)>,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
+where
+    S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+{
+    stream.map(move |item| {
+        let bytes = item?;
         if let Some((input, output)) = parse_usage_from_bytes(&bytes) {
             if let Some(collector) = stats.clone() {
                 let attr = token_attr.clone();
@@ -1457,17 +1513,7 @@ async fn into_axum_response(
             }
         }
         Ok::<Bytes, std::io::Error>(bytes)
-    });
-    let mut builder = Response::builder().status(status);
-
-    for (name, value) in headers.iter() {
-        if name.as_str().eq_ignore_ascii_case("content-length") {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-
-    Ok(builder.body(Body::from_stream(mapped))?)
+    })
 }
 
 fn token_attr_from(headers: &HeaderMap, provider: &ProviderConfig) -> (String, String) {

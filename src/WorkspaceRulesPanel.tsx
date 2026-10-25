@@ -2,6 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Plus, Trash2, X } from 'lucide-react';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 export type DocHabitView = {
   enabled: boolean;
@@ -382,6 +383,7 @@ export function WorkspaceRulesPanel({ rules, busy, run, onSaved }: Props) {
       </div>
 
       {injectOpen && (
+        <ModalPortal>
         <div className="modal-overlay" onClick={() => setInjectOpen(false)}>
           <div className="modal rules-inject-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
@@ -409,6 +411,7 @@ export function WorkspaceRulesPanel({ rules, busy, run, onSaved }: Props) {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

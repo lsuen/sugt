@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Search, X } from 'lucide-react';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 export type DiscoveredAgent = {
   id: string;
@@ -162,6 +163,7 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
   };
 
   return (
+    <ModalPortal>
     <div className="modal-overlay">
       <div className="modal takeover-modal agent-discover-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -266,5 +268,6 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

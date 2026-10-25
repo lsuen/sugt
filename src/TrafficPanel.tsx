@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { TrafficStats } from './providerPresets';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 function TrafficChart({ buckets }: { buckets: TrafficStats['hourly_buckets'] }) {
   const max = Math.max(...buckets.map((b) => b.success + b.failed), 1);
@@ -50,6 +51,7 @@ function ClientsDetailModal({
   onClose: () => void;
 }) {
   return (
+    <ModalPortal>
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact traffic-clients-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -88,6 +90,7 @@ function ClientsDetailModal({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }
 
@@ -99,6 +102,7 @@ function ChannelsDetailModal({
   onClose: () => void;
 }) {
   return (
+    <ModalPortal>
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact traffic-clients-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -134,6 +138,7 @@ function ChannelsDetailModal({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }
 
@@ -214,6 +219,7 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
               <strong>{formatToken(traffic.today_output_tokens)}</strong>
             </div>
           </div>
+          <p className="hint compact traffic-token-hint">{t('trafstat.tokenHint')}</p>
           {(lastProvider || lastPath) && (
             <p className="hint compact traffic-last-hit">
               {t('trafstat.lastHit')}{lastProvider ?? '—'}

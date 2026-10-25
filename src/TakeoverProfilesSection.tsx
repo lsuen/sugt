@@ -5,6 +5,7 @@ import { TakeoverProfileModal } from './TakeoverProfileModal';
 import { AgentDiscoverModal } from './AgentDiscoverModal';
 import { AgentAdvancedPanel } from './AgentAdvancedPanel';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 export type TakeoverProfileView = {
   id: string;
@@ -245,6 +246,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
       />
 
       {envTarget && (
+        <ModalPortal>
         <div className="modal-overlay">
           <div className="modal takeover-env-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
@@ -313,6 +315,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

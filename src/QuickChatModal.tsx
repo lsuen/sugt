@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Copy, Eraser, Loader2, Send, X } from 'lucide-react';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 type ChatRole = 'user' | 'assistant' | 'system';
 
@@ -273,6 +274,7 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
   if (!open) return null;
 
   return (
+    <ModalPortal>
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal modal-compact quick-chat-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -441,5 +443,6 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
         )}
       </div>
     </div>
+    </ModalPortal>
   );
 }

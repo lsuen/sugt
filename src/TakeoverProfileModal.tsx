@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { FileSearch, Plus, X } from 'lucide-react';
 import type { TakeoverProfileView } from './TakeoverProfilesSection';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 export type TakeoverProfileForm = {
   id: string;
@@ -143,6 +144,7 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
   const disabled = busy || saving;
 
   return (
+    <ModalPortal>
     <div className="modal-overlay">
       <div className="modal takeover-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -245,5 +247,6 @@ export function TakeoverProfileModal({ open, mode, busy, aiEnabled, initial, onC
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

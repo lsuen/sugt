@@ -8,12 +8,12 @@
   --bg-glow-2: rgba(201, 160, 255, 0.14);
   --bg-image: url("./bg.jpg");
   --bg-image-opacity: 0.4;
-  --surface: rgba(32, 18, 30, 0.72);
-  --surface-2: rgba(20, 12, 20, 0.78);
+  --surface: rgba(32, 18, 30, 0.78);
+  --surface-2: rgba(20, 12, 20, 0.94);
   --surface-glass: rgba(40, 22, 36, 0.45);
   --glass-blur: 16px;
-  --sidebar-bg: rgba(20, 12, 20, 0.62);
-  --scrim: rgba(12, 6, 12, 0.5);
+  --sidebar-bg: rgba(20, 12, 20, 0.72);
+  --scrim: rgba(12, 6, 12, 0.62);
   --text: #fff0f6;
   --muted: #c4a0b4;
   --code: var(--_rose);

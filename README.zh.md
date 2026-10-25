@@ -48,7 +48,8 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 ### 客户端一键接管
 
 - 自动发现本机已安装的 Agent 客户端
-- 通过环境变量与启动脚本，让 Claude Code / Codex / OpenCode 指向本地网关；解除接管时自动清理干净
+- Claude Code / OpenCode：写环境变量与启动脚本指向本机网关；解除接管时清理干净
+- **Codex（CLI / Desktop）**：写入 `~/.codex/config.toml` 的 `model_providers.sugt` 与 `wire_api = "responses"`（新版 Codex 往往忽略纯环境变量）。上游若无原生 Responses，网关会做 Responses → Chat 回落：提起 `additional_tools`、保留 function/custom 工具，并把 `reasoning_*` 与可见正文分开
 
 ### SOUL / 小su
 

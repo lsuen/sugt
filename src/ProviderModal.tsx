@@ -12,6 +12,7 @@ import {
   type ProviderProtocol,
 } from './providerPresets';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 type ProviderModalProps = {
   form: ProviderForm;
@@ -145,6 +146,7 @@ export function ProviderModal({
       : undefined;
 
   return (
+    <ModalPortal>
     <div className="modal-overlay">
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -313,5 +315,6 @@ export function ProviderModal({
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }

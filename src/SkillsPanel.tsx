@@ -6,6 +6,7 @@ import {
 import { GithubProxyModal } from './store/GithubProxyModal';
 import type { ParsedGitRepo, SkillCatalogItem, SkillRepoView, StoreSettings } from './store/types';
 import { t } from './i18n';
+import { ModalPortal } from './ModalPortal';
 
 export type MountedAgentRef = { id: string; name: string };
 
@@ -558,6 +559,7 @@ export function SkillsPanel({
       </div>
 
       {mountOpen && (
+        <ModalPortal>
         <div className="modal-overlay">
           <div className="modal takeover-env-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
@@ -617,6 +619,7 @@ export function SkillsPanel({
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

@@ -6,6 +6,7 @@ import {
   Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
+import { ModalPortal } from './ModalPortal';
 import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
@@ -255,14 +256,16 @@ type ToastItem = {
 function ToastHost({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: number) => void }) {
   if (!toasts.length) return null;
   return (
-    <div className="toast-host" aria-live="polite">
-      {toasts.map((toast) => (
-        <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
-          <span className="toast-text">{toast.text}</span>
-          <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={t('common.close')}>×</button>
-        </div>
-      ))}
-    </div>
+    <ModalPortal>
+      <div className="toast-host" aria-live="polite">
+        {toasts.map((toast) => (
+          <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
+            <span className="toast-text">{toast.text}</span>
+            <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={t('common.close')}>×</button>
+          </div>
+        ))}
+      </div>
+    </ModalPortal>
   );
 }
 
@@ -298,18 +301,20 @@ function Modal({
   closeOnOverlay?: boolean;
 }) {
   return (
-    <div
-      className="modal-overlay"
-      onClick={closeOnOverlay ? onClose : undefined}
-    >
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h3>{title}</h3>
-          <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}><X size={18} /></button>
+    <ModalPortal>
+      <div
+        className="modal-overlay"
+        onClick={closeOnOverlay ? onClose : undefined}
+      >
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-head">
+            <h3>{title}</h3>
+            <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}><X size={18} /></button>
+          </div>
+          <div className="modal-body">{children}</div>
         </div>
-        <div className="modal-body">{children}</div>
       </div>
-    </div>
+    </ModalPortal>
   );
 }
 

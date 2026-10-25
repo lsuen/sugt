@@ -48,7 +48,8 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 ### One-Click Agent Takeover
 
 - Automatically discovers installed agent clients on your machine
-- Sets environment variables and launch scripts so Claude Code / Codex / OpenCode point at the local gateway; releasing the takeover cleans everything up
+- Claude Code / OpenCode: environment variables and launch scripts point at the local gateway; releasing the takeover cleans them up
+- **Codex (CLI / Desktop)**: writes `~/.codex/config.toml` with `model_providers.sugt` and `wire_api = "responses"` (env alone is unreliable on new Codex). The gateway bridges Responses → Chat Completions when the upstream has no native Responses API — lifting `additional_tools`, keeping function/custom tools, and separating `reasoning_*` from visible `output_text`
 
 ### SOUL / su
 

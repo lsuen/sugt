@@ -39,9 +39,9 @@ body,
   opacity: var(--bg-image-opacity);
 }
 
+/* Do NOT put z-index on shell children — it traps position:fixed modals inside that pane. */
 .app-shell > * {
   position: relative;
-  z-index: 1;
 }
 
 .sidebar {
@@ -73,12 +73,24 @@ body,
 }
 
 .card {
+  /* 毛玻璃放在 ::before，避免 backdrop-filter 把 position:fixed 弹窗裁进卡片 */
+  position: relative;
+  isolation: isolate;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  box-shadow: var(--shadow);
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
-  box-shadow: var(--shadow);
+  pointer-events: none;
 }
 
 .primary {
@@ -141,12 +153,24 @@ select option,
 }
 
 .modal {
-  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  /* denser than page cards so glass/illustration themes stay readable; no backdrop-filter */
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--bg) 18%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
   box-shadow: var(--shadow);
+  color: var(--text);
+}
+
+.modal .icon-btn {
+  color: var(--muted);
+}
+
+.modal-head {
+  border-bottom-color: var(--border);
+}
+
+.modal-body .field-label {
+  color: var(--muted);
 }
 
 .provider.active {

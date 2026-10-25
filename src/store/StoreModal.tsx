@@ -1,6 +1,7 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { t } from '../i18n';
+import { ModalPortal } from '../ModalPortal';
 
 type Props = {
   title: string;
@@ -13,19 +14,21 @@ type Props = {
 
 export function StoreModal({ title, onClose, children, wide, closeOnOverlay = false }: Props) {
   return (
-    <div
-      className="modal-overlay"
-      onClick={closeOnOverlay ? onClose : undefined}
-    >
-      <div className={`modal${wide ? ' modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h3>{title}</h3>
-          <button type="button" className="ghost tiny-btn" onClick={onClose} aria-label={t('common.close')}>
-            <X size={16} />
-          </button>
+    <ModalPortal>
+      <div
+        className="modal-overlay"
+        onClick={closeOnOverlay ? onClose : undefined}
+      >
+        <div className={`modal${wide ? ' modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-head">
+            <h3>{title}</h3>
+            <button type="button" className="ghost tiny-btn" onClick={onClose} aria-label={t('common.close')}>
+              <X size={16} />
+            </button>
+          </div>
+          <div className="modal-body">{children}</div>
         </div>
-        <div className="modal-body">{children}</div>
       </div>
-    </div>
+    </ModalPortal>
   );
 }
