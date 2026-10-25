@@ -13,6 +13,7 @@ import { GatewayAccessBanner } from './GatewayAccessBanner';
 import { SettingsPanel, type OverlayConfigView } from './SettingsPanel';
 import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
 import { SkillsPanel } from './SkillsPanel';
+import { UpdateSection } from './UpdateSection';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
@@ -839,6 +840,12 @@ function App() {
               <div><strong>{t('about.logFile')}</strong><span>{status?.log_file}</span></div>
               <div><strong>{t('about.listen')}</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
             </div>
+            <UpdateSection
+              busy={busy}
+              setBusy={setBusy}
+              pushToast={pushToast}
+              formatInvokeError={formatInvokeError}
+            />
             <div className="release-notes-frame">
               <div className="release-notes-head">
                 <strong>{t('about.releaseHead')}</strong>

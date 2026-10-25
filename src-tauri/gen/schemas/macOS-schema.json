@@ -573,6 +573,12 @@
           "markdownDescription": "Enables the uninstall_clients_env command"
         },
         {
+          "description": "Enables in-app update check and install",
+          "type": "string",
+          "const": "allow-update-commands",
+          "markdownDescription": "Enables in-app update check and install"
+        },
+        {
           "description": "Enables the update_gateway_settings command",
           "type": "string",
           "const": "allow-update-gateway-settings",

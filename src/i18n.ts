@@ -59,7 +59,7 @@ const zh = {
   'tab.logs.title': '运行日志',
   'tab.logs.desc': '网关实时日志与调试信息',
   'tab.about.title': '关于 SUTAI',
-  'tab.about.desc': '版本、更新说明与项目信息',
+  'tab.about.desc': '版本、在线更新与项目信息',
 
   // 通用
   'common.loading': '加载中',
@@ -160,6 +160,28 @@ const zh = {
   'about.expires': '有效期至',
   'about.daysLeft': '剩余天数',
   'about.message': '说明',
+
+  // 在线更新
+  'update.title': '检查更新',
+  'update.hint': '通过 GitHub Release 检查新版本。优先直连，失败则使用设置里的 GitHub 代理与内置镜像。',
+  'update.check': '检查更新',
+  'update.checking': '检查中…',
+  'update.openRelease': '打开发布页',
+  'update.current': '当前版本',
+  'update.latest': '最新版本',
+  'update.channel': '访问通道',
+  'update.status': '状态',
+  'update.statusAvailable': '有新版本',
+  'update.statusLatest': '已是最新',
+  'update.channelDirect': '直连 GitHub',
+  'update.channelUser': '用户代理 {prefix}',
+  'update.channelMirror': '镜像 {prefix}',
+  'update.apply': '下载并安装 v{version}',
+  'update.applying': '正在更新…',
+  'update.noAsset': '当前平台暂无安装包，请打开发布页手动下载。',
+  'update.toastAvailable': '发现新版本 v{version}',
+  'update.toastLatest': '已是最新版本',
+  'update.toastExiting': '即将退出以便完成安装…',
 
   // 删除确认
   'delete.title': '确认删除',
@@ -573,7 +595,7 @@ const zh = {
 
   // GitHub 克隆代理（GithubProxyModal）
   'gproxy.title': 'GitHub 克隆代理',
-  'gproxy.hint': '国内网络可配置加速前缀，刷新技能仓库时 git clone 将访问拼接后的地址。留空则直连 GitHub。',
+  'gproxy.hint': '国内网络可配置加速前缀：技能仓 git clone 与应用内检查/下载更新共用。留空则优先直连 GitHub，失败时再试内置镜像。',
   'gproxy.prefixLabel': '代理前缀',
   'gproxy.prefixPlaceholder': '例如 https://ghfast.top',
   'gproxy.preview': '预览：',
@@ -798,7 +820,7 @@ const en: Record<keyof typeof zh, string> = {
   'tab.logs.title': 'Logs',
   'tab.logs.desc': 'Real-time gateway logs & debug info',
   'tab.about.title': 'About SUTAI',
-  'tab.about.desc': 'Version, release notes & project info',
+  'tab.about.desc': 'Version, in-app updates & project info',
 
   'common.loading': 'Loading',
   'common.running': 'Running',
@@ -893,6 +915,27 @@ const en: Record<keyof typeof zh, string> = {
   'about.expires': 'Expires At',
   'about.daysLeft': 'Days Left',
   'about.message': 'Note',
+
+  'update.title': 'Check for Updates',
+  'update.hint': 'Checks GitHub Releases for a newer build. Tries direct access first, then your GitHub proxy and built-in mirrors.',
+  'update.check': 'Check',
+  'update.checking': 'Checking…',
+  'update.openRelease': 'Open Release Page',
+  'update.current': 'Current',
+  'update.latest': 'Latest',
+  'update.channel': 'Channel',
+  'update.status': 'Status',
+  'update.statusAvailable': 'Update available',
+  'update.statusLatest': 'Up to date',
+  'update.channelDirect': 'Direct GitHub',
+  'update.channelUser': 'User proxy {prefix}',
+  'update.channelMirror': 'Mirror {prefix}',
+  'update.apply': 'Download & install v{version}',
+  'update.applying': 'Updating…',
+  'update.noAsset': 'No installer for this platform; open the release page to download manually.',
+  'update.toastAvailable': 'New version v{version} available',
+  'update.toastLatest': 'You are up to date',
+  'update.toastExiting': 'Exiting so the installer can finish…',
 
   'delete.title': 'Confirm Delete',
   'delete.body': 'Delete model "{name}"?',
@@ -1289,7 +1332,7 @@ const en: Record<keyof typeof zh, string> = {
   'pm.fetchModelListTitle': 'Calls the official model list API',
 
   'gproxy.title': 'GitHub Clone Proxy',
-  'gproxy.hint': 'For China networks, set an acceleration prefix; refreshing skill repos will git clone the concatenated URL. Leave empty to connect to GitHub directly.',
+  'gproxy.hint': 'For China networks, set an acceleration prefix used by skill-repo clones and in-app update checks/downloads. Leave empty to prefer direct GitHub, then built-in mirrors.',
   'gproxy.prefixLabel': 'Proxy Prefix',
   'gproxy.prefixPlaceholder': 'e.g. https://ghfast.top',
   'gproxy.preview': 'Preview: ',

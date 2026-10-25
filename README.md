@@ -166,6 +166,8 @@ brew upgrade --cask sugt
 
 Launch from Applications as **SUTAI**. The app is unsigned: on first launch, right-click → **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
 
+**In-app updates:** About → Check for Updates. Fallback order is direct GitHub → your configured GitHub proxy → built-in/remote mirrors. Windows can silent-install the NSIS package; macOS replaces the `.app` when writable, otherwise opens the download folder for a manual drag into Applications. Homebrew / winget remain install channels.
+
 Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/Library/Application Support/sugt/` (auto-migrates from legacy `Documents/.sugt` when Documents is iCloud-synced). Override with `SUGT_CONFIG_DIR`.
 
 ### CLI

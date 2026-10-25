@@ -166,6 +166,8 @@ brew upgrade --cask sugt
 
 从「应用程序」打开 **SUTAI**。应用未签名：首次启动请右键 →「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
+**应用内更新**：打开「关于」→「检查更新」。会按「直连 GitHub → 你配置的 GitHub 代理 → 内置/远端镜像」回退；Win 可静默安装 NSIS，macOS 在可写时自动替换 `.app`，否则打开下载目录供手动拖入「应用程序」。Homebrew / winget 仍可作为安装渠道。
+
 配置目录：Windows / Linux 默认 `Documents/.sugt/`；macOS 默认 `~/Library/Application Support/sugt/`（若文稿已进 iCloud，会从旧的 `Documents/.sugt` 自动迁过去）。可用环境变量 `SUGT_CONFIG_DIR` 覆盖。
 
 ### CLI

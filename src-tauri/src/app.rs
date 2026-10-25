@@ -1,4 +1,4 @@
-use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, store, tray};
+use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, store, tray, update};
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
@@ -97,6 +97,9 @@ pub fn run() {
             store::commands::get_agent_advanced,
             store::commands::import_agent_skill,
             store::commands::save_agent_advanced_path,
+            update::commands::check_app_update,
+            update::commands::apply_app_update,
+            update::commands::open_app_release_page,
         ])
         .setup(|app| {
             tray::setup(app)?;

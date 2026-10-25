@@ -21,6 +21,7 @@ pub mod logging;
 pub mod me_agent;
 pub mod model;
 pub mod tray;
+pub mod update;
 pub mod product;
 pub mod provider_catalog;
 pub mod quick_chat;

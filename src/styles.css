@@ -375,6 +375,15 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .trial-note.expired { color: #ff95a7; }
 .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; text-align: left; }
 .about-grid div { padding: 12px; border-radius: 12px; background: rgba(255,255,255,.04); display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.about-update { margin-top: 18px; text-align: left; padding: 14px; border-radius: 12px; background: rgba(255,255,255,.04); }
+.about-update .section-title { margin-bottom: 8px; }
+.about-update-status { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; font-size: 12px; }
+.about-update-status div { display: flex; flex-direction: column; gap: 4px; }
+.about-update-status strong { color: var(--muted, #94a9bd); font-weight: 500; }
+.about-update-progress { margin-top: 10px; font-size: 12px; color: var(--muted, #94a9bd); }
+.about-update-bar { margin-top: 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.about-update-bar i { display: block; height: 100%; background: var(--accent, #5b8cff); border-radius: inherit; }
+.about-update-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .about-version-card { cursor: pointer; user-select: none; }
 .trial-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .trial-detail-grid div { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }

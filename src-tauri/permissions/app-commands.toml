@@ -186,6 +186,15 @@ commands.allow = [
 ]
 
 [[permission]]
+identifier = "allow-update-commands"
+description = "Enables in-app update check and install"
+commands.allow = [
+  "check_app_update",
+  "apply_app_update",
+  "open_app_release_page"
+]
+
+[[permission]]
 identifier = "allow-store-commands"
 description = "Enables store edition commands"
 commands.allow = [
