@@ -367,7 +367,10 @@ fn codex_client_status(config_dir: &Path, config: &AppConfig) -> ClientEnvStatus
 
     let mut issues = Vec::new();
     if config.codex_takeover_enabled && !cfg_status.matches_gateway {
-        issues.push("Codex config.toml 的 openai_base_url 未指向本地网关".to_string());
+        issues.push(
+            "Codex config.toml 未正确指向本地网关（需 model_providers.sugt + wire_api=responses）"
+                .to_string(),
+        );
     }
     // 仅当没有任何 Agent 声明 OPENAI_*（含 OpenCode 等）时，才把指向网关的变量当残留
     if !openai_active {
@@ -391,11 +394,12 @@ fn codex_client_status(config_dir: &Path, config: &AppConfig) -> ClientEnvStatus
     } else if !config.codex_takeover_enabled {
         "已有 Agent 使用 OPENAI_* 指向网关（非 Codex）；这是预期行为".to_string()
     } else if config_ok {
-        "Codex 以 ~/.codex/config.toml 为准；接管后请新开终端".to_string()
+        "Codex 以 ~/.codex/config.toml（model_providers.sugt / responses）为准；接管后请新开终端"
+            .to_string()
     } else if cfg_status.openai_base_url.is_some() {
-        "config.toml 中 openai_base_url 与网关不一致，请点「修复」".to_string()
+        "config.toml 中网关地址或 wire_api 不一致，请点「修复」".to_string()
     } else {
-        "需写入 ~/.codex/config.toml，请点「接管」".to_string()
+        "需写入 ~/.codex/config.toml（model_providers），请点「接管」".to_string()
     };
 
     ClientEnvStatus {

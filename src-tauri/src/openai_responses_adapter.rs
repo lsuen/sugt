@@ -4,17 +4,36 @@ use bytes::Bytes;
 use futures_util::{pin_mut, Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-/// ? OpenAI Responses API ????? Chat Completions ???
+const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
+
+/// Chat 回落时保留的工具元数据，用于把 tool_calls 还原成 Codex 期望的 item 类型。
+#[derive(Debug, Clone, Default)]
+pub struct ChatToolMeta {
+    /// 由 Responses `custom` 转成的 Chat function 名（如 exec / apply_patch）
+    pub custom_names: HashSet<String>,
+}
+
+/// 将 OpenAI Responses 请求转为 Chat Completions（Codex → 仅 Chat 的上游）。
 pub fn responses_to_chat(body: &Bytes, upstream_model: &str) -> Result<Bytes> {
+    Ok(responses_to_chat_with_meta(body, upstream_model)?.0)
+}
+
+pub fn responses_to_chat_with_meta(
+    body: &Bytes,
+    upstream_model: &str,
+) -> Result<(Bytes, ChatToolMeta)> {
     let value: Value = if body.is_empty() {
         json!({})
     } else {
         serde_json::from_slice(body)?
     };
+
+    let mut meta = ChatToolMeta::default();
+    let chat_tools = collect_chat_tools_from_responses(&value, &mut meta);
 
     let mut messages: Vec<Value> = input_to_messages(value.get("input"))
         .as_array()
@@ -53,6 +72,7 @@ pub fn responses_to_chat(body: &Bytes, upstream_model: &str) -> Result<Bytes> {
                 "top_p",
                 "tool_choice",
                 "response_format",
+                "parallel_tool_calls",
             ] {
                 if let Some(v) = obj.get(key) {
                     out_obj.insert(key.to_string(), v.clone());
@@ -63,26 +83,224 @@ pub fn responses_to_chat(body: &Bytes, upstream_model: &str) -> Result<Bytes> {
                     out_obj.insert("max_tokens".to_string(), v.clone());
                 }
             }
-            // Codex Responses ? tools ?? custom/shell??? Chat ?????????????
-            if obj.get("tools").is_some() {
-                warn!(
-                    tool_count = obj.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
-                    "stripping Codex tools for chat/completions upstream compatibility"
-                );
-                out_obj.remove("tools");
+
+            if chat_tools.is_empty() {
+                // 严格上游：有 tool_choice 无 tools 会 400；空 tools 也不要发
                 out_obj.remove("tool_choice");
+                out_obj.remove("parallel_tool_calls");
+                out_obj.remove("tools");
+            } else {
+                out_obj.insert("tools".to_string(), Value::Array(chat_tools.clone()));
             }
         }
     }
 
-    debug!(
+    info!(
         upstream_model = upstream_model,
         message_count = messages.len(),
+        tool_count = chat_tools.len(),
+        custom_tools = meta.custom_names.len(),
         stream,
         "responses_to_chat converted request"
     );
 
-    Ok(Bytes::from(serde_json::to_vec(&out)?))
+    Ok((Bytes::from(serde_json::to_vec(&out)?), meta))
+}
+
+fn collect_chat_tools_from_responses(body: &Value, meta: &mut ChatToolMeta) -> Vec<Value> {
+    let mut chat_tools = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(tools) = body.get("tools").and_then(|v| v.as_array()) {
+        for tool in tools {
+            push_response_tool_as_chat(tool, &mut chat_tools, &mut seen, meta);
+        }
+    }
+    if let Some(input) = body.get("input") {
+        collect_input_declared_tools(input, &mut chat_tools, &mut seen, meta);
+    }
+    chat_tools
+}
+
+fn collect_input_declared_tools(
+    value: &Value,
+    chat_tools: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    meta: &mut ChatToolMeta,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_input_declared_tools(item, chat_tools, seen, meta);
+            }
+        }
+        Value::Object(obj) => {
+            let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if matches!(typ, "additional_tools" | "tool_search_output") {
+                if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
+                    for tool in tools {
+                        push_response_tool_as_chat(tool, chat_tools, seen, meta);
+                    }
+                }
+            }
+            for child in obj.values() {
+                collect_input_declared_tools(child, chat_tools, seen, meta);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_response_tool_as_chat(
+    tool: &Value,
+    chat_tools: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    meta: &mut ChatToolMeta,
+) {
+    match tool.get("type").and_then(|v| v.as_str()) {
+        Some("function") => {
+            if let Some(chat) = responses_function_to_chat_tool(tool) {
+                let name = chat
+                    .pointer("/function/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.is_empty() && seen.insert(name) {
+                    chat_tools.push(chat);
+                }
+            }
+        }
+        Some("custom") => {
+            if let Some((name, chat)) = responses_custom_to_chat_tool(tool) {
+                if seen.insert(name.clone()) {
+                    meta.custom_names.insert(name);
+                    chat_tools.push(chat);
+                }
+            }
+        }
+        Some("namespace") => {
+            let children = tool
+                .get("tools")
+                .or_else(|| tool.get("children"))
+                .and_then(|v| v.as_array());
+            if let Some(children) = children {
+                for child in children {
+                    // Codex 把 exec/apply_patch 等 custom 挂在 functions namespace 下
+                    push_response_tool_as_chat(child, chat_tools, seen, meta);
+                }
+            }
+        }
+        Some("tool_search") => {
+            let name = "tool_search".to_string();
+            if seen.insert(name.clone()) {
+                chat_tools.push(json!({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool.get("description").cloned().unwrap_or_else(|| {
+                            json!("Search and load tools for the current task.")
+                        }),
+                        "parameters": tool.get("parameters").cloned().unwrap_or_else(|| json!({
+                            "type": "object",
+                            "properties": {
+                                "query": { "type": "string" }
+                            },
+                            "required": ["query"]
+                        })),
+                    }
+                }));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn responses_function_to_chat_tool(tool: &Value) -> Option<Value> {
+    let name = tool.get("name").and_then(|v| v.as_str())?;
+    if name.is_empty() {
+        return None;
+    }
+    let description = tool
+        .get("description")
+        .cloned()
+        .unwrap_or_else(|| json!(""));
+    let parameters = tool
+        .get("parameters")
+        .or_else(|| tool.get("input_schema"))
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    Some(json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }
+    }))
+}
+
+fn responses_custom_to_chat_tool(tool: &Value) -> Option<(String, Value)> {
+    let name = tool.get("name").and_then(|v| v.as_str())?.to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let mut description = tool
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if let Ok(def) = serde_json::to_string(tool) {
+        if !description.is_empty() {
+            description.push_str("\n\n");
+        }
+        description.push_str("Original tool definition:\n");
+        description.push_str(&def);
+    }
+    let chat = json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    CUSTOM_TOOL_INPUT_FIELD: {
+                        "type": "string",
+                        "description": "Raw string input for the original custom tool."
+                    }
+                },
+                "required": [CUSTOM_TOOL_INPUT_FIELD]
+            }
+        }
+    });
+    Some((name, chat))
+}
+
+fn custom_tool_input_from_chat_arguments(arguments: &str) -> String {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(input) = map.get(CUSTOM_TOOL_INPUT_FIELD).and_then(|v| v.as_str()) {
+            return input.to_string();
+        }
+        if let Some(input) = map.get(CUSTOM_TOOL_INPUT_FIELD) {
+            return input.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn is_custom_tool_name(name: &str, meta: &ChatToolMeta) -> bool {
+    if meta.custom_names.contains(name) {
+        return true;
+    }
+    // 无 meta 时的兜底：Codex 常见 freeform 工具
+    matches!(
+        name,
+        "exec" | "apply_patch" | "shell_command" | "write_stdin" | "shell"
+    )
 }
 
 /// ???????? OpenAI Responses API??? Coding /api/coding/v3?/api/v3 ??
@@ -228,7 +446,8 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                     }],
                 }))
             }
-            "item_reference" | "reasoning" => None,
+            // 工具声明载体：已在 collect_chat_tools 提起，不能当成 user 文本
+            "item_reference" | "reasoning" | "additional_tools" | "tool_search_output" => None,
             _ => Some(json!({ "role": "user", "content": item.to_string() })),
         }
     } else if let Some(obj) = item.as_object() {
@@ -297,33 +516,112 @@ pub fn is_openai_compat_error_body(body: &str) -> bool {
 }
 
 pub fn chat_json_to_responses_body(body: &str, model: &str) -> Result<Bytes> {
+    chat_json_to_responses_body_with_meta(body, model, &ChatToolMeta::default())
+}
+
+pub fn chat_json_to_responses_body_with_meta(
+    body: &str,
+    model: &str,
+    meta: &ChatToolMeta,
+) -> Result<Bytes> {
     if is_openai_compat_error_body(body) {
         return Ok(Bytes::from(body.to_string()));
     }
 
     let chat: Value = serde_json::from_str(body).unwrap_or(json!({}));
-    let text = chat
+    let message = chat
         .get("choices")
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("");
+        .cloned()
+        .unwrap_or(json!({}));
+
+    let mut text = message
+        .get("content")
+        .and_then(content_value_to_text)
+        .unwrap_or_default();
+    if text.is_empty() {
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(r) = message.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                text = r.to_string();
+                break;
+            }
+        }
+    }
 
     let id = chat
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("sugt-resp");
+
+    let mut output: Vec<Value> = Vec::new();
+    if !text.is_empty() {
+        output.push(json!({
+            "type": "message",
+            "id": format!("msg_{id}"),
+            "role": "assistant",
+            "status": "completed",
+            "content": [{ "type": "output_text", "text": text }],
+        }));
+    }
+
+    if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+        for (idx, call) in tool_calls.iter().enumerate() {
+            let call_id = call
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("call")
+                .to_string();
+            let name = call
+                .pointer("/function/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("function")
+                .to_string();
+            let arguments = call
+                .pointer("/function/arguments")
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .unwrap_or_else(|| "{}".to_string());
+            if is_custom_tool_name(&name, meta) {
+                output.push(json!({
+                    "type": "custom_tool_call",
+                    "id": format!("ctc_{call_id}_{idx}"),
+                    "call_id": call_id,
+                    "name": name,
+                    "input": custom_tool_input_from_chat_arguments(&arguments),
+                    "status": "completed",
+                }));
+            } else {
+                output.push(json!({
+                    "type": "function_call",
+                    "id": format!("fc_{call_id}_{idx}"),
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                    "status": "completed",
+                }));
+            }
+        }
+    }
+
+    if output.is_empty() {
+        output.push(json!({
+            "type": "message",
+            "id": format!("msg_{id}"),
+            "role": "assistant",
+            "status": "completed",
+            "content": [{ "type": "output_text", "text": "" }],
+        }));
+    }
+
     let out = json!({
         "id": id,
         "object": "response",
         "status": "completed",
         "model": model,
-        "output": [{
-            "type": "message",
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": text }],
-        }],
+        "output": output,
         "usage": chat.get("usage").cloned().unwrap_or(json!({})),
     });
     Ok(Bytes::from(serde_json::to_vec(&out)?))
@@ -341,6 +639,7 @@ struct SseMapState {
     tool_calls: HashMap<usize, ToolCallAccum>,
     upstream_samples: Vec<String>,
     output_index: u32,
+    tool_meta: ChatToolMeta,
 }
 
 struct ToolCallAccum {
@@ -349,6 +648,7 @@ struct ToolCallAccum {
     arguments: String,
     item_added: bool,
     output_index: u32,
+    is_custom: bool,
 }
 
 fn new_ids() -> (String, String) {
@@ -481,30 +781,37 @@ fn finalize_events(state: &mut SseMapState) -> String {
         }));
     }
 
-    for tool in state.tool_calls.values() {
-        let item_done = json!({
-            "type": "response.output_item.done",
-            "sequence_number": state.sequence,
-            "output_index": tool.output_index,
-            "item": {
+    let mut tools: Vec<&ToolCallAccum> = state.tool_calls.values().collect();
+    tools.sort_by_key(|t| t.output_index);
+    for tool in tools {
+        let item = if tool.is_custom {
+            json!({
+                "type": "custom_tool_call",
+                "id": format!("ctc_{}", tool.id),
+                "call_id": tool.id,
+                "name": tool.name,
+                "input": custom_tool_input_from_chat_arguments(&tool.arguments),
+                "status": "completed",
+            })
+        } else {
+            json!({
                 "type": "function_call",
-                "id": tool.id,
+                "id": format!("fc_{}", tool.id),
                 "call_id": tool.id,
                 "name": tool.name,
                 "arguments": tool.arguments,
                 "status": "completed",
-            }
+            })
+        };
+        let item_done = json!({
+            "type": "response.output_item.done",
+            "sequence_number": state.sequence,
+            "output_index": tool.output_index,
+            "item": item.clone(),
         });
         state.sequence += 1;
         out += &format_sse_data(&item_done);
-        completed_output.push(json!({
-            "type": "function_call",
-            "id": tool.id,
-            "call_id": tool.id,
-            "name": tool.name,
-            "arguments": tool.arguments,
-            "status": "completed",
-        }));
+        completed_output.push(item);
     }
 
     let completed = json!({
@@ -567,6 +874,11 @@ fn extract_chat_message_text(parsed: &Value) -> Option<String> {
     if let Some(msg) = choice.get("message") {
         if let Some(text) = msg.get("content").and_then(content_value_to_text) {
             return Some(text);
+        }
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(text) = msg.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                return Some(text.to_string());
+            }
         }
     }
     extract_chat_delta(parsed)
@@ -666,6 +978,7 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
                 arguments: String::new(),
                 item_added: false,
                 output_index,
+                is_custom: false,
             }
         });
 
@@ -678,6 +991,7 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
             .and_then(|n| n.as_str())
         {
             entry.name = name.to_string();
+            entry.is_custom = is_custom_tool_name(name, &state.tool_meta);
         }
         if let Some(args) = call
             .get("function")
@@ -694,18 +1008,30 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
         if !entry.item_added && !entry.name.is_empty() {
             entry.item_added = true;
             state.sequence += 1;
-            let item_added = json!({
-                "type": "response.output_item.added",
-                "sequence_number": state.sequence,
-                "output_index": entry.output_index,
-                "item": {
+            let item = if entry.is_custom {
+                json!({
+                    "type": "custom_tool_call",
+                    "id": format!("ctc_{}", entry.id),
+                    "call_id": entry.id,
+                    "name": entry.name,
+                    "input": "",
+                    "status": "in_progress",
+                })
+            } else {
+                json!({
                     "type": "function_call",
-                    "id": entry.id,
+                    "id": format!("fc_{}", entry.id),
                     "call_id": entry.id,
                     "name": entry.name,
                     "arguments": "",
                     "status": "in_progress",
-                }
+                })
+            };
+            let item_added = json!({
+                "type": "response.output_item.added",
+                "sequence_number": state.sequence,
+                "output_index": entry.output_index,
+                "item": item,
             });
             out += &format_sse_data(&item_added);
         }
@@ -715,12 +1041,13 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
             .and_then(|f| f.get("arguments"))
             .and_then(|a| a.as_str())
         {
-            if !args.is_empty() {
+            // custom 工具的 Chat 参数是 JSON 分片，不能逐片 parse；完整 input 在 item.done 给出
+            if !args.is_empty() && !entry.is_custom {
                 state.sequence += 1;
                 let event = json!({
                     "type": "response.function_call_arguments.delta",
                     "sequence_number": state.sequence,
-                    "item_id": entry.id,
+                    "item_id": format!("fc_{}", entry.id),
                     "output_index": entry.output_index,
                     "delta": args,
                 });
@@ -873,10 +1200,18 @@ impl SseLineParser {
     }
 }
 
-/// ? OpenAI Chat SSE ?? Responses SSE?Codex ??????????
+/// 将 OpenAI Chat SSE 转为 Responses SSE（Codex 消费）。
 pub fn chat_sse_to_responses_sse(
     input: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     model: String,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    chat_sse_to_responses_sse_with_meta(input, model, ChatToolMeta::default())
+}
+
+pub fn chat_sse_to_responses_sse_with_meta(
+    input: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    model: String,
+    tool_meta: ChatToolMeta,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
     Box::pin(stream! {
         let (response_id, item_id) = new_ids();
@@ -892,6 +1227,7 @@ pub fn chat_sse_to_responses_sse(
             tool_calls: HashMap::new(),
             upstream_samples: Vec::new(),
             output_index: 0,
+            tool_meta,
         };
         let mut parser = SseLineParser::new();
 
@@ -1015,6 +1351,7 @@ mod tests {
             tool_calls: HashMap::new(),
             upstream_samples: Vec::new(),
             output_index: 0,
+            tool_meta: ChatToolMeta::default(),
         };
         let prelude = created_event(&state) + &ensure_message_prelude(&mut state);
         assert!(prelude.contains("response.created"));
@@ -1085,5 +1422,105 @@ mod tests {
     fn extracts_reasoning_content_delta() {
         let parsed = json!({"choices":[{"delta":{"reasoning_content":"think"}}]});
         assert_eq!(extract_chat_delta(&parsed), Some("think".to_string()));
+    }
+
+    #[test]
+    fn lifts_additional_tools_into_chat_tools() {
+        let body = Bytes::from(
+            r#"{
+              "model":"gpt-4",
+              "stream":false,
+              "tool_choice":"auto",
+              "input":[
+                {
+                  "type":"additional_tools",
+                  "id":"at_1",
+                  "role":"developer",
+                  "tools":[
+                    {
+                      "type":"namespace",
+                      "name":"functions",
+                      "tools":[
+                        {"type":"custom","name":"exec","description":"Run a command"},
+                        {"type":"function","name":"get_weather","description":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
+                      ]
+                    }
+                  ]
+                },
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}
+              ]
+            }"#,
+        );
+        let (out, meta) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        let tools = v["tools"].as_array().expect("tools present");
+        assert_eq!(tools.len(), 2);
+        assert!(meta.custom_names.contains("exec"));
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(|n| n.as_str()))
+            .collect();
+        assert!(names.contains(&"exec"));
+        assert!(names.contains(&"get_weather"));
+        // additional_tools 不得变成 user 文本消息
+        let msgs = v["messages"].as_array().unwrap();
+        assert!(msgs.iter().all(|m| {
+            m.get("content")
+                .and_then(|c| c.as_str())
+                .map(|s| !s.contains("additional_tools"))
+                .unwrap_or(true)
+        }));
+        assert_eq!(msgs.last().unwrap()["content"], "hi");
+    }
+
+    #[test]
+    fn omits_tool_choice_when_no_tools() {
+        let body = Bytes::from(
+            r#"{"model":"gpt-4","tool_choice":"auto","parallel_tool_calls":true,"input":"hi"}"#,
+        );
+        let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert!(v.get("tools").is_none());
+        assert!(v.get("tool_choice").is_none());
+        assert!(v.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn non_stream_falls_back_reasoning_content() {
+        let body = r#"{"id":"c1","choices":[{"message":{"role":"assistant","content":"","reasoning_content":"only think"},"finish_reason":"stop"}]}"#;
+        let out = chat_json_to_responses_body(body, "m").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["output"][0]["content"][0]["text"], "only think");
+    }
+
+    #[test]
+    fn non_stream_maps_custom_tool_call() {
+        let body = r#"{"id":"c1","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"exec","arguments":"{\"input\":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let mut meta = ChatToolMeta::default();
+        meta.custom_names.insert("exec".into());
+        let out = chat_json_to_responses_body_with_meta(body, "m", &meta).unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["output"][0]["type"], "custom_tool_call");
+        assert_eq!(v["output"][0]["name"], "exec");
+        assert_eq!(v["output"][0]["input"], "ls");
+    }
+
+    #[tokio::test]
+    async fn sse_stream_maps_reasoning_to_output_text() {
+        let upstream = stream::iter(vec![
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
+            )),
+            Ok(Bytes::from("data: [DONE]\n\n")),
+        ]);
+        let mapped = chat_sse_to_responses_sse(upstream, "m".to_string());
+        let chunks: Vec<Bytes> = mapped.map(|r| r.expect("io")).collect().await;
+        let all = chunks
+            .iter()
+            .map(|b| String::from_utf8_lossy(b))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(all.contains("\"delta\":\"think\""));
+        assert!(all.contains("response.completed"));
     }
 }

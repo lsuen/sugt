@@ -1158,8 +1158,11 @@ async fn proxy_responses_via_chat(
             }
         }
 
-        let chat_body =
-            crate::openai_responses_adapter::responses_to_chat(&body_bytes, &provider.model_name)?;
+        let (chat_body, tool_meta) =
+            crate::openai_responses_adapter::responses_to_chat_with_meta(
+                &body_bytes,
+                &provider.model_name,
+            )?;
         let target = build_target_url(&provider.base_url, "v1/chat/completions", query);
         let mut builder = state.client.request(method.clone(), &target);
         builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
@@ -1173,6 +1176,7 @@ async fn proxy_responses_via_chat(
             stream,
             auto_adapt = provider.auto_adapt_base_url,
             mode = "chat_completions_adapter",
+            custom_tools = tool_meta.custom_names.len(),
             "proxying codex responses via chat completions"
         );
 
@@ -1195,10 +1199,12 @@ async fn proxy_responses_via_chat(
                     .await;
                 let status = response.status();
                 let model = provider.public_model_id();
-                let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse(
-                    response.bytes_stream(),
-                    model,
-                );
+                let mapped =
+                    crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
+                        response.bytes_stream(),
+                        model,
+                        tool_meta,
+                    );
                 return Ok(Response::builder()
                     .status(status)
                     .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
@@ -1240,9 +1246,10 @@ async fn proxy_responses_via_chat(
                     )
                     .await;
                 let bytes = if status.is_success() {
-                    crate::openai_responses_adapter::chat_json_to_responses_body(
+                    crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
                         &body_text,
                         &provider.public_model_id(),
+                        &tool_meta,
                     )?
                 } else {
                     Bytes::from(body_text)

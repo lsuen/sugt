@@ -89,7 +89,7 @@ pub fn builtin_profiles() -> Vec<TakeoverProfile> {
             "codex",
             "OpenAI Codex CLI",
             "OpenAI",
-            "OPENAI_API_KEY + OPENAI_BASE_URL（/v1）",
+            "~/.codex/config.toml model_providers.sugt（wire_api=responses）+ auth.json；env 仅作兜底",
             "openai",
             btreemap(&[
                 ("OPENAI_API_KEY", "{client_key}"),
