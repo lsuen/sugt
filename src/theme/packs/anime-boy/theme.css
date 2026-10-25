@@ -1,0 +1,44 @@
+/* Anime boy — cool cyan glass over illustration backdrop */
+[data-theme="anime-boy"] {
+  --_ink: #071018;
+  --_cyan: #5ec8ff;
+  --_violet: #7a8cff;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(94, 200, 255, 0.18);
+  --bg-glow-2: rgba(122, 140, 255, 0.14);
+  --bg-image: url("./bg.jpg");
+  --bg-image-opacity: 0.42;
+  --surface: rgba(10, 22, 36, 0.72);
+  --surface-2: rgba(6, 14, 24, 0.78);
+  --surface-glass: rgba(12, 28, 44, 0.45);
+  --glass-blur: 16px;
+  --sidebar-bg: rgba(6, 14, 24, 0.62);
+  --scrim: rgba(4, 10, 18, 0.5);
+  --text: #e8f6ff;
+  --muted: #8fb0c8;
+  --code: var(--_cyan);
+  --border: rgba(94, 200, 255, 0.22);
+  --border-strong: rgba(94, 200, 255, 0.42);
+  --focus-ring: rgba(94, 200, 255, 0.35);
+  --accent: var(--_cyan);
+  --accent-2: var(--_violet);
+  --accent-soft: rgba(94, 200, 255, 0.14);
+  --danger: #ff6b8a;
+  --danger-soft: rgba(255, 107, 138, 0.16);
+  --success: #6dffc2;
+  --success-soft: rgba(109, 255, 194, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.06);
+  --chip-active: rgba(94, 200, 255, 0.18);
+  --btn-primary-bg: linear-gradient(135deg, #5ec8ff, #7a8cff);
+  --btn-primary-fg: #041018;
+  --btn-ghost-bg: rgba(255, 255, 255, 0.08);
+  --btn-ghost-border: rgba(255, 255, 255, 0.14);
+  --btn-danger-bg: linear-gradient(135deg, #ff6b8a, #ff9a6b);
+  --input-bg: rgba(8, 18, 30, 0.85);
+  --scrollbar: rgba(94, 200, 255, 0.45);
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  --radius: 16px;
+  --radius-sm: 12px;
+  --font-ui: "Hiragino Sans", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Hiragino Sans", "PingFang SC", system-ui, sans-serif;
+}

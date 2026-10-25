@@ -1,0 +1,45 @@
+/* Shan-shui ink — cinnabar / gold / indigo wash */
+[data-theme="shanshui"] {
+  --_ink: #0b0e12;
+  --_cyan: #5f93a8;
+  --_cinnabar: #d05a48;
+  --_gold: #d4a941;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(95, 147, 168, 0.18);
+  --bg-glow-2: rgba(212, 169, 65, 0.1);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(19, 25, 32, 0.88);
+  --surface-2: rgba(11, 14, 18, 0.94);
+  --surface-glass: rgba(19, 25, 32, 0.58);
+  --glass-blur: 12px;
+  --sidebar-bg: rgba(11, 14, 18, 0.82);
+  --scrim: rgba(11, 14, 18, 0.5);
+  --text: #ece7dc;
+  --muted: #8a8578;
+  --code: var(--_gold);
+  --border: rgba(95, 147, 168, 0.28);
+  --border-strong: rgba(95, 147, 168, 0.5);
+  --focus-ring: rgba(208, 90, 72, 0.35);
+  --accent: var(--_cyan);
+  --accent-2: var(--_cinnabar);
+  --accent-soft: rgba(95, 147, 168, 0.16);
+  --danger: var(--_cinnabar);
+  --danger-soft: rgba(208, 90, 72, 0.16);
+  --success: #7aa05a;
+  --success-soft: rgba(122, 160, 90, 0.14);
+  --chip-bg: rgba(236, 231, 220, 0.04);
+  --chip-active: rgba(95, 147, 168, 0.18);
+  --btn-primary-bg: linear-gradient(135deg, #5f93a8, #3d6d80);
+  --btn-primary-fg: #ece7dc;
+  --btn-ghost-bg: rgba(19, 25, 32, 0.55);
+  --btn-ghost-border: rgba(236, 231, 220, 0.14);
+  --btn-danger-bg: linear-gradient(135deg, #d05a48, #b06a3b);
+  --input-bg: #131920;
+  --scrollbar: var(--_cyan);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --font-ui: "Songti SC", "STSong", "Noto Serif SC", "PingFang SC", serif;
+  --font-display: "Songti SC", "STSong", "Noto Serif SC", serif;
+}

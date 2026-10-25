@@ -5,6 +5,7 @@ import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
   Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
 } from 'lucide-react';
+import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
 import { SettingsPanel, type OverlayConfigView } from './SettingsPanel';
@@ -17,6 +18,8 @@ import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPa
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { lang, t } from './i18n';
+
+bootstrapTheme();
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings' | 'logs' | 'about';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
@@ -326,6 +329,13 @@ function App() {
   const [trialDetail, setTrialDetail] = useState(false);
   const versionClicks = useRef(0);
   const versionClickTimer = useRef<number | null>(null);
+  const {
+    themeId,
+    catalog: themeCatalog,
+    setTheme,
+    registerTheme,
+    error: themeError,
+  } = useTheme();
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
@@ -685,7 +695,13 @@ function App() {
             statusListenUrl={status?.listen_url ?? 'http://127.0.0.1:8787'}
             run={run}
             onNavigate={setTab}
+            pushToast={pushToast}
             formatInvokeError={formatInvokeError}
+            themeId={themeId}
+            themeCatalog={themeCatalog}
+            onTheme={setTheme}
+            onThemeImport={registerTheme}
+            themeError={themeError}
           />
           </div>
         )}

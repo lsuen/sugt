@@ -46,9 +46,15 @@ scripts/.notify-*.json
 # Editor / AI-agent guidance (local, not part of the product)
 /CLAUDE.md
 /AGENTS.md
+# Theme system + agent skin rules ship with the product
+!/AGENTS.md
 
 # Author-side packaging / release scripts (not shipped)
 /scripts/
+
+# Theme authoring guides ship with the product (other /docs/**/*.md stay local)
+!/docs/THEME_AUTHORING.md
+!/docs/THEME_AUTHORING.zh.md
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)

@@ -1,0 +1,45 @@
+/* Jazz night — blue-black + gold + wine */
+[data-theme="jazz"] {
+  --_ink: #08070d;
+  --_gold: #d4af37;
+  --_wine: #8b2240;
+  --_blue: #2a3a6e;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(42, 58, 110, 0.28);
+  --bg-glow-2: rgba(212, 175, 55, 0.12);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(18, 16, 28, 0.9);
+  --surface-2: rgba(8, 7, 13, 0.95);
+  --surface-glass: rgba(18, 16, 28, 0.58);
+  --glass-blur: 14px;
+  --sidebar-bg: rgba(8, 7, 13, 0.88);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --text: #efe6d4;
+  --muted: #8e8798;
+  --code: var(--_gold);
+  --border: rgba(212, 175, 55, 0.22);
+  --border-strong: rgba(212, 175, 55, 0.45);
+  --focus-ring: rgba(139, 34, 64, 0.4);
+  --accent: var(--_gold);
+  --accent-2: var(--_wine);
+  --accent-soft: rgba(212, 175, 55, 0.14);
+  --danger: var(--_wine);
+  --danger-soft: rgba(139, 34, 64, 0.2);
+  --success: #6bbf8a;
+  --success-soft: rgba(107, 191, 138, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.04);
+  --chip-active: rgba(212, 175, 55, 0.16);
+  --btn-primary-bg: linear-gradient(135deg, #d4af37, #8b2240);
+  --btn-primary-fg: #08070d;
+  --btn-ghost-bg: rgba(18, 16, 28, 0.55);
+  --btn-ghost-border: rgba(212, 175, 55, 0.22);
+  --btn-danger-bg: linear-gradient(135deg, #8b2240, #c43c2c);
+  --input-bg: #12101c;
+  --scrollbar: var(--_gold);
+  --shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --font-ui: Georgia, "Songti SC", "PingFang SC", serif;
+  --font-display: Georgia, "Times New Roman", serif;
+}

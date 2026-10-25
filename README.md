@@ -84,6 +84,13 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - Detects gateway unavailability every 20 seconds and restarts it automatically
 - Manages a detached `sugt-cli serve` process via PID file (no window, background-only)
 
+### Appearance / Themes
+
+- Built-in skins: Cyber Console, Street, Skate, Brickyard, Shan-shui, HIPHOP, Jazz Night, plus **Anime Boy** / **Anime Girl** (illustrated backdrops with frosted glass panels)
+- Themes are **one CSS file (or JSON pack) each** on a fixed ~40-token contract — background images, translucent surfaces, and `backdrop-filter` glass included
+- Settings → Appearance to switch; import a `theme.json` pack for custom skins
+- Authoring guide: [docs/THEME_AUTHORING.md](docs/THEME_AUTHORING.md) · Agent rules: [AGENTS.md](AGENTS.md)
+
 ## Screenshots
 
 Console — start/stop, traffic, agent endpoints.

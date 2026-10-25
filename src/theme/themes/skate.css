@@ -1,0 +1,45 @@
+/* Skate park — orange wheel + pool blue */
+[data-theme="skate"] {
+  --_ink: #0b1220;
+  --_orange: #ffb020;
+  --_pool: #3bb4ff;
+  --_flame: #ff7a1a;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(255, 176, 32, 0.2);
+  --bg-glow-2: rgba(59, 180, 255, 0.18);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(18, 28, 46, 0.9);
+  --surface-2: rgba(11, 18, 32, 0.94);
+  --surface-glass: rgba(18, 28, 46, 0.6);
+  --glass-blur: 8px;
+  --sidebar-bg: rgba(11, 18, 32, 0.85);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --text: #f3ead3;
+  --muted: #8f9bb0;
+  --code: var(--_pool);
+  --border: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 176, 32, 0.5);
+  --focus-ring: rgba(59, 180, 255, 0.35);
+  --accent: var(--_orange);
+  --accent-2: var(--_pool);
+  --accent-soft: rgba(255, 176, 32, 0.16);
+  --danger: #e24b35;
+  --danger-soft: rgba(226, 75, 53, 0.18);
+  --success: #ffd23f;
+  --success-soft: rgba(255, 210, 63, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.05);
+  --chip-active: rgba(255, 176, 32, 0.18);
+  --btn-primary-bg: linear-gradient(135deg, var(--_orange), var(--_flame));
+  --btn-primary-fg: #0b1220;
+  --btn-ghost-bg: rgba(8, 14, 26, 0.55);
+  --btn-ghost-border: rgba(255, 255, 255, 0.14);
+  --btn-danger-bg: linear-gradient(135deg, #e24b35, #ff7a1a);
+  --input-bg: #121c2e;
+  --scrollbar: var(--_orange);
+  --shadow: 2px 2px 0 #000;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --font-ui: "Segoe UI", "PingFang SC", system-ui, sans-serif;
+  --font-display: "Arial Black", Impact, sans-serif;
+}

@@ -1,0 +1,222 @@
+/*
+ * Shell / component bindings to the theme contract.
+ * Prefer these variables over hardcoded colors in new UI.
+ */
+
+:root {
+  color-scheme: dark;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  color: var(--text);
+}
+
+html,
+body,
+#root {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 15% 5%, var(--bg-glow-1), transparent 32%),
+    radial-gradient(circle at 92% 12%, var(--bg-glow-2), transparent 28%),
+    linear-gradient(135deg, var(--bg) 0%, var(--surface-2) 55%, var(--bg) 100%);
+}
+
+/* Optional illustration layer (anime themes etc.) */
+.app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--bg-image);
+  background-size: cover;
+  background-position: center;
+  opacity: var(--bg-image-opacity);
+}
+
+.app-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+.brand span,
+.topbar p,
+.metric span,
+.section-title span {
+  color: var(--muted);
+}
+
+.nav {
+  color: var(--muted);
+}
+
+.nav:hover,
+.nav.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.nav.active {
+  border: 1px solid var(--border-strong);
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--shadow);
+}
+
+.primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-fg);
+}
+
+.danger {
+  background: var(--btn-danger-bg);
+}
+
+.ghost,
+.tiny {
+  background: var(--btn-ghost-bg);
+  border: 1px solid var(--btn-ghost-border);
+}
+
+.metric {
+  background: var(--chip-bg);
+  border-radius: var(--radius-sm);
+}
+
+.hint {
+  color: var(--muted);
+}
+
+code {
+  color: var(--code);
+}
+
+select,
+.app-select {
+  color: var(--text);
+  background-color: var(--input-bg);
+  border: 1px solid var(--border);
+}
+
+select:focus,
+.app-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+select option,
+.app-select option {
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.switch-line input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.tab-body::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+}
+
+.modal-overlay {
+  background: var(--scrim);
+}
+
+.modal {
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--shadow);
+}
+
+.provider.active {
+  border-color: var(--border-strong);
+}
+
+.badge.ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.badge.stop {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* Theme picker */
+.theme-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--btn-ghost-border);
+  background: var(--btn-ghost-bg);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.theme-option.is-active {
+  border-color: var(--border-strong);
+  background: var(--chip-active);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.theme-option-swatches {
+  display: flex;
+  height: 18px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.theme-option-swatches span {
+  flex: 1;
+}
+
+.theme-option-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.theme-option-id {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.theme-import-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}

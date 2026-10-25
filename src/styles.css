@@ -1,9 +1,9 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-family: var(--font-ui, Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif);
   font-size: 14px;
-  background: #070b14;
-  color: #edf7ff;
+  background: var(--bg, #070b14);
+  color: var(--text, #edf7ff);
 }
 
 * { box-sizing: border-box; }
@@ -12,24 +12,25 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #070b14;
+  background: var(--bg, #070b14);
+  color: var(--text, #edf7ff);
 }
 button, input, select { font: inherit; }
 
 /* 全局下拉：避免系统白底灰字 */
 select,
 .app-select {
-  color: #e8f0f8;
-  background-color: #121a28;
-  border: 1px solid rgba(142, 232, 255, .22);
+  color: var(--text, #e8f0f8);
+  background-color: var(--input-bg, #121a28);
+  border: 1px solid var(--border, rgba(142, 232, 255, .22));
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 13px;
   outline: none;
   cursor: pointer;
   appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, #8ee8ff 50%),
-    linear-gradient(135deg, #8ee8ff 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent, #8ee8ff) 50%),
+    linear-gradient(135deg, var(--accent, #8ee8ff) 50%, transparent 50%);
   background-position: calc(100% - 16px) calc(50% + 2px), calc(100% - 11px) calc(50% + 2px);
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
@@ -37,36 +38,30 @@ select,
 }
 select:focus,
 .app-select:focus {
-  border-color: #16f1ff;
-  box-shadow: 0 0 0 1px rgba(22, 241, 255, .25);
+  border-color: var(--accent, #16f1ff);
+  box-shadow: 0 0 0 1px var(--focus-ring, rgba(22, 241, 255, .25));
 }
 select option,
 .app-select option {
-  background: #121a28;
-  color: #e8f0f8;
+  background: var(--input-bg, #121a28);
+  color: var(--text, #e8f0f8);
 }
 select:disabled,
 .app-select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-code { color: #8ee8ff; word-break: break-all; }
+code { color: var(--code, #8ee8ff); word-break: break-all; }
 
 .app-shell {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   height: 100vh;
   max-height: 100vh;
-  background:
-    radial-gradient(circle at 15% 5%, rgba(24, 225, 255, .24), transparent 32%),
-    radial-gradient(circle at 92% 12%, rgba(124, 77, 255, .24), transparent 28%),
-    linear-gradient(135deg, #060a13 0%, #101827 55%, #070b14 100%);
 }
 
 .sidebar {
   padding: 20px 14px;
-  border-right: 1px solid rgba(142, 232, 255, .16);
-  background: rgba(5, 12, 22, .72);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -80,17 +75,15 @@ code { color: #8ee8ff; word-break: break-all; }
   background: linear-gradient(135deg, #16f1ff, #6d5cff 48%, #101827 49%, #0aff9d);
   color: #001019; font-weight: 900;
 }
-.brand h1 { margin: 0; font-size: 20px; letter-spacing: 1px; }
-.brand span, .topbar p, .metric span, .section-title span { color: #94a9bd; font-size: 12px; }
+.brand h1 { margin: 0; font-size: 20px; letter-spacing: 1px; font-family: var(--font-display, inherit); }
+.brand span, .topbar p, .metric span, .section-title span { color: var(--muted, #94a9bd); font-size: 12px; }
 
 .nav, .ghost, .primary, .danger, .tiny, .icon-btn, .tiny-btn {
-  border: 0; border-radius: 12px; cursor: pointer; color: #edf7ff;
+  border: 0; border-radius: var(--radius-sm, 12px); cursor: pointer; color: var(--text, #edf7ff);
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
-.nav { width: 100%; padding: 11px 12px; justify-content: flex-start; background: transparent; color: #b8c8d8; font-size: 13px; }
-.nav:hover, .nav.active { background: rgba(142, 232, 255, .12); color: #fff; }
-.nav.active { border: 1px solid rgba(142, 232, 255, .3); }
-.sidebar-footer { margin-top: auto; display: flex; gap: 8px; align-items: center; color: #80f7c4; font-size: 12px; }
+.nav { width: 100%; padding: 11px 12px; justify-content: flex-start; background: transparent; font-size: 13px; }
+.sidebar-footer { margin-top: auto; display: flex; gap: 8px; align-items: center; color: var(--success, #80f7c4); font-size: 12px; }
 
 .content {
   padding: 18px 20px;
@@ -122,9 +115,6 @@ code { color: #8ee8ff; word-break: break-all; }
 .topbar p { margin: 0; font-size: 13px; }
 
 .card {
-  border: 1px solid rgba(142, 232, 255, .16);
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(18, 29, 47, .82), rgba(8, 14, 26, .86));
   padding: 16px;
   min-width: 0;
 }
@@ -148,25 +138,25 @@ code { color: #8ee8ff; word-break: break-all; }
 .badge.inline { margin-left: 0; padding: 4px 8px; }
 
 .metric-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0; }
-.metric { padding: 12px; border-radius: 12px; background: rgba(255,255,255,.045); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.metric { padding: 12px; border-radius: var(--radius-sm, 12px); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .metric strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.primary { background: linear-gradient(135deg, #12dfff, #6d5cff); padding: 10px 14px; font-weight: 600; font-size: 13px; }
-.danger { background: linear-gradient(135deg, #ff4d6d, #ff8754); padding: 10px 14px; font-weight: 600; font-size: 13px; }
-.ghost, .tiny { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); padding: 8px 12px; font-size: 12px; }
+.primary { padding: 10px 14px; font-weight: 600; font-size: 13px; }
+.danger { padding: 10px 14px; font-weight: 600; font-size: 13px; }
+.ghost, .tiny { padding: 8px 12px; font-size: 12px; }
 .tiny-btn { padding: 8px 12px; font-size: 12px; }
 button:disabled { opacity: .46; cursor: not-allowed; }
 
 .switches { display: flex; flex-direction: column; gap: 12px; }
 .switch-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
-.switch-line input[type="checkbox"] { width: 40px; height: 20px; accent-color: #16f1ff; }
+.switch-line input[type="checkbox"] { width: 40px; height: 20px; accent-color: var(--accent, #16f1ff); }
 .select-line select {
   min-width: 180px;
   font-size: 12px;
 }
 .notice.compact-notice { margin-top: 8px; margin-bottom: 0; font-size: 12px; }
-.hint { color: #a8bbcd; font-size: 12px; line-height: 1.55; }
+.hint { color: var(--muted, #a8bbcd); font-size: 12px; line-height: 1.55; }
 .hint.compact { margin: 0; }
 
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GithubProxyModal } from './store/GithubProxyModal';
 import { langSetting, setLang, t, type LangSetting } from './i18n';
+import { ThemeSettingsSection } from './theme';
+import type { ThemeId, ThemeMeta } from './theme';
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
 
@@ -64,6 +66,11 @@ type Props = {
   onNavigate?: (tab: Tab) => void;
   pushToast?: (message: string, type: 'ok' | 'error' | 'info') => void;
   formatInvokeError?: (error: unknown) => string;
+  themeId: ThemeId;
+  themeCatalog: ThemeMeta[];
+  onTheme: (id: ThemeId) => void;
+  onThemeImport: (meta: ThemeMeta) => void;
+  themeError?: string | null;
 };
 
 export function SettingsPanel({
@@ -73,6 +80,11 @@ export function SettingsPanel({
   onNavigate,
   pushToast,
   formatInvokeError,
+  themeId,
+  themeCatalog,
+  onTheme,
+  onThemeImport,
+  themeError,
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
@@ -169,6 +181,15 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+
+          <ThemeSettingsSection
+            themeId={themeId}
+            catalog={themeCatalog}
+            onTheme={onTheme}
+            onImport={onThemeImport}
+            error={themeError}
+            pushToast={pushToast}
+          />
 
           <div className="card settings-group switches">
             <h4>{t('set.startup')}</h4>

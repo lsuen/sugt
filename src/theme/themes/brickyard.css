@@ -1,0 +1,45 @@
+/* Brickyard hip-hop — brick red + chalk white */
+[data-theme="brickyard"] {
+  --_ink: #140c0c;
+  --_brick: #c43c2c;
+  --_chalk: #f2ece3;
+  --_gold: #e8b84a;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(196, 60, 44, 0.22);
+  --bg-glow-2: rgba(232, 184, 74, 0.12);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(36, 22, 20, 0.9);
+  --surface-2: rgba(20, 12, 12, 0.94);
+  --surface-glass: rgba(36, 22, 20, 0.62);
+  --glass-blur: 6px;
+  --sidebar-bg: rgba(20, 12, 12, 0.86);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --text: var(--_chalk);
+  --muted: #a89890;
+  --code: var(--_gold);
+  --border: rgba(242, 236, 227, 0.14);
+  --border-strong: rgba(196, 60, 44, 0.55);
+  --focus-ring: rgba(232, 184, 74, 0.35);
+  --accent: var(--_brick);
+  --accent-2: var(--_gold);
+  --accent-soft: rgba(196, 60, 44, 0.18);
+  --danger: #ff5a3c;
+  --danger-soft: rgba(255, 90, 60, 0.18);
+  --success: #7ecf6a;
+  --success-soft: rgba(126, 207, 106, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.05);
+  --chip-active: rgba(196, 60, 44, 0.22);
+  --btn-primary-bg: var(--_brick);
+  --btn-primary-fg: #fff;
+  --btn-ghost-bg: rgba(0, 0, 0, 0.35);
+  --btn-ghost-border: rgba(242, 236, 227, 0.16);
+  --btn-danger-bg: linear-gradient(135deg, #c43c2c, #ff5a3c);
+  --input-bg: #241614;
+  --scrollbar: var(--_brick);
+  --shadow: 3px 3px 0 #000;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --font-ui: "Segoe UI", "PingFang SC", system-ui, sans-serif;
+  --font-display: Impact, "Arial Black", sans-serif;
+}

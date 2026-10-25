@@ -1,0 +1,44 @@
+/* HIPHOP — single tangerine graffiti */
+[data-theme="hiphop"] {
+  --_ink: #0a0a0c;
+  --_orange: #f9961a;
+  --_white: #f5f0e8;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(249, 150, 26, 0.22);
+  --bg-glow-2: rgba(249, 150, 26, 0.08);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(22, 18, 14, 0.9);
+  --surface-2: rgba(10, 10, 12, 0.95);
+  --surface-glass: rgba(22, 18, 14, 0.58);
+  --glass-blur: 6px;
+  --sidebar-bg: rgba(10, 10, 12, 0.88);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --text: var(--_white);
+  --muted: #9a9084;
+  --code: var(--_orange);
+  --border: rgba(249, 150, 26, 0.28);
+  --border-strong: rgba(249, 150, 26, 0.55);
+  --focus-ring: rgba(249, 150, 26, 0.4);
+  --accent: var(--_orange);
+  --accent-2: #ffc15a;
+  --accent-soft: rgba(249, 150, 26, 0.16);
+  --danger: #ff4d2e;
+  --danger-soft: rgba(255, 77, 46, 0.18);
+  --success: #b8ff00;
+  --success-soft: rgba(184, 255, 0, 0.12);
+  --chip-bg: rgba(255, 255, 255, 0.05);
+  --chip-active: rgba(249, 150, 26, 0.2);
+  --btn-primary-bg: var(--_orange);
+  --btn-primary-fg: #0a0a0c;
+  --btn-ghost-bg: rgba(0, 0, 0, 0.4);
+  --btn-ghost-border: rgba(249, 150, 26, 0.3);
+  --btn-danger-bg: linear-gradient(135deg, #ff4d2e, #f9961a);
+  --input-bg: #16120e;
+  --scrollbar: var(--_orange);
+  --shadow: 3px 3px 0 #000;
+  --radius: 4px;
+  --radius-sm: 2px;
+  --font-ui: "Segoe UI", "PingFang SC", system-ui, sans-serif;
+  --font-display: Impact, "Arial Black", sans-serif;
+}

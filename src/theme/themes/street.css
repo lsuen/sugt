@@ -1,0 +1,45 @@
+/* Street chalk — pink / cyan spray */
+[data-theme="street"] {
+  --_ink: #0d0d0f;
+  --_pink: #ff2d95;
+  --_cyan: #00f0ff;
+  --_lime: #b8ff00;
+  --bg: var(--_ink);
+  --bg-glow-1: rgba(255, 45, 149, 0.22);
+  --bg-glow-2: rgba(0, 240, 255, 0.16);
+  --bg-image: none;
+  --bg-image-opacity: 0;
+  --surface: rgba(26, 26, 31, 0.88);
+  --surface-2: rgba(13, 13, 15, 0.92);
+  --surface-glass: rgba(26, 26, 31, 0.62);
+  --glass-blur: 8px;
+  --sidebar-bg: rgba(13, 13, 15, 0.82);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --text: #f4f0ea;
+  --muted: #9a9590;
+  --code: var(--_cyan);
+  --border: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 45, 149, 0.45);
+  --focus-ring: rgba(255, 45, 149, 0.35);
+  --accent: var(--_pink);
+  --accent-2: var(--_cyan);
+  --accent-soft: rgba(255, 45, 149, 0.16);
+  --danger: #ff6b2b;
+  --danger-soft: rgba(255, 107, 43, 0.18);
+  --success: var(--_lime);
+  --success-soft: rgba(184, 255, 0, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.05);
+  --chip-active: rgba(255, 45, 149, 0.18);
+  --btn-primary-bg: var(--_pink);
+  --btn-primary-fg: #0d0e13;
+  --btn-ghost-bg: rgba(10, 10, 14, 0.55);
+  --btn-ghost-border: rgba(255, 255, 255, 0.14);
+  --btn-danger-bg: linear-gradient(135deg, #ff2d95, #ff6b2b);
+  --input-bg: #1a1a1f;
+  --scrollbar: var(--_pink);
+  --shadow: 3px 3px 0 #000;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Arial Black", "Helvetica Neue", Impact, sans-serif;
+}

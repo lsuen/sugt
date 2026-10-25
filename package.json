@@ -26,6 +26,8 @@
     "package:release:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant public -TrialDays 180 -Test",
     "test:connectivity": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-connectivity.ps1",
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "test:themes": "node src/theme/validate-themes.mjs",
+    "test": "npm run test:themes && npm run check",
     "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
     "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"
   },
