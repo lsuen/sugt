@@ -1,5 +1,5 @@
 /* Street chalk — pink / cyan spray */
-[data-theme="street"] {
+:root[data-theme="street"] {
   --_ink: #0d0d0f;
   --_pink: #ff2d95;
   --_cyan: #00f0ff;

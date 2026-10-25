@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { Check } from 'lucide-react';
 import { lang, t } from '../i18n';
 import { importThemePackFile } from './loadThemePack';
 import type { ThemeId, ThemeMeta } from './types';
@@ -41,43 +42,66 @@ export function ThemeSettingsSection({
   };
 
   return (
-    <div className="card settings-group switches" data-testid="settings-theme">
-      <h4>{t('set.theme')}</h4>
-      <p className="hint compact">{t('set.themeHint')}</p>
-      <div className="theme-options" role="radiogroup" aria-label={t('set.theme')}>
-        {catalog.map((meta) => (
-          <button
-            key={meta.id}
-            type="button"
-            role="radio"
-            aria-checked={themeId === meta.id}
-            className={`theme-option${themeId === meta.id ? ' is-active' : ''}`}
-            data-testid={`theme-${meta.id}`}
-            onClick={() => onTheme(meta.id)}
-          >
-            <div className="theme-option-swatches" aria-hidden>
-              {meta.swatches.map((c, i) => (
-                <span key={i} style={{ background: c }} />
-              ))}
-            </div>
-            <span className="theme-option-label">{labelOf(meta)}</span>
-            <span className="theme-option-id">{meta.id}</span>
+    <div className="card settings-group settings-group-wide theme-settings" data-testid="settings-theme">
+      <div className="theme-settings-head">
+        <div>
+          <h4>{t('set.theme')}</h4>
+          <p className="hint compact">{t('set.themeHint')}</p>
+        </div>
+        <div className="theme-import-row theme-import-row--inline">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => onPickFile(e.target.files?.[0])}
+          />
+          <button type="button" className="ghost tiny-btn" onClick={() => fileRef.current?.click()}>
+            {t('set.themeImport')}
           </button>
-        ))}
+        </div>
       </div>
-      <div className="theme-import-row">
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json,.json"
-          hidden
-          onChange={(e) => onPickFile(e.target.files?.[0])}
-        />
-        <button type="button" className="ghost tiny-btn" onClick={() => fileRef.current?.click()}>
-          {t('set.themeImport')}
-        </button>
-        <span className="hint compact">{t('set.themeImportHint')}</span>
+      <div className="theme-options" role="radiogroup" aria-label={t('set.theme')}>
+        {catalog.map((meta) => {
+          const active = themeId === meta.id;
+          return (
+            <button
+              key={meta.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              className={`theme-option${active ? ' is-active' : ''}`}
+              data-testid={`theme-${meta.id}`}
+              onClick={() => {
+                onTheme(meta.id);
+                pushToast?.(t('set.themeApplied', { name: labelOf(meta) }), 'ok');
+              }}
+            >
+              <div
+                className="theme-option-preview"
+                aria-hidden
+                style={{
+                  background: `linear-gradient(135deg, ${meta.swatches[2]} 0%, ${meta.swatches[0]} 55%, ${meta.swatches[1]} 100%)`,
+                }}
+              >
+                <div className="theme-option-swatches">
+                  {meta.swatches.map((c, i) => (
+                    <span key={i} style={{ background: c }} />
+                  ))}
+                </div>
+                {active ? (
+                  <span className="theme-option-check">
+                    <Check size={14} strokeWidth={3} />
+                  </span>
+                ) : null}
+              </div>
+              <span className="theme-option-label">{labelOf(meta)}</span>
+              <span className="theme-option-id">{meta.id}</span>
+            </button>
+          );
+        })}
       </div>
+      <p className="hint compact theme-import-hint">{t('set.themeImportHint')}</p>
       {error ? <p className="issue-list" style={{ listStyle: 'none', paddingLeft: 0 }}>{error}</p> : null}
     </div>
   );

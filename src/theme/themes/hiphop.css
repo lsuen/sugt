@@ -1,5 +1,5 @@
 /* HIPHOP — single tangerine graffiti */
-[data-theme="hiphop"] {
+:root[data-theme="hiphop"] {
   --_ink: #0a0a0c;
   --_orange: #f9961a;
   --_white: #f5f0e8;

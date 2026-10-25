@@ -48,7 +48,7 @@ Private aliases **inside one theme file** are fine:
 ## Builtin theme (CSS file)
 
 1. Copy `src/theme/themes/cyber.css` → `src/theme/themes/my-skin.css`
-2. Change the selector to `[data-theme="my-skin"]` and fill every contract token
+2. Change the selector to `:root[data-theme="my-skin"]` (the `:root` prefix is required so theme tokens beat defaults) and fill every contract token
 3. Register in `src/theme/registry.ts` (`BUILTIN_THEME_IDS` + `BUILTIN_THEMES`)
 4. Add `theme.mySkin` (or similar) keys to `src/i18n.ts` (zh + en)
 5. Run `npm run test:themes` and `npm run check`

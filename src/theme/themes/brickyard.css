@@ -1,5 +1,5 @@
 /* Brickyard hip-hop — brick red + chalk white */
-[data-theme="brickyard"] {
+:root[data-theme="brickyard"] {
   --_ink: #140c0c;
   --_brick: #c43c2c;
   --_chalk: #f2ece3;

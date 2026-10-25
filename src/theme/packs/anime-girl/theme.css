@@ -1,5 +1,5 @@
 /* Anime girl — soft rose glass over illustration backdrop */
-[data-theme="anime-girl"] {
+:root[data-theme="anime-girl"] {
   --_ink: #140c14;
   --_rose: #ff8fb8;
   --_lavender: #c9a0ff;

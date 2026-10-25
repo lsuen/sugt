@@ -1,5 +1,5 @@
 /* Jazz night — blue-black + gold + wine */
-[data-theme="jazz"] {
+:root[data-theme="jazz"] {
   --_ink: #08070d;
   --_gold: #d4af37;
   --_wine: #8b2240;

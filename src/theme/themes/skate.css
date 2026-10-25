@@ -1,5 +1,5 @@
 /* Skate park — orange wheel + pool blue */
-[data-theme="skate"] {
+:root[data-theme="skate"] {
   --_ink: #0b1220;
   --_orange: #ffb020;
   --_pool: #3bb4ff;

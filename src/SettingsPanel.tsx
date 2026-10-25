@@ -165,21 +165,25 @@ export function SettingsPanel({
       </div>
 
       {tab === 'basic' && (
-        <div className="settings-layout">
-          <div className="card settings-group switches">
-            <h4>{t('set.language')}</h4>
-            <p className="hint compact">{t('set.langHint')}</p>
-            <label className="switch-line select-line">
-              <span>{t('set.language')}</span>
-              <select
-                value={langSetting()}
-                onChange={(e) => setLang(e.target.value as LangSetting)}
-              >
-                <option value="system">{t('set.langSystem')}</option>
-                <option value="zh">{t('set.langZh')}</option>
-                <option value="en">{t('set.langEn')}</option>
-              </select>
-            </label>
+        <div className="settings-layout settings-layout--stack">
+          <div className="card settings-group settings-group-wide settings-lang-bar">
+            <div className="settings-lang-main">
+              <div>
+                <h4>{t('set.language')}</h4>
+                <p className="hint compact">{t('set.langHint')}</p>
+              </div>
+              <label className="switch-line select-line settings-lang-select">
+                <span className="sr-only">{t('set.language')}</span>
+                <select
+                  value={langSetting()}
+                  onChange={(e) => setLang(e.target.value as LangSetting)}
+                >
+                  <option value="system">{t('set.langSystem')}</option>
+                  <option value="zh">{t('set.langZh')}</option>
+                  <option value="en">{t('set.langEn')}</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           <ThemeSettingsSection

@@ -1,5 +1,5 @@
 /* Shan-shui ink — cinnabar / gold / indigo wash */
-[data-theme="shanshui"] {
+:root[data-theme="shanshui"] {
   --_ink: #0b0e12;
   --_cyan: #5f93a8;
   --_cinnabar: #d05a48;

@@ -38,6 +38,8 @@ export function useTheme(extraThemes: ThemeMeta[] = []) {
   }, [theme]);
 
   const setTheme = useCallback((id: ThemeId) => {
+    // Flip dataset immediately so the click feels instant; effect still persists / handles packs.
+    document.documentElement.dataset.theme = id;
     setThemeId(id);
   }, []);
 

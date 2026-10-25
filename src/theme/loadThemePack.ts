@@ -23,7 +23,7 @@ export function themePackToCss(pack: ThemePackJson, assetBaseUrl = ''): string {
     .map(([k, v]) => `  ${k}: ${v};`)
     .join('\n');
 
-  return `[data-theme="${pack.id}"] {\n${body}\n}`;
+  return `:root[data-theme="${pack.id}"] {\n${body}\n}`;
 }
 
 export function parseThemePackJson(raw: unknown): ThemePackJson {

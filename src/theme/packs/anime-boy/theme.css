@@ -1,5 +1,5 @@
 /* Anime boy — cool cyan glass over illustration backdrop */
-[data-theme="anime-boy"] {
+:root[data-theme="anime-boy"] {
   --_ink: #071018;
   --_cyan: #5ec8ff;
   --_violet: #7a8cff;

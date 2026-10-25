@@ -164,9 +164,21 @@ select option,
 }
 
 /* Theme picker */
+.theme-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.theme-settings-head h4 { margin: 0 0 4px; }
+.theme-settings-head .hint { margin: 0; max-width: 48em; }
+
 .theme-options {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 10px;
 }
 
@@ -175,42 +187,74 @@ select option,
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  padding: 10px;
+  padding: 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--btn-ghost-border);
   background: var(--btn-ghost-bg);
   color: var(--text);
   cursor: pointer;
   text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease;
+}
+
+.theme-option:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
 }
 
 .theme-option.is-active {
-  border-color: var(--border-strong);
+  border-color: var(--accent);
   background: var(--chip-active);
   box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
-.theme-option-swatches {
-  display: flex;
-  height: 18px;
-  border-radius: 999px;
+.theme-option-preview {
+  position: relative;
+  height: 56px;
+  border-radius: calc(var(--radius-sm) - 2px);
   overflow: hidden;
   border: 1px solid var(--border);
 }
 
-.theme-option-swatches span {
-  flex: 1;
+.theme-option-swatches {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  width: 54px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.theme-option-swatches span { flex: 1; }
+
+.theme-option-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--btn-primary-fg, #041018);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
 .theme-option-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 650;
+  padding: 0 2px;
 }
 
 .theme-option-id {
   font-size: 10px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0 2px 2px;
 }
 
 .theme-import-row {
@@ -218,5 +262,7 @@ select option,
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  margin-top: 10px;
 }
+
+.theme-import-row--inline { margin: 0; }
+.theme-import-hint { margin: 10px 0 0; }

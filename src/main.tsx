@@ -5,6 +5,7 @@ import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
   Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
 } from 'lucide-react';
+import { BrandMark } from './BrandMark';
 import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
@@ -538,8 +539,8 @@ function App() {
         <main className="app-shell">
           <aside className="sidebar">
             <div className="brand">
-              <div className="brand-logo">SA</div>
-              <div>
+              <BrandMark size="md" />
+              <div className="brand-text">
                 <h1>SUTAI</h1>
                 <span>{t('brand.tagline')}</span>
               </div>
@@ -574,8 +575,8 @@ function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-logo">SA</div>
-          <div>
+          <BrandMark size="md" />
+          <div className="brand-text">
             <h1>SUTAI</h1>
             <span>{t('brand.tagline')}</span>
           </div>
@@ -819,7 +820,7 @@ function App() {
         {tab === 'about' && (
           <div className="tab-body">
           <section className="card about-card">
-            <div className="about-logo">SUTAI</div>
+            <BrandMark size="lg" className="about-logo" />
             <h3>{t('about.title')}</h3>
             <p>{t('about.author')}</p>
             <p className="trial-note">{editionLabel(status?.trial)}</p>

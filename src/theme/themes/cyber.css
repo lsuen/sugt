@@ -1,6 +1,5 @@
 /* Default SUGT cyber console — matches historical look */
-:root,
-[data-theme="cyber"] {
+:root[data-theme="cyber"] {
   --bg: #070b14;
   --bg-glow-1: rgba(24, 225, 255, 0.24);
   --bg-glow-2: rgba(124, 77, 255, 0.24);

@@ -1,6 +1,7 @@
 import type { BuiltinThemeId, ThemeMeta } from './types';
 
-// Side-effect imports: Vite bundles every theme into the app CSS graph.
+// Order matters: defaults first, then per-theme overrides (higher specificity), then shell bindings.
+import './tokens.css';
 import './themes/cyber.css';
 import './themes/street.css';
 import './themes/skate.css';
@@ -10,7 +11,6 @@ import './themes/hiphop.css';
 import './themes/jazz.css';
 import './packs/anime-boy/theme.css';
 import './packs/anime-girl/theme.css';
-import './tokens.css';
 import './shell-theme.css';
 
 export const DEFAULT_THEME_ID: BuiltinThemeId = 'cyber';
