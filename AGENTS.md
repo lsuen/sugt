@@ -17,7 +17,7 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 5. **Background / glass** use `--bg-image`, `--bg-image-opacity`, translucent `--surface*`, and `--glass-blur` (set `0px` to disable).
 6. **External packs** are **JSON** (`theme.json`, `version: 1`). Not YAML/TOML. Loader: `src/theme/loadThemePack.ts`.
 7. **Docs:** `docs/THEME_AUTHORING.md` + `docs/THEME_AUTHORING.zh.md`. Keep them in sync when the contract changes.
-8. **Validate:** `npm run test:themes` (`src/theme/validate-themes.mjs`) then `npm run check` / `npm run build`.
+8. **Validate:** `npm run test:themes` (`src/theme/validate-themes.mjs`) then `npm run check` / `npm run build`. The validator covers all builtin CSS skins, builtin JSON packs and the starter template: `:root[data-theme]` selectors, all contract tokens, declared background assets, and two-way `registry.ts` consistency.
 
 ### Adding a builtin theme (checklist)
 

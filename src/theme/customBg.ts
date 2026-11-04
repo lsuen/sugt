@@ -3,6 +3,7 @@ import { loadCustomBg, persistCustomBg, type CustomBgState } from './themeStorag
 const STYLE_ATTR = 'data-sugt-custom-bg';
 export const MAX_BG_BYTES = 1.6 * 1024 * 1024;
 export const DEFAULT_CUSTOM_BG_OPACITY = 0.4;
+const MAX_BG_MB = (MAX_BG_BYTES / 1024 / 1024).toFixed(1);
 
 function clearStyle(): void {
   document.querySelectorAll(`style[${STYLE_ATTR}]`).forEach((n) => n.remove());
@@ -33,7 +34,7 @@ export async function fileToDataUrl(file: File): Promise<string> {
     throw new Error('请选择图片文件（jpg / png / webp）');
   }
   if (file.size > MAX_BG_BYTES) {
-    throw new Error(`背景图过大（${(file.size / 1024 / 1024).toFixed(1)}MB），请压缩到约 1.5MB 以内`);
+    throw new Error(`背景图过大（${(file.size / 1024 / 1024).toFixed(1)}MB），请压缩到约 ${MAX_BG_MB}MB 以内`);
   }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

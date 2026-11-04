@@ -74,7 +74,7 @@ Preferred for **external / user** skins. Example:
 ```
 
 - Format is **JSON** (not YAML/TOML) — easy for the browser, agents, and validation.
-- Ship a folder: `theme.json` + optional `bg.jpg` / `bg.webp` (keep art ≤ ~1.5MB).
+- Ship a folder: `theme.json` + optional `bg.jpg` / `bg.webp` (keep art ≤ ~1.6MB). Declare `assets.bgImage` only when the file is actually in the folder.
 - In Settings → Appearance:
   - **Import pack**: `theme.json` or **`.zip`** (background is embedded & persisted)
   - **Import folder**: pick a directory that contains `theme.json`
@@ -82,7 +82,7 @@ Preferred for **external / user** skins. Example:
 - Missing tokens are completed from defaults; unknown `--*` keys error.
 - Remote packs: resolve `assets.bgImage` against the JSON URL base (see `fetchThemePack`).
 
-Agent-ready template: `theme-packs/example/`.  
+Agent-ready template: `theme-packs/example/` (color-only starter — add `bg.jpg` before declaring it).  
 Builtin references: `src/theme/packs/anime-boy/`, `src/theme/packs/anime-girl/`.
 
 ## Background, transparency, glass
@@ -96,6 +96,10 @@ Builtin references: `src/theme/packs/anime-boy/`, `src/theme/packs/anime-girl/`.
 ```
 
 The shell paints `--bg-image` on `.app-shell::before`. Cards/modals use `backdrop-filter: blur(var(--glass-blur))`.
+
+## Validation
+
+`npm run test:themes` validates every builtin CSS skin, builtin JSON pack and the starter template: `:root[data-theme="<id>"]` selectors, all 38 contract tokens, no contract-outside tokens, declared background assets, and two-way `registry.ts` consistency. User-imported packs may omit tokens — the importer fills them from defaults.
 
 ## Agent checklist
 

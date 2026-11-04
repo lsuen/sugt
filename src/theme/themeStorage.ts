@@ -89,7 +89,7 @@ export function persistCustomBg(state: CustomBgState | null): void {
   } catch (e) {
     throw new Error(
       e instanceof Error && /quota/i.test(e.message)
-        ? '背景图过大，无法本地保存（请压缩到约 1.5MB 以内）'
+        ? '背景图过大，无法本地保存（请压缩背景图后重试）'
         : `背景保存失败：${e instanceof Error ? e.message : String(e)}`,
     );
   }

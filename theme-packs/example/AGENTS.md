@@ -2,12 +2,14 @@
 
 This folder is a **portable SUGT skin**. Open it in any agent (Cursor, Claude, Soul, …) and ask it to restyle the pack; then zip the folder and import in **Settings → Appearance**.
 
+This starter is **color-only on purpose**: it ships no `bg.jpg`, so it imports cleanly as-is. Add the file before declaring it, or `npm run test:themes` will fail.
+
 ## Layout
 
 ```
 theme-packs/<id>/
   theme.json     # required — version 1 contract
-  bg.jpg         # optional background (jpg/png/webp, ≤ ~1.5MB)
+  bg.jpg         # optional background (jpg/png/webp, ≤ ~1.6MB); not included here
   AGENTS.md      # this file (optional but recommended)
 ```
 
@@ -21,7 +23,7 @@ Zip for users: include `theme.json` + `bg.*` at the archive root or one level de
 4. Only keys in the SUGT token contract (~40). **No** `--foo-2` / component class overrides.
 5. Missing tokens are filled from SUGT defaults on import; prefer filling all for predictable look.
 6. Prefer translucent `--surface*` + `--glass-blur` for glass; set `--glass-blur: 0px` to disable.
-7. Background: set `assets.bgImage` and/or `--bg-image` + `--bg-image-opacity` (0–1).
+7. Background: add `bg.jpg` first, then set `assets.bgImage` and `--bg-image: url("./bg.jpg")` + `--bg-image-opacity` (0–1). If you declare an asset that is not in the folder, the validator fails and the import falls back to a flat color.
 
 ## Contract keys
 

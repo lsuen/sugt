@@ -5,6 +5,8 @@ import type { ThemeMeta } from './types';
 import { MAX_BG_BYTES } from './customBg';
 
 const IMAGE_EXT = /\.(jpe?g|png|webp|gif)$/i;
+const MAX_BG_MB = (MAX_BG_BYTES / 1024 / 1024).toFixed(1);
+const RELATIVE_BG_URL = /^url\(\s*["']?\.\//i;
 
 function mimeForName(name: string): string {
   const lower = name.toLowerCase();
@@ -25,7 +27,7 @@ function uint8ToDataUrl(data: Uint8Array, mime: string): string {
 
 async function blobToDataUrl(blob: Blob): Promise<string> {
   if (blob.size > MAX_BG_BYTES) {
-    throw new Error(`主题包背景图过大（${(blob.size / 1024 / 1024).toFixed(1)}MB），请压缩到约 1.5MB 以内`);
+    throw new Error(`主题包背景图过大（${(blob.size / 1024 / 1024).toFixed(1)}MB），请压缩到约 ${MAX_BG_MB}MB 以内`);
   }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -49,6 +51,13 @@ export function themePackToCss(pack: ThemePackJson, assetBaseUrl = ''): string {
       ? pack.assets.bgImage
       : `${base}${pack.assets.bgImage}`;
     tokens['--bg-image'] = `url(${JSON.stringify(href)})`;
+  }
+
+  // 本地导入时若包内没有可用背景文件，回退纯色，避免注入失效的相对 URL。
+  // 远程包带 assetBaseUrl、zip 包带 data URL，两者都不会命中这条分支。
+  if (!assetBaseUrl && RELATIVE_BG_URL.test(tokens['--bg-image'] ?? '')) {
+    tokens['--bg-image'] = 'none';
+    tokens['--bg-image-opacity'] = '0';
   }
 
   const body = Object.entries(tokens)
@@ -150,7 +159,7 @@ export async function importThemePackZip(file: File): Promise<ThemeMeta> {
     });
     if (candidate) {
       if (files[candidate].byteLength > MAX_BG_BYTES) {
-        throw new Error(`主题包背景图过大，请压缩到约 1.5MB 以内`);
+        throw new Error(`主题包背景图过大，请压缩到约 ${MAX_BG_MB}MB 以内`);
       }
       bgDataUrl = uint8ToDataUrl(files[candidate], mimeForName(candidate));
     }
@@ -161,7 +170,7 @@ export async function importThemePackZip(file: File): Promise<ThemeMeta> {
     });
     if (img) {
       if (files[img].byteLength > MAX_BG_BYTES) {
-        throw new Error(`主题包背景图过大，请压缩到约 1.5MB 以内`);
+        throw new Error(`主题包背景图过大，请压缩到约 ${MAX_BG_MB}MB 以内`);
       }
       bgDataUrl = uint8ToDataUrl(files[img], mimeForName(img));
     }

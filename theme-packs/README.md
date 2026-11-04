@@ -10,7 +10,7 @@ Portable skins for **Settings → Appearance**.
 ## Quick start
 
 1. Copy `example/` → `my-skin/`
-2. Edit `theme.json` (`id`, labels, tokens). Optional: replace / add `bg.jpg` (≤ ~1.5MB)
+2. Edit `theme.json` (`id`, labels, tokens). The starter is color-only; to add art, drop `bg.jpg` (≤ ~1.6MB) into the folder, declare `assets.bgImage` and set `--bg-image: url("./bg.jpg")`
 3. Zip the folder (or import the folder in-app)
 4. In SUGT: **导入主题包** / **导入文件夹**
 

@@ -5,15 +5,12 @@
     "zh": "示例·暮色",
     "en": "Example Dusk"
   },
-  "assets": {
-    "bgImage": "bg.jpg"
-  },
   "tokens": {
     "--bg": "#100e18",
     "--bg-glow-1": "rgba(255, 160, 120, 0.18)",
     "--bg-glow-2": "rgba(120, 140, 255, 0.14)",
-    "--bg-image": "url(\"./bg.jpg\")",
-    "--bg-image-opacity": "0.38",
+    "--bg-image": "none",
+    "--bg-image-opacity": "0",
     "--surface": "rgba(28, 22, 36, 0.82)",
     "--surface-2": "rgba(16, 12, 22, 0.94)",
     "--surface-glass": "rgba(28, 22, 36, 0.5)",
