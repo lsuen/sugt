@@ -45,12 +45,18 @@ export function themePackToCss(pack: ThemePackJson, assetBaseUrl = ''): string {
   assertNoUnknownTokens(pack.tokens as Record<string, string>, pack.id);
   const tokens: Record<string, string> = { ...completeThemeTokens(pack.tokens as Record<string, string>) };
 
-  if (pack.assets?.bgImage && !/^url\(|^none$/i.test(tokens['--bg-image'] ?? '')) {
+  const assetName = pack.assets?.bgImage;
+  const currentBg = tokens['--bg-image'] ?? '';
+  // 远程包：声明的资源一律按 JSON 所在目录解析，即使包里已写了相对 url("./bg.jpg")。
+  // 已经嵌入的 data URL 不需要重写。
+  if (assetName && assetBaseUrl && !/^url\(\s*["']?data:/i.test(currentBg)) {
     const base = assetBaseUrl.replace(/\/?$/, '/');
-    const href = /^https?:|^\//.test(pack.assets.bgImage)
-      ? pack.assets.bgImage
-      : `${base}${pack.assets.bgImage}`;
+    const href = /^https?:|^\/|^data:/i.test(assetName)
+      ? assetName
+      : `${base}${assetName}`;
     tokens['--bg-image'] = `url(${JSON.stringify(href)})`;
+  } else if (assetName && !/^url\(|^none$/i.test(currentBg)) {
+    tokens['--bg-image'] = `url(${JSON.stringify(assetName)})`;
   }
 
   // 本地导入时若包内没有可用背景文件，回退纯色，避免注入失效的相对 URL。
