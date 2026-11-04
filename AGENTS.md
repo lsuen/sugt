@@ -17,7 +17,7 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 5. **Background / glass** use `--bg-image`, `--bg-image-opacity`, translucent `--surface*`, and `--glass-blur` (set `0px` to disable).
 6. **External packs** are **JSON** (`theme.json`, `version: 1`). Not YAML/TOML. Loader: `src/theme/loadThemePack.ts`.
 7. **Docs:** `docs/THEME_AUTHORING.md` + `docs/THEME_AUTHORING.zh.md`. Keep them in sync when the contract changes.
-8. **Validate:** `npm run test:themes` (`src/theme/validate-themes.mjs`) then `npm run check` / `npm run build`. The validator covers all builtin CSS skins, builtin JSON packs and the starter template: `:root[data-theme]` selectors, all contract tokens, declared background assets, and two-way `registry.ts` consistency.
+8. **Validate:** `npm test` (theme contract + import smoke + TypeScript check), then `npm run build`. The theme validator covers all builtin CSS skins, builtin JSON packs and the starter template: `:root[data-theme]` selectors, all contract tokens, declared background assets, and two-way `registry.ts` consistency. The import smoke test (`tests/theme-pack-smoke.mjs`) executes the real loader via esbuild.
 
 ### Adding a builtin theme (checklist)
 
@@ -25,7 +25,7 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 - [ ] `registry.ts` entry + id in `BUILTIN_THEME_IDS`
 - [ ] i18n `theme.*` zh + en
 - [ ] If art backdrop: place under pack folder; set `--bg-image` + opacity
-- [ ] `npm run test:themes && npm run check`
+- [ ] `npm test && npm run build`
 
 ### Forbidden
 
@@ -51,9 +51,9 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 ## Verification
 
 ```bash
-npm run test:themes
-npm run check
-npm run build
+npm test                      # theme contract + import smoke + TypeScript check
+npm run build                 # frontend production build (dual entry)
+cd src-tauri && cargo test    # Rust lib + integration tests
 ```
 
-For Rust changes: `cargo check` / relevant tests under `src-tauri`.
+`npm test` runs `test:themes`, `test:theme-pack` and `check` in order. CI runs `npm test` and `cargo test` (full suite, not just `--lib`). One macOS `launchctl` test is `#[ignore]`d; run it on a real GUI session with `cargo test -- --ignored`.

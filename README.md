@@ -92,7 +92,8 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Built-in skins: Cyber Console, Street, Skate, Brickyard, Shan-shui, HIPHOP, Jazz Night, plus **Anime Boy** / **Anime Girl** (illustrated backdrops with frosted glass panels)
 - Themes are **one CSS file (or JSON pack) each** on a fixed ~40-token contract — background images, translucent surfaces, and `backdrop-filter` glass included
-- Settings → Appearance to switch; import a `theme.json` pack for custom skins
+- Settings → Appearance to switch; import a `theme.json`, a `.zip` or a whole folder; overlay a custom background without changing colors
+- Status bar is on by default and opens a solid log drawer; full logs stay on the Logs tab
 - Authoring guide: [docs/THEME_AUTHORING.md](docs/THEME_AUTHORING.md) · Agent rules: [AGENTS.md](AGENTS.md)
 
 ## Screenshots
@@ -190,7 +191,7 @@ Requirements: Windows 10/11, Node 18+, Rust 1.78+. On macOS, Xcode Command Line 
 
 ```bash
 npm install
-npm run check        # TypeScript type check
+npm test             # theme contract + import smoke + TypeScript check
 npm run dev:app      # launch the Tauri app in dev mode
 ```
 
@@ -200,6 +201,13 @@ Production build:
 npm run build        # frontend production build
 npx tauri build      # full desktop bundle
 cd src-tauri && cargo build --release --bin sugt-cli   # standalone CLI
+```
+
+Full verification (frontend plus Rust library and integration tests):
+
+```bash
+npm test
+cd src-tauri && cargo test
 ```
 
 ## Tech Stack

@@ -92,7 +92,8 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 - 内置：赛博控制台、街头粉笔、滑板场、嘻哈砖墙、山水墨、HIPHOP、爵士夜，以及带插画背景与毛玻璃的 **二次元男 / 二次元女**
 - 每个主题独立文件（或 JSON 主题包），固定约 40 个令牌契约；支持背景图、透明表面、毛玻璃
-- 设置 → 外观 切换；可导入 `theme.json` 自定义皮肤
+- 设置 → 外观 切换；可导入 `theme.json`、`.zip` 或整个文件夹；自定义背景只叠插画、不改配色
+- 状态栏默认开启，点开是实体日志抽屉；完整日志仍在「日志」页
 - 制作说明：[docs/THEME_AUTHORING.zh.md](docs/THEME_AUTHORING.zh.md) · Agent 约定：[AGENTS.md](AGENTS.md)
 
 ## 界面预览
@@ -190,7 +191,7 @@ sugt-cli test       # 连通性测试
 
 ```bash
 npm install
-npm run check        # TypeScript 类型检查
+npm test             # 主题契约 + 导入冒烟 + TypeScript 类型检查
 npm run dev:app      # 启动 Tauri 桌面应用（开发模式）
 ```
 
@@ -200,6 +201,13 @@ npm run dev:app      # 启动 Tauri 桌面应用（开发模式）
 npm run build        # 前端生产构建
 npx tauri build      # 完整桌面应用打包
 cd src-tauri && cargo build --release --bin sugt-cli   # 独立 CLI
+```
+
+发布前的完整验证（前端 + Rust 单元与集成测试）：
+
+```bash
+npm test
+cd src-tauri && cargo test
 ```
 
 ## 技术栈

@@ -82,7 +82,7 @@ sugt-cli skill suggest
 
 1. 先执行 `sugt-cli skill suggest`，看是否有匹配的技能可以提升工作效率
 2. 询问用户是否要安装推荐的技能
-3. 安装后执行 `sugt-cli skill list --mounted` 确认挂载状态
+3. 安装后执行 `sugt-cli skill list` 确认挂载状态（输出中带挂载标记）
 
 当用户提出具体需求时：
 

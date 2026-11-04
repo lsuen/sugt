@@ -51,7 +51,7 @@ src/theme/
 2. 选择器改成 `:root[data-theme="my-skin"]`（必须带 `:root`，否则会被默认令牌盖住），填满契约
 3. 在 `src/theme/registry.ts` 注册（`BUILTIN_THEME_IDS` + `BUILTIN_THEMES`）
 4. 在 `src/i18n.ts` 中英字典补 `theme.*` 文案
-5. 跑 `npm run test:themes` 与 `npm run check`
+5. 跑 `npm test`（主题契约 + 导入冒烟 + 类型检查）
 
 ## 可导入主题包（`theme.json`）
 
@@ -98,7 +98,7 @@ src/theme/
 
 ## 校验
 
-`npm run test:themes` 会校验内置 CSS 皮肤、内置 JSON 包与模板包：`:root[data-theme="<id>"]` 选择器、38 个契约令牌齐全、无契约外令牌、声明的背景资源存在，以及 `registry.ts` 与源文件的双向一致性。用户自行导入的包允许缺省令牌（导入时由默认值补全）。
+`npm run test:themes` 会校验内置 CSS 皮肤、内置 JSON 包与模板包：`:root[data-theme="<id>"]` 选择器、38 个契约令牌齐全、无契约外令牌、声明的背景资源存在，以及 `registry.ts` 与源文件的双向一致性。用户自行导入的包允许缺省令牌（导入时由默认值补全）。`npm test` 还会运行 `tests/theme-pack-smoke.mjs`，在 Node 中真实执行主题包加载逻辑。
 
 ## Agent 检查清单
 

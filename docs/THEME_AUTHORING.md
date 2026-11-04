@@ -51,7 +51,7 @@ Private aliases **inside one theme file** are fine:
 2. Change the selector to `:root[data-theme="my-skin"]` (the `:root` prefix is required so theme tokens beat defaults) and fill every contract token
 3. Register in `src/theme/registry.ts` (`BUILTIN_THEME_IDS` + `BUILTIN_THEMES`)
 4. Add `theme.mySkin` (or similar) keys to `src/i18n.ts` (zh + en)
-5. Run `npm run test:themes` and `npm run check`
+5. Run `npm test` (theme contract + import smoke + typecheck)
 
 ## Importable pack (`theme.json`)
 
@@ -99,7 +99,7 @@ The shell paints `--bg-image` on `.app-shell::before`. Cards/modals use `backdro
 
 ## Validation
 
-`npm run test:themes` validates every builtin CSS skin, builtin JSON pack and the starter template: `:root[data-theme="<id>"]` selectors, all 38 contract tokens, no contract-outside tokens, declared background assets, and two-way `registry.ts` consistency. User-imported packs may omit tokens — the importer fills them from defaults.
+`npm run test:themes` validates every builtin CSS skin, builtin JSON pack and the starter template: `:root[data-theme="<id>"]` selectors, all 38 contract tokens, no contract-outside tokens, declared background assets, and two-way `registry.ts` consistency. User-imported packs may omit tokens — the importer fills them from defaults. `npm test` additionally runs `tests/theme-pack-smoke.mjs`, which executes the real pack loader in Node.
 
 ## Agent checklist
 
