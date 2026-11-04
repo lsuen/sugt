@@ -51,6 +51,8 @@ pub fn responses_to_chat_with_meta(
     if messages.is_empty() {
         messages.push(json!({ "role": "user", "content": "ping" }));
     }
+    // 上游（OpenRouter/Kilo 等）会拒空 function.name；Codex 会话/插件偶发带入
+    sanitize_chat_messages_tool_calls(&mut messages);
 
     let stream = value
         .get("stream")
@@ -83,6 +85,8 @@ pub fn responses_to_chat_with_meta(
                     out_obj.insert("max_tokens".to_string(), v.clone());
                 }
             }
+
+            sanitize_tool_choice(out_obj);
 
             if chat_tools.is_empty() {
                 // 严格上游：有 tool_choice 无 tools 会 400；空 tools 也不要发
@@ -248,18 +252,33 @@ fn push_response_tool_as_chat(
     }
 }
 
-fn responses_function_to_chat_tool(tool: &Value) -> Option<Value> {
-    let name = tool.get("name").and_then(|v| v.as_str())?;
-    if name.is_empty() {
-        return None;
+/// 解析工具/调用名：兼容 Responses 顶层 `name` 与 Chat 嵌套 `function.name`；空串视为缺失。
+fn non_empty_name<'a>(value: &'a Value, paths: &[&str]) -> Option<&'a str> {
+    for path in paths {
+        let raw = if path.contains('/') {
+            value.pointer(path).and_then(|v| v.as_str())
+        } else {
+            value.get(*path).and_then(|v| v.as_str())
+        };
+        if let Some(name) = raw.map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(name);
+        }
     }
+    None
+}
+
+fn responses_function_to_chat_tool(tool: &Value) -> Option<Value> {
+    // Responses: {type,name,...}；部分客户端会塞 Chat 形 {function:{name}}
+    let name = non_empty_name(tool, &["name", "/function/name"])?;
     let description = tool
         .get("description")
         .cloned()
+        .or_else(|| tool.pointer("/function/description").cloned())
         .unwrap_or_else(|| json!(""));
     let parameters = tool
         .get("parameters")
         .or_else(|| tool.get("input_schema"))
+        .or_else(|| tool.pointer("/function/parameters"))
         .cloned()
         .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
     Some(json!({
@@ -273,10 +292,7 @@ fn responses_function_to_chat_tool(tool: &Value) -> Option<Value> {
 }
 
 fn responses_custom_to_chat_tool(tool: &Value) -> Option<(String, Value)> {
-    let name = tool.get("name").and_then(|v| v.as_str())?.to_string();
-    if name.is_empty() {
-        return None;
-    }
+    let name = non_empty_name(tool, &["name", "/function/name"])?.to_string();
     let mut description = tool
         .get("description")
         .and_then(|v| v.as_str())
@@ -432,7 +448,15 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                     .get("content")
                     .map(normalize_message_content)
                     .unwrap_or(json!(""));
-                Some(json!({ "role": role, "content": content }))
+                let mut msg = json!({ "role": role, "content": content });
+                // 部分会话会把历史 tool_calls 挂在 message 上；空 name 需留给 sanitize
+                if let (Some(out), Some(calls)) = (
+                    msg.as_object_mut(),
+                    item.get("tool_calls").filter(|v| v.is_array()),
+                ) {
+                    out.insert("tool_calls".to_string(), calls.clone());
+                }
+                Some(msg)
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("call");
@@ -448,10 +472,12 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
             }
             "function_call" => {
                 let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("call");
-                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("function");
+                // `name: ""` 时 unwrap_or 不会兜底，上游会直接 400
+                let name = non_empty_name(item, &["name", "/function/name"]).unwrap_or("function");
                 let arguments = item
                     .get("arguments")
                     .and_then(|a| a.as_str())
+                    .or_else(|| item.pointer("/function/arguments").and_then(|a| a.as_str()))
                     .unwrap_or("{}");
                 Some(json!({
                     "role": "assistant",
@@ -465,7 +491,7 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
             }
             "custom_tool_call" => {
                 let call_id = item.get("call_id").and_then(|c| c.as_str()).unwrap_or("call");
-                let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("custom");
+                let name = non_empty_name(item, &["name", "/function/name"]).unwrap_or("custom");
                 let input = item.get("input").and_then(|i| i.as_str()).unwrap_or("");
                 let arguments = serde_json::to_string(&json!({ "input": input }))
                     .unwrap_or_else(|_| input.to_string());
@@ -484,12 +510,26 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
             _ => Some(json!({ "role": "user", "content": item.to_string() })),
         }
     } else if let Some(obj) = item.as_object() {
+        // 无 type 的 Chat 形消息：保留 tool_calls，稍后统一净化空 name
         let role = obj.get("role").and_then(|r| r.as_str()).unwrap_or("user");
         let content = obj
             .get("content")
             .map(normalize_message_content)
             .unwrap_or(json!(""));
-        Some(json!({ "role": role, "content": content }))
+        let mut msg = json!({ "role": role, "content": content });
+        if let (Some(out), Some(calls)) = (
+            msg.as_object_mut(),
+            obj.get("tool_calls").filter(|v| v.is_array()),
+        ) {
+            out.insert("tool_calls".to_string(), calls.clone());
+        }
+        if let (Some(out), Some(id)) = (
+            msg.as_object_mut(),
+            obj.get("tool_call_id").and_then(|v| v.as_str()),
+        ) {
+            out.insert("tool_call_id".to_string(), json!(id));
+        }
+        Some(msg)
     } else if let Some(s) = item.as_str() {
         Some(json!({ "role": "user", "content": s }))
     } else {
@@ -520,6 +560,87 @@ fn normalize_message_content(content: &Value) -> Value {
             }
         }
         other => other.clone(),
+    }
+}
+
+fn tool_call_function_name(call: &Value) -> Option<&str> {
+    non_empty_name(call, &["/function/name", "name"])
+}
+
+/// 去掉 / 修补 messages 里空的 tool_calls.function.name，避免上游 400。
+fn sanitize_chat_messages_tool_calls(messages: &mut Vec<Value>) {
+    let mut dropped = 0u32;
+    let mut patched = 0u32;
+    for msg in messages.iter_mut() {
+        let Some(obj) = msg.as_object_mut() else {
+            continue;
+        };
+        let Some(Value::Array(calls)) = obj.get_mut("tool_calls") else {
+            continue;
+        };
+        let mut kept = Vec::with_capacity(calls.len());
+        for call in calls.drain(..) {
+            if tool_call_function_name(&call).is_some() {
+                kept.push(call);
+                continue;
+            }
+            // 有 id/arguments 但 name 空：补占位，避免整段历史断裂
+            if let Some(call_obj) = call.as_object() {
+                let mut fixed = call.clone();
+                if let Some(fixed_obj) = fixed.as_object_mut() {
+                    let mut function = call_obj
+                        .get("function")
+                        .and_then(|f| f.as_object())
+                        .cloned()
+                        .unwrap_or_default();
+                    function.insert("name".to_string(), json!("unknown_tool"));
+                    if !function.contains_key("arguments") {
+                        function.insert("arguments".to_string(), json!("{}"));
+                    }
+                    fixed_obj.insert("function".to_string(), Value::Object(function));
+                    if !fixed_obj.contains_key("type") {
+                        fixed_obj.insert("type".to_string(), json!("function"));
+                    }
+                    if !fixed_obj.contains_key("id") {
+                        fixed_obj.insert("id".to_string(), json!("call_unknown"));
+                    }
+                }
+                kept.push(fixed);
+                patched += 1;
+            } else {
+                dropped += 1;
+            }
+        }
+        if kept.is_empty() {
+            obj.remove("tool_calls");
+        } else {
+            obj.insert("tool_calls".to_string(), Value::Array(kept));
+        }
+    }
+    if dropped > 0 || patched > 0 {
+        warn!(
+            dropped,
+            patched, "sanitized empty tool_calls.function.name before upstream chat"
+        );
+    }
+}
+
+fn sanitize_tool_choice(out_obj: &mut serde_json::Map<String, Value>) {
+    let Some(choice) = out_obj.get("tool_choice") else {
+        return;
+    };
+    // 字符串 "auto"/"none"/"required" 原样保留
+    if choice.is_string() {
+        return;
+    }
+    let name = choice
+        .pointer("/function/name")
+        .and_then(|n| n.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if name.is_empty() && choice.get("type").and_then(|t| t.as_str()) == Some("function") {
+        warn!("dropping tool_choice with empty function.name");
+        out_obj.insert("tool_choice".to_string(), json!("auto"));
     }
 }
 
@@ -1904,6 +2025,81 @@ mod tests {
         assert!(v.get("tools").is_none());
         assert!(v.get("tool_choice").is_none());
         assert!(v.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn empty_function_call_name_gets_fallback() {
+        // 回归：name:"" 时 unwrap_or 不会触发，上游报 tool_calls[0].function.name empty
+        let body = Bytes::from(
+            r#"{
+              "model":"gpt-4",
+              "input":[
+                {"type":"function_call","call_id":"c1","name":"","arguments":"{}"},
+                {"type":"function_call_output","call_id":"c1","output":"ok"},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"你好"}]}
+              ]
+            }"#,
+        );
+        let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        let assistant = msgs
+            .iter()
+            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+            .expect("assistant tool call message");
+        let name = assistant.pointer("/tool_calls/0/function/name").and_then(|n| n.as_str());
+        assert_eq!(name, Some("function"));
+        assert!(name.unwrap().len() > 0);
+    }
+
+    #[test]
+    fn sanitizes_empty_tool_calls_on_chat_shaped_history() {
+        let body = Bytes::from(
+            r#"{
+              "model":"gpt-4",
+              "input":[
+                {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"","arguments":"{}"}}]},
+                {"role":"tool","tool_call_id":"c1","content":"ok"},
+                {"role":"user","content":"你好"}
+              ]
+            }"#,
+        );
+        let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        let name = v.pointer("/messages/0/tool_calls/0/function/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        assert!(!name.is_empty(), "empty tool name must be patched, got {name:?}");
+        assert_eq!(name, "unknown_tool");
+    }
+
+    #[test]
+    fn drops_tool_choice_with_empty_function_name() {
+        let body = Bytes::from(
+            r#"{
+              "model":"gpt-4",
+              "tool_choice":{"type":"function","function":{"name":""}},
+              "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}}],
+              "input":"hi"
+            }"#,
+        );
+        let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["tool_choice"], json!("auto"));
+    }
+
+    #[test]
+    fn accepts_chat_nested_function_tool_schema() {
+        let body = Bytes::from(
+            r#"{
+              "model":"gpt-4",
+              "tools":[{"type":"function","function":{"name":"shell","description":"run","parameters":{"type":"object","properties":{}}}}],
+              "input":"hi"
+            }"#,
+        );
+        let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.pointer("/tools/0/function/name").and_then(|n| n.as_str()), Some("shell"));
     }
 
     #[test]
