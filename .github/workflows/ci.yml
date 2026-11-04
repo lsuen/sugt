@@ -17,16 +17,16 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Typecheck
-        run: npm run check
+      - name: Theme contract and typecheck
+        run: npm test
 
   rust:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Library tests
+      - name: Library and integration tests
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test
         env:
           SUGT_PRODUCT: feature

@@ -220,6 +220,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "需要真实 macOS GUI launchctl 会话；普通 CI / 沙箱跳过，手动运行：cargo test -- --ignored"]
     fn launch_agent_reloads_when_enabled_twice() {
         let uid = current_uid();
         let label = format!("com.sugt.test.{}.{}", uid, std::process::id());

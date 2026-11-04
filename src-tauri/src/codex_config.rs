@@ -258,8 +258,11 @@ mod tests {
     use super::*;
     use crate::model::{AppConfig, ProviderConfig, ProviderProtocol};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+    /// CODEX_HOME 是进程级全局状态，读写它的测试必须互斥，避免并行时出现竞态。
+    static CODEX_HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_codex_home() -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -294,12 +297,23 @@ mod tests {
 
     #[test]
     fn codex_home_default_under_dot_codex() {
+        let _guard = CODEX_HOME_LOCK.lock().unwrap();
+        let previous = std::env::var_os("CODEX_HOME");
+        std::env::remove_var("CODEX_HOME");
         let dir = codex_home_dir().unwrap();
-        assert!(dir.to_string_lossy().ends_with(".codex"));
+        assert!(
+            dir.to_string_lossy().ends_with(".codex"),
+            "未设置 CODEX_HOME 时应回落到用户目录的 .codex，实际 {dir:?}"
+        );
+        if let Some(value) = previous {
+            std::env::set_var("CODEX_HOME", value);
+        }
     }
 
     #[test]
     fn apply_writes_model_providers_responses() {
+        let _guard = CODEX_HOME_LOCK.lock().unwrap();
+        let previous = std::env::var_os("CODEX_HOME");
         let home = temp_codex_home();
         std::env::set_var("CODEX_HOME", &home);
         let config = sample_config(18787);
@@ -327,7 +341,10 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(!providers.contains_key("sugt"));
-        std::env::remove_var("CODEX_HOME");
+        match previous {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 }

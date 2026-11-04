@@ -291,14 +291,14 @@ fn listen_url(config: &AppConfig) -> String {
     config.listen_url()
 }
 
-pub(crate) fn claude_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
+pub fn claude_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("ANTHROPIC_BASE_URL".to_string(), listen_url.to_string()),
         ("ANTHROPIC_AUTH_TOKEN".to_string(), client_key.to_string()),
     ])
 }
 
-pub(crate) fn codex_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
+pub fn codex_vars(listen_url: &str, client_key: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("OPENAI_BASE_URL".to_string(), format!("{}/v1", listen_url)),
         ("OPENAI_API_BASE".to_string(), format!("{}/v1", listen_url)),
@@ -493,7 +493,7 @@ fn detect_claude_issues(config: &AppConfig) -> Vec<String> {
     issues
 }
 
-pub(crate) fn urls_point_to_gateway(actual: &str, listen: &str) -> bool {
+pub fn urls_point_to_gateway(actual: &str, listen: &str) -> bool {
     let a = actual.trim().trim_end_matches('/');
     let l = listen.trim().trim_end_matches('/');
     if a.is_empty() || l.is_empty() {
