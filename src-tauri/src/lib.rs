@@ -29,6 +29,7 @@ pub mod quick_chat;
 pub mod store;
 pub mod codex_config;
 pub mod openai_responses_adapter;
+pub mod responses_upstream;
 pub mod overlay;
 pub mod process_util;
 pub mod sugt_skill;
