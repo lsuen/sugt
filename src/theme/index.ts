@@ -5,6 +5,8 @@ export { ThemeSettingsSection } from './ThemeSettingsSection';
 export {
   fetchThemePack,
   importThemePackFile,
+  importThemePackZip,
+  importThemePackDirectory,
   parseThemePackJson,
   themePackToCss,
 } from './loadThemePack';
@@ -16,3 +18,4 @@ export {
 } from './schema';
 export type { ThemeId, ThemeMeta, BuiltinThemeId } from './types';
 export type { ThemePackJson, ThemeTokens, ThemeTokenKey } from './schema';
+export type { CustomBgState } from './themeStorage';

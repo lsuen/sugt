@@ -73,10 +73,16 @@ src/theme/
 ```
 
 - 格式固定为 **JSON**（不用 YAML/TOML），方便浏览器与 Agent 校验。
-- 目录：`theme.json` + 可选 `bg.jpg` / `bg.webp`。
-- 设置 → 外观 → **导入主题包**。远程包用 JSON URL 的目录作为资源基路径（见 `fetchThemePack`）。
+- 目录：`theme.json` + 可选 `bg.jpg` / `bg.webp`（建议 ≤ 1.5MB）。
+- 设置 → 外观：
+  - **导入主题包**：`theme.json` 或 **`.zip`**（含背景图会嵌入本地持久化）
+  - **导入文件夹**：选中含 `theme.json` 的目录
+  - **自定义背景图**：只换插画、不改配色（叠在当前主题上）
+- 导入包缺省令牌会用默认契约补全；未知 `--*` 键会报错。
+- 远程包用 JSON URL 的目录作为资源基路径（见 `fetchThemePack`）。
 
-参考：`src/theme/packs/anime-boy/`、`src/theme/packs/anime-girl/`。
+模板与 Agent 说明：`theme-packs/example/`（可整夹交给任意 Agent 改皮）。  
+内置参考：`src/theme/packs/anime-boy/`、`src/theme/packs/anime-girl/`。
 
 ## 背景图、透明、毛玻璃
 

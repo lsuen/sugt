@@ -1,9 +1,21 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { CircleAlert, Copy } from 'lucide-react';
 import { GithubProxyModal } from './store/GithubProxyModal';
 import { langSetting, setLang, t, type LangSetting } from './i18n';
 import { ThemeSettingsSection } from './theme';
-import type { ThemeId, ThemeMeta } from './theme';
+import type { CustomBgState, ThemeId, ThemeMeta } from './theme';
+
+type LanShareInfo = {
+  enabled: boolean;
+  port: number;
+  api_key: string;
+  model_id: string;
+  hosts: string[];
+  openai_bases: string[];
+  anthropic_bases: string[];
+  copy_text: string;
+};
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
 
@@ -71,6 +83,12 @@ type Props = {
   onTheme: (id: ThemeId) => void;
   onThemeImport: (meta: ThemeMeta) => void;
   themeError?: string | null;
+  customBg: CustomBgState | null;
+  onCustomBgFile: (file: File) => Promise<void>;
+  onCustomBgOpacity: (opacity: number) => void;
+  onClearCustomBg: () => void;
+  statusBarEnabled: boolean;
+  onStatusBarEnabled: (enabled: boolean) => void;
 };
 
 export function SettingsPanel({
@@ -85,6 +103,12 @@ export function SettingsPanel({
   onTheme,
   onThemeImport,
   themeError,
+  customBg,
+  onCustomBgFile,
+  onCustomBgOpacity,
+  onClearCustomBg,
+  statusBarEnabled,
+  onStatusBarEnabled,
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
@@ -92,6 +116,47 @@ export function SettingsPanel({
   const [width, setWidth] = useState(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
   const [height, setHeight] = useState(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
   const [tab, setTab] = useState<SettingsTab>('basic');
+  const [lanOpen, setLanOpen] = useState(false);
+  const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
+  const lanPopRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!lanOpen) return;
+    let cancelled = false;
+    void invoke<LanShareInfo>('get_lan_share_info')
+      .then((info) => {
+        if (!cancelled) setLanInfo(info);
+      })
+      .catch(() => {
+        if (!cancelled) setLanInfo(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lanOpen, config?.allow_lan_access]);
+
+  useEffect(() => {
+    if (!lanOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!lanPopRef.current?.contains(e.target as Node)) setLanOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [lanOpen]);
+
+  const copyLan = async () => {
+    const text = lanInfo?.copy_text?.trim();
+    if (!text) {
+      pushToast?.(t('set.lanShareEmpty'), 'info');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      pushToast?.(t('set.lanShareCopied'), 'ok');
+    } catch {
+      pushToast?.(t('gateway.copyFailed'), 'error');
+    }
+  };
 
   // 悬浮窗配置更新：合并当前配置 + 增量，持久化并即时应用
   const setOverlay = (patch: Partial<OverlayConfigView>) => {
@@ -193,6 +258,12 @@ export function SettingsPanel({
             onImport={onThemeImport}
             error={themeError}
             pushToast={pushToast}
+            customBg={customBg}
+            onCustomBgFile={onCustomBgFile}
+            onCustomBgOpacity={onCustomBgOpacity}
+            onClearCustomBg={onClearCustomBg}
+            statusBarEnabled={statusBarEnabled}
+            onStatusBarEnabled={onStatusBarEnabled}
           />
 
           <div className="card settings-group switches">
@@ -229,8 +300,66 @@ export function SettingsPanel({
             <h4>{t('set.network')}</h4>
             <p className="hint compact">{t('set.networkHint')}</p>
             <label className="switch-line">
-              <span>{t('set.lan')}</span>
-              <input type="checkbox" checked={Boolean(config?.allow_lan_access)} onChange={(e) => run(() => invoke('update_gateway_settings', { input: { allowLanAccess: e.target.checked } }), t('common.update'))} />
+              <span className="switch-line-label">
+                {t('set.lan')}
+                {config?.allow_lan_access ? (
+                  <span className="lan-share-wrap" ref={lanPopRef}>
+                    <button
+                      type="button"
+                      className="tiny icon-only lan-share-btn"
+                      aria-label={t('set.lanShare')}
+                      title={t('set.lanShare')}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setLanOpen((v) => !v);
+                      }}
+                    >
+                      <CircleAlert size={14} />
+                    </button>
+                    {lanOpen && (
+                      <div className="lan-share-popover" role="dialog" aria-label={t('set.lanShare')}>
+                        <div className="lan-share-head">
+                          <strong>{t('set.lanShare')}</strong>
+                          <button type="button" className="tiny" onClick={() => void copyLan()}>
+                            <Copy size={12} />
+                            {t('set.lanShareCopy')}
+                          </button>
+                        </div>
+                        {lanInfo?.hosts?.length ? (
+                          <ul className="lan-share-list">
+                            {lanInfo.hosts.map((host, i) => (
+                              <li key={host}>
+                                <code>{lanInfo.openai_bases[i] ?? `http://${host}:${lanInfo.port}/v1`}</code>
+                              </li>
+                            ))}
+                            <li>
+                              <code>{lanInfo.api_key}</code>
+                            </li>
+                            <li>
+                              <code>{lanInfo.model_id}</code>
+                            </li>
+                          </ul>
+                        ) : (
+                          <p className="hint compact">{t('set.lanShareEmpty')}</p>
+                        )}
+                      </div>
+                    )}
+                  </span>
+                ) : null}
+              </span>
+              <input
+                type="checkbox"
+                checked={Boolean(config?.allow_lan_access)}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  if (!enabled) setLanOpen(false);
+                  run(
+                    () => invoke('update_gateway_settings', { input: { allowLanAccess: enabled } }),
+                    t('common.update'),
+                  );
+                }}
+              />
             </label>
             <label className="switch-line select-line">
               <span>{t('set.quitBehavior')}</span>

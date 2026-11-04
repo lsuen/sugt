@@ -74,10 +74,16 @@ Preferred for **external / user** skins. Example:
 ```
 
 - Format is **JSON** (not YAML/TOML) — easy for the browser, agents, and validation.
-- Ship a folder: `theme.json` + optional `bg.jpg` / `bg.webp`.
-- In Settings → Appearance → **Import theme pack**, pick the JSON. For remote packs, resolve `assets.bgImage` against the JSON URL base (see `fetchThemePack`).
+- Ship a folder: `theme.json` + optional `bg.jpg` / `bg.webp` (keep art ≤ ~1.5MB).
+- In Settings → Appearance:
+  - **Import pack**: `theme.json` or **`.zip`** (background is embedded & persisted)
+  - **Import folder**: pick a directory that contains `theme.json`
+  - **Custom background**: art overlay only (does not change the color tokens)
+- Missing tokens are completed from defaults; unknown `--*` keys error.
+- Remote packs: resolve `assets.bgImage` against the JSON URL base (see `fetchThemePack`).
 
-Reference packs: `src/theme/packs/anime-boy/`, `src/theme/packs/anime-girl/`.
+Agent-ready template: `theme-packs/example/`.  
+Builtin references: `src/theme/packs/anime-boy/`, `src/theme/packs/anime-girl/`.
 
 ## Background, transparency, glass
 

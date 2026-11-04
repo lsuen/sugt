@@ -40,6 +40,8 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 - Settings appearance UI: `src/theme/ThemeSettingsSection.tsx`
 - Persist theme id: `localStorage` key `sugt_theme`
 - Modals / fixed toasts: wrap with `ModalPortal` (`src/ModalPortal.tsx`) so they mount on `document.body`. Do not put `z-index` on `.app-shell > *` (traps `position:fixed`). Prefer theme tokens over hardcoded dark colors in overlays.
+- User theme packs: zip/folder import + optional custom bg (`src/theme/loadThemePack.ts`, `customBg.ts`). Template for agents: `theme-packs/example/`.
+- Status bar default **on** (`sugt_status_bar`); solid log drawer from the bar — not a glass overlay. Full logs stay on the Logs tab.
 
 ## Backend / gateway
 
