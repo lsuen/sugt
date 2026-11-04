@@ -39,6 +39,11 @@ scripts/.notify-*.json
 /.trae/
 /.codebase-index/
 
+# Local probe / debug leftovers (AGENTS.md Forbidden: never commit)
+/.omo/
+/_me_write_probe.md
+/debug.sh
+
 # Dev-process documents (task breakdowns, local notes)
 /.task/
 /运行调试.md
