@@ -36,15 +36,30 @@ fn converts_openai_json_with_object_arguments() {
 
 #[test]
 fn maps_anthropic_tool_choice_object_to_openai() {
-    assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "auto"})), json!("auto"));
-    assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "none"})), json!("none"));
-    assert_eq!(anthropic_tool_choice_to_openai(&json!({"type": "any"})), json!("required"));
+    assert_eq!(
+        anthropic_tool_choice_to_openai(&json!({"type": "auto"})),
+        json!("auto")
+    );
+    assert_eq!(
+        anthropic_tool_choice_to_openai(&json!({"type": "none"})),
+        json!("none")
+    );
+    assert_eq!(
+        anthropic_tool_choice_to_openai(&json!({"type": "any"})),
+        json!("required")
+    );
     assert_eq!(
         anthropic_tool_choice_to_openai(&json!({"type": "tool", "name": "bash"})),
         json!({"type": "function", "function": {"name": "bash"}})
     );
-    assert_eq!(anthropic_tool_choice_to_openai(&json!("auto")), json!("auto"));
-    assert_eq!(anthropic_tool_choice_to_openai(&json!("any")), json!("required"));
+    assert_eq!(
+        anthropic_tool_choice_to_openai(&json!("auto")),
+        json!("auto")
+    );
+    assert_eq!(
+        anthropic_tool_choice_to_openai(&json!("any")),
+        json!("required")
+    );
 }
 
 #[test]
@@ -54,7 +69,10 @@ fn skips_null_fields_when_converting_request() {
     );
     let payload = anthropic_to_openai(body, "target").unwrap();
     let value: Value = serde_json::from_slice(&payload).unwrap();
-    assert!(value.get("temperature").is_none(), "temperature 不应透传 null");
+    assert!(
+        value.get("temperature").is_none(),
+        "temperature 不应透传 null"
+    );
     assert!(value.get("top_p").is_none(), "top_p 不应透传 null");
     assert!(value.get("stop").is_none(), "stop 不应透传 null");
 }
@@ -84,7 +102,10 @@ fn converts_anthropic_image_block_to_openai_image_url() {
     });
     let converted = anthropic_image_block_to_openai(&block).unwrap();
     assert_eq!(converted["type"], "image_url");
-    assert_eq!(converted["image_url"]["url"], "data:image/png;base64,aGVsbG8=");
+    assert_eq!(
+        converted["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
 }
 
 #[test]
@@ -97,7 +118,10 @@ fn converts_image_block_in_user_message() {
     let content = &value["messages"][0]["content"];
     assert_eq!(content[0]["type"], "text");
     assert_eq!(content[1]["type"], "image_url");
-    assert_eq!(content[1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "data:image/jpeg;base64,AAAA"
+    );
 }
 
 #[test]

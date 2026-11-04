@@ -10,9 +10,8 @@ use tracing::warn;
 pub fn provider_supports_native_responses(base_url: &str) -> bool {
     let base = base_url.trim().trim_end_matches('/').to_lowercase();
     let is_volc = base.contains("volces.com") || base.contains("volcengine");
-    let has_api_path = base.contains("/api/coding")
-        || base.ends_with("/api/v3")
-        || base.contains("/coding/v3");
+    let has_api_path =
+        base.contains("/api/coding") || base.ends_with("/api/v3") || base.contains("/coding/v3");
     is_volc && has_api_path
 }
 

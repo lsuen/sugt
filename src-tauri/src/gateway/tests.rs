@@ -45,7 +45,10 @@ fn maps_volcengine_v3_chat_completions() {
         "v1/chat/completions",
         "",
     );
-    assert_eq!(target, "https://ark.cn-beijing.volces.com/api/v3/chat/completions");
+    assert_eq!(
+        target,
+        "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    );
 }
 
 #[test]

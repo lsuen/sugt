@@ -10,10 +10,8 @@ fn ark_code_model_triggers_native_even_with_wrong_base() {
         "https://api-inference.modelscope.cn/v1",
         "ark-code-latest"
     ));
-    let base = native_responses_base_url(
-        "https://api-inference.modelscope.cn/v1",
-        "ark-code-latest",
-    );
+    let base =
+        native_responses_base_url("https://api-inference.modelscope.cn/v1", "ark-code-latest");
     assert_eq!(base, "https://ark.cn-beijing.volces.com/api/coding/v3");
 }
 
@@ -175,9 +173,18 @@ async fn sse_stream_captures_usage_after_finish_reason() {
         .map(|b| String::from_utf8_lossy(b))
         .collect::<Vec<_>>()
         .join("");
-    assert!(all.contains("\"input_tokens\":100"), "usage after finish must be kept: {all}");
-    assert!(all.contains("\"output_tokens\":7"), "usage after finish must be kept: {all}");
-    assert!(all.contains("\"total_tokens\":107"), "Codex requires total_tokens: {all}");
+    assert!(
+        all.contains("\"input_tokens\":100"),
+        "usage after finish must be kept: {all}"
+    );
+    assert!(
+        all.contains("\"output_tokens\":7"),
+        "usage after finish must be kept: {all}"
+    );
+    assert!(
+        all.contains("\"total_tokens\":107"),
+        "Codex requires total_tokens: {all}"
+    );
     // event + data 各带一次 type；payload 里 "type":"response.completed" 应只一次
     assert_eq!(all.matches("\"type\":\"response.completed\"").count(), 1);
 }
@@ -190,12 +197,8 @@ async fn sse_stream_estimates_usage_when_upstream_omits_it() {
         )),
         Ok(Bytes::from("data: [DONE]\n\n")),
     ]);
-    let mapped = chat_sse_to_responses_sse_with_meta(
-        upstream,
-        "m".to_string(),
-        ChatToolMeta::default(),
-        42,
-    );
+    let mapped =
+        chat_sse_to_responses_sse_with_meta(upstream, "m".to_string(), ChatToolMeta::default(), 42);
     let chunks: Vec<Bytes> = mapped.map(|r| r.expect("io")).collect().await;
     let all = chunks
         .iter()
@@ -204,7 +207,10 @@ async fn sse_stream_estimates_usage_when_upstream_omits_it() {
         .join("");
     assert!(all.contains("\"input_tokens\":42"), "fallback input: {all}");
     assert!(all.contains("\"output_tokens\":"), "fallback output: {all}");
-    assert!(!all.contains("\"output_tokens\":0"), "output should be estimated: {all}");
+    assert!(
+        !all.contains("\"output_tokens\":0"),
+        "output should be estimated: {all}"
+    );
 }
 
 #[tokio::test]
@@ -336,7 +342,9 @@ fn empty_function_call_name_gets_fallback() {
         .iter()
         .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
         .expect("assistant tool call message");
-    let name = assistant.pointer("/tool_calls/0/function/name").and_then(|n| n.as_str());
+    let name = assistant
+        .pointer("/tool_calls/0/function/name")
+        .and_then(|n| n.as_str());
     assert_eq!(name, Some("function"));
     assert!(name.unwrap().len() > 0);
 }
@@ -355,10 +363,14 @@ fn sanitizes_empty_tool_calls_on_chat_shaped_history() {
     );
     let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
     let v: Value = serde_json::from_slice(&out).unwrap();
-    let name = v.pointer("/messages/0/tool_calls/0/function/name")
+    let name = v
+        .pointer("/messages/0/tool_calls/0/function/name")
         .and_then(|n| n.as_str())
         .unwrap_or("");
-    assert!(!name.is_empty(), "empty tool name must be patched, got {name:?}");
+    assert!(
+        !name.is_empty(),
+        "empty tool name must be patched, got {name:?}"
+    );
     assert_eq!(name, "unknown_tool");
 }
 
@@ -388,7 +400,10 @@ fn accepts_chat_nested_function_tool_schema() {
     );
     let (out, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
     let v: Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(v.pointer("/tools/0/function/name").and_then(|n| n.as_str()), Some("shell"));
+    assert_eq!(
+        v.pointer("/tools/0/function/name").and_then(|n| n.as_str()),
+        Some("shell")
+    );
 }
 
 #[test]

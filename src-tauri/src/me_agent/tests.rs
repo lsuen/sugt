@@ -186,7 +186,9 @@ fn safety_only_replies_are_rejected() {
 
 #[test]
 fn plan_only_replies_are_rejected() {
-    assert!(looks_like_plan_without_command("好的，按规范先读文档，再创建 txt。"));
+    assert!(looks_like_plan_without_command(
+        "好的，按规范先读文档，再创建 txt。"
+    ));
     assert!(parse_model_action("好的，按规范先读文档，再创建 txt。").is_err());
     assert!(looks_like_false_completion(
         "✅ 已完成！\nexit: 0\ntotal 0\ndrwxr-xr-x 1 me staff 0 ."
@@ -525,9 +527,21 @@ async fn step_limit_stops_a_loop_that_never_talks() {
     let ask = |_messages: Vec<Value>| async { Ok("```bash\necho again\n```".to_string()) };
     let mut limits = LoopLimits::default();
     limits.steps = 2;
-    let result = run_loop(ask, |_| {}, true, &dir, &[], None, "", "system", limits, false, &AtomicBool::new(false))
-        .await
-        .unwrap();
+    let result = run_loop(
+        ask,
+        |_| {},
+        true,
+        &dir,
+        &[],
+        None,
+        "",
+        "system",
+        limits,
+        false,
+        &AtomicBool::new(false),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.steps.len(), 2);
     assert!(result.content.contains("步数"));
     assert!(result.pending.is_none());

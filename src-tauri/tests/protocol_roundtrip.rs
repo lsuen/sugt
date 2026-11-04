@@ -144,7 +144,8 @@ fn anthropic_to_openai_and_back_keeps_tool_calls_and_stop_reason() {
         "stream": false
     });
 
-    let openai_request = parse(&anthropic_to_openai(json_bytes(&request), "upstream-model").unwrap());
+    let openai_request =
+        parse(&anthropic_to_openai(json_bytes(&request), "upstream-model").unwrap());
 
     assert_eq!(openai_request["model"], "upstream-model");
     assert_eq!(openai_request["messages"][0]["role"], "system");
@@ -166,8 +167,14 @@ fn anthropic_to_openai_and_back_keeps_tool_calls_and_stop_reason() {
             .and_then(Value::as_str),
         Some("get_weather")
     );
-    assert!(openai_request.to_string().contains("t1"), "历史 tool_call_id 丢失");
-    assert!(openai_request.to_string().contains("file.txt"), "工具结果丢失");
+    assert!(
+        openai_request.to_string().contains("t1"),
+        "历史 tool_call_id 丢失"
+    );
+    assert!(
+        openai_request.to_string().contains("file.txt"),
+        "工具结果丢失"
+    );
 
     let openai_response = json!({
         "id": "chatcmpl-2",
@@ -285,12 +292,14 @@ fn codex_freeform_tool_name_restores_custom_tool_call_without_meta() {
     })
     .to_string();
 
-    let responses = parse(&chat_json_to_responses_body_with_meta(
-        &chat_response,
-        "upstream-model",
-        &ChatToolMeta::default(),
-    )
-    .unwrap());
+    let responses = parse(
+        &chat_json_to_responses_body_with_meta(
+            &chat_response,
+            "upstream-model",
+            &ChatToolMeta::default(),
+        )
+        .unwrap(),
+    );
     let output = responses["output"].as_array().unwrap();
     let call = output
         .iter()
@@ -300,7 +309,5 @@ fn codex_freeform_tool_name_restores_custom_tool_call_without_meta() {
         });
     assert_eq!(call["name"], "shell");
     assert_eq!(call["call_id"], "call_9");
-    assert!(output
-        .iter()
-        .all(|item| item["type"] != "function_call"));
+    assert!(output.iter().all(|item| item["type"] != "function_call"));
 }
