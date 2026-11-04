@@ -36,6 +36,7 @@
     "allow-repair-clients-env",
     "allow-uninstall-clients-env",
     "allow-update-gateway-settings",
+    "allow-get-lan-share-info",
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
     "allow-me-commands",

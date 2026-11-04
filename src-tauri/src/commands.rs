@@ -643,6 +643,7 @@ pub async fn update_gateway_settings(
     runtime: State<'_, AppRuntime>,
     input: GatewaySettingsInput,
 ) -> Result<AppConfig, String> {
+    let mut lan_changed = false;
     let mut config = runtime.config.write().await;
     if let Some(enabled) = input.port_fallback_enabled {
         config.port_fallback_enabled = enabled;
@@ -651,6 +652,9 @@ pub async fn update_gateway_settings(
         config.gateway_watchdog_enabled = enabled;
     }
     if let Some(enabled) = input.allow_lan_access {
+        if config.allow_lan_access != enabled {
+            lan_changed = true;
+        }
         config.allow_lan_access = enabled;
     }
     if let Some(port) = input.port {
@@ -672,7 +676,86 @@ pub async fn update_gateway_settings(
     let snapshot = config.clone();
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
+    // 绑定地址变化后需重启监听，否则仍停在旧 host
+    if lan_changed && runtime.gateway.is_running().await {
+        let _ = runtime.gateway.stop().await;
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        runtime
+            .gateway
+            .replace_config(snapshot.clone())
+            .await;
+        if let Err(err) = runtime.gateway.start().await {
+            warn!(error = %err, "restart gateway after LAN toggle failed");
+            return Err(error_hint::format_gateway_start_error(&err));
+        }
+    } else if lan_changed {
+        runtime.gateway.replace_config(snapshot.clone()).await;
+    }
     Ok(snapshot)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LanShareInfo {
+    pub enabled: bool,
+    pub port: u16,
+    pub api_key: String,
+    pub model_id: String,
+    pub hosts: Vec<String>,
+    pub openai_bases: Vec<String>,
+    pub anthropic_bases: Vec<String>,
+    /// 一键复制给局域网对端的完整接入信息
+    pub copy_text: String,
+}
+
+#[tauri::command]
+pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanShareInfo, String> {
+    let config = runtime.config.read().await.clone();
+    let port = config.port;
+    let api_key = config.gateway_client_api_key.clone();
+    let model_id = "sutai".to_string();
+    if !config.allow_lan_access {
+        return Ok(LanShareInfo {
+            enabled: false,
+            port,
+            api_key,
+            model_id,
+            hosts: Vec::new(),
+            openai_bases: Vec::new(),
+            anthropic_bases: Vec::new(),
+            copy_text: String::new(),
+        });
+    }
+    let hosts = crate::lan::lan_ipv4_addrs();
+    let openai_bases: Vec<String> = hosts
+        .iter()
+        .map(|h| format!("http://{h}:{port}/v1"))
+        .collect();
+    let anthropic_bases: Vec<String> = hosts
+        .iter()
+        .map(|h| format!("http://{h}:{port}"))
+        .collect();
+    let copy_text = if hosts.is_empty() {
+        String::new()
+    } else {
+        let mut lines = Vec::new();
+        for host in &hosts {
+            lines.push(format!("OpenAI Base: http://{host}:{port}/v1"));
+            lines.push(format!("Anthropic Base: http://{host}:{port}"));
+        }
+        lines.push(format!("API Key: {api_key}"));
+        lines.push(format!("Model: {model_id}"));
+        lines.join("\n")
+    };
+    Ok(LanShareInfo {
+        enabled: true,
+        port,
+        api_key,
+        model_id,
+        hosts,
+        openai_bases,
+        anthropic_bases,
+        copy_text,
+    })
 }
 
 #[tauri::command]

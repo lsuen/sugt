@@ -34,10 +34,13 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 - 在 Tauri 进程内启动 Axum HTTP 服务器，同时支持 **OpenAI Chat Completions**、**Anthropic Messages**、**OpenAI Responses** 三种协议
 - **协议互转**：Anthropic 与 OpenAI 之间的请求 / 响应双向转换，含 SSE 流式
-- **多上游故障切换**：按 `failover` 配置顺序自动回退到下一个服务商
+- **多上游故障切换**：按 `failover` 配置顺序自动回退到下一个服务商；实验免费通道在 Chat / Responses 路径均会按候选模型 failover
 - **配置热加载**：修改 `config.toml` 后下一次请求即生效，无需重启
 - **端口兜底**：端口被占用时自动绑定下一个可用端口
+- **局域网共享**：设置中开启「允许局域网连接」后绑定 `0.0.0.0`，并可一键复制局域网 Base URL / API Key
 - 内置路由：`/health`、`/v1/models`、`/v1/_sugt/traffic`、`/v1/_sugt/workspace-rules`、`/v1/_sugt/notify`
+
+> 工程向后续（不进 UI 说教）：请求纠错重试（空 tool name 等）、弱上游 tools/instructions 瘦身、上下文边界压缩、稳定前缀以利上游 prompt cache。SOUL 与全功能 Agent 共用这套网关能力。
 
 ### 模型管理
 

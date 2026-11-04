@@ -34,10 +34,13 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Axum HTTP server embedded in the Tauri process, speaking **OpenAI Chat Completions**, **Anthropic Messages**, and **OpenAI Responses**
 - **Protocol bridging**: bidirectional request / response conversion between Anthropic and OpenAI, including SSE streaming
-- **Multi-upstream failover**: automatically falls back to the next provider in your `failover` order
+- **Multi-upstream failover**: automatically falls back to the next provider in your `failover` order; experimental free channel also failovers across candidate models on Chat and Responses paths
 - **Hot-reload config**: edit `config.toml` and the next request picks it up — no restart needed
 - **Port fallback**: if the configured port is taken, the gateway binds the next available one
+- **LAN share**: enable “Allow LAN connections” to bind `0.0.0.0` and copy LAN Base URL / API Key in one click
 - Built-in endpoints: `/health`, `/v1/models`, `/v1/_sugt/traffic`, `/v1/_sugt/workspace-rules`, `/v1/_sugt/notify`
+
+> Engineering follow-ups (not UI copy): request repair/retry (empty tool names, etc.), slim tools/instructions for weak upstreams, context compaction near window limits, stable prefixes for upstream prompt cache. SOUL and full agent clients share this gateway layer.
 
 ### Model Management
 

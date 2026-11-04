@@ -25,6 +25,7 @@ pub fn run() {
             commands::list_provider_models,
             commands::set_failover,
             commands::update_gateway_settings,
+            commands::get_lan_share_info,
             commands::set_autostart,
             commands::set_autostart_gateway,
             commands::set_auto_takeover,

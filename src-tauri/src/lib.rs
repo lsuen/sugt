@@ -17,6 +17,7 @@ pub mod gateway_daemon;
 pub mod gateway_listen;
 pub mod gateway_stats;
 pub mod gateway_watchdog;
+pub mod lan;
 pub mod logging;
 pub mod me_agent;
 pub mod model;

@@ -976,7 +976,7 @@ async fn proxy_request(
             continue;
         }
 
-        let attempts = upstream_attempts(provider);
+        let attempts = upstream_attempts(provider, config.failover_enabled);
         for attempt in &attempts {
             let target = build_target_url(&attempt.base_url, &path, &query);
             let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
@@ -1052,7 +1052,8 @@ async fn proxy_responses_via_chat(
     query: &str,
     rules_injected: bool,
 ) -> Result<Response<Body>> {
-    let providers = ordered_providers(&state.config().await);
+    let config = state.config().await;
+    let providers = ordered_providers(&config);
     if providers.is_empty() {
         bail!("没有可用模型配置");
     }
@@ -1065,240 +1066,324 @@ async fn proxy_responses_via_chat(
     let mut last_error = None;
     let started = std::time::Instant::now();
     for (index, provider) in providers.iter().enumerate() {
-        // 熔断器：跳过冷却期内的故障 provider
         if state.is_circuit_open(&provider.id).await {
             warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
             last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
             continue;
         }
 
-        let provider = prepare_upstream_provider(provider);
-        let try_native = crate::openai_responses_adapter::should_try_native_responses(
-            &provider.base_url,
-            &provider.model_name,
-        );
-        info!(
-            provider = %provider.name,
-            base_url = %provider.base_url,
-            model = %provider.model_name,
-            try_native_responses = try_native,
-            "codex responses routing"
-        );
+        let is_free = crate::experimental_free::is_experimental_free(provider);
+        let attempts = upstream_attempts(provider, config.failover_enabled);
+        for (attempt_idx, attempt) in attempts.iter().enumerate() {
+            let try_native = crate::openai_responses_adapter::should_try_native_responses(
+                &attempt.base_url,
+                &attempt.model_name,
+            );
+            info!(
+                provider = %attempt.name,
+                base_url = %attempt.base_url,
+                model = %attempt.model_name,
+                try_native_responses = try_native,
+                attempt = attempt_idx,
+                "codex responses routing"
+            );
 
-        if try_native {
-            let native_base =
-                crate::openai_responses_adapter::native_responses_base_url(
-                    &provider.base_url,
-                    &provider.model_name,
+            if try_native {
+                let native_base = crate::openai_responses_adapter::native_responses_base_url(
+                    &attempt.base_url,
+                    &attempt.model_name,
                 );
-            let upstream_body = crate::openai_responses_adapter::rewrite_responses_upstream_model(
-                &body_bytes,
-                &provider.model_name,
-            )?;
-            let target = build_target_url(&native_base, "v1/responses", query);
+                let upstream_body =
+                    crate::openai_responses_adapter::rewrite_responses_upstream_model(
+                        &body_bytes,
+                        &attempt.model_name,
+                    )?;
+                let target = build_target_url(&native_base, "v1/responses", query);
+                let mut builder = state.client.request(method.clone(), &target);
+                builder =
+                    copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+
+                info!(
+                    provider = %attempt.name,
+                    model = %attempt.model_name,
+                    native_base = %native_base,
+                    target_url = %target,
+                    path = "v1/responses",
+                    stream,
+                    mode = "native_responses_passthrough",
+                    "proxying codex responses to upstream Responses API"
+                );
+
+                match builder.body(upstream_body).send().await {
+                    Ok(response) if response.status().is_success() => {
+                        state.reset_circuit(&provider.id).await;
+                        state
+                            .record_proxy_hit(
+                                attempt,
+                                "v1/responses",
+                                index,
+                                started.elapsed().as_millis() as u64,
+                                &headers,
+                                "responses_native",
+                                true,
+                                rules_injected,
+                            )
+                            .await;
+                        return into_axum_response(
+                            response,
+                            Some(state.stats.clone()),
+                            Some(token_attr_from(&headers, attempt)),
+                        )
+                        .await;
+                    }
+                    Ok(response) if response.status().as_u16() < 500 && !is_free => {
+                        let ok = false;
+                        state.reset_circuit(&provider.id).await;
+                        state
+                            .record_proxy_hit(
+                                attempt,
+                                "v1/responses",
+                                index,
+                                started.elapsed().as_millis() as u64,
+                                &headers,
+                                "responses_native",
+                                ok,
+                                rules_injected,
+                            )
+                            .await;
+                        return into_axum_response(
+                            response,
+                            Some(state.stats.clone()),
+                            Some(token_attr_from(&headers, attempt)),
+                        )
+                        .await;
+                    }
+                    Ok(response) => {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        warn!(
+                            provider = %attempt.name,
+                            model = %attempt.model_name,
+                            %status,
+                            body = %text,
+                            "native responses upstream error, will try chat/completions"
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            provider = %attempt.name,
+                            error = %err,
+                            "native responses request failed, will try chat/completions"
+                        );
+                    }
+                }
+            }
+
+            let (chat_body, tool_meta) =
+                crate::openai_responses_adapter::responses_to_chat_with_meta(
+                    &body_bytes,
+                    &attempt.model_name,
+                )?;
+            let target = build_target_url(&attempt.base_url, "v1/chat/completions", query);
             let mut builder = state.client.request(method.clone(), &target);
             builder =
-                copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
+                copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
 
             info!(
-                provider = %provider.name,
-                model = %provider.model_name,
-                base_url = %provider.base_url,
-                native_base = %native_base,
+                provider = %attempt.name,
+                model = %attempt.model_name,
+                base_url = %attempt.base_url,
                 target_url = %target,
                 path = "v1/responses",
                 stream,
-                mode = "native_responses_passthrough",
-                "proxying codex responses to upstream Responses API"
+                attempt = attempt_idx,
+                mode = "chat_completions_adapter",
+                custom_tools = tool_meta.custom_names.len(),
+                "proxying codex responses via chat completions"
             );
 
-            let native_result = builder.body(upstream_body).send().await;
-            match native_result {
+            let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
+                std::str::from_utf8(&chat_body).unwrap_or(""),
+            );
+
+            if stream {
+                match builder.body(chat_body).send().await {
+                    Ok(response) if response.status().is_success() => {
+                        state.reset_circuit(&provider.id).await;
+                        state
+                            .record_proxy_hit(
+                                attempt,
+                                "v1/responses",
+                                index,
+                                started.elapsed().as_millis() as u64,
+                                &headers,
+                                "chat_completions_adapter",
+                                true,
+                                rules_injected,
+                            )
+                            .await;
+                        let status = response.status();
+                        let model = attempt.public_model_id();
+                        let mapped =
+                            crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
+                                response.bytes_stream(),
+                                model,
+                                tool_meta,
+                                estimated_input,
+                            );
+                        let tapped = tap_stream_for_token_stats(
+                            mapped,
+                            Some(state.stats.clone()),
+                            Some(token_attr_from(&headers, attempt)),
+                        );
+                        return Ok(Response::builder()
+                            .status(status)
+                            .header(
+                                http::header::CONTENT_TYPE,
+                                "text/event-stream; charset=utf-8",
+                            )
+                            .header(http::header::CACHE_CONTROL, "no-cache")
+                            .body(Body::from_stream(tapped))?);
+                    }
+                    Ok(response) if response.status().as_u16() < 500 && !is_free => {
+                        state.reset_circuit(&provider.id).await;
+                        state
+                            .record_proxy_hit(
+                                attempt,
+                                "v1/responses",
+                                index,
+                                started.elapsed().as_millis() as u64,
+                                &headers,
+                                "chat_completions_adapter",
+                                false,
+                                rules_injected,
+                            )
+                            .await;
+                        let status = response.status();
+                        let model = attempt.public_model_id();
+                        let mapped =
+                            crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
+                                response.bytes_stream(),
+                                model,
+                                tool_meta,
+                                estimated_input,
+                            );
+                        let tapped = tap_stream_for_token_stats(
+                            mapped,
+                            Some(state.stats.clone()),
+                            Some(token_attr_from(&headers, attempt)),
+                        );
+                        return Ok(Response::builder()
+                            .status(status)
+                            .header(
+                                http::header::CONTENT_TYPE,
+                                "text/event-stream; charset=utf-8",
+                            )
+                            .header(http::header::CACHE_CONTROL, "no-cache")
+                            .body(Body::from_stream(tapped))?);
+                    }
+                    Ok(response) => {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        warn!(
+                            provider = %attempt.name,
+                            model = %attempt.model_name,
+                            %status,
+                            body = %text,
+                            "codex chat stream upstream error, trying next attempt"
+                        );
+                        last_error =
+                            Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
+                        continue;
+                    }
+                    Err(err) => {
+                        warn!(provider = %attempt.name, error = %err, "codex chat stream request error");
+                        last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
+                        continue;
+                    }
+                }
+            }
+
+            match builder.body(chat_body).send().await {
                 Ok(response)
                     if response.status().is_success() || response.status().as_u16() < 500 =>
                 {
-                    let ok = response.status().is_success();
+                    let status = response.status();
+                    let body_text = response.text().await.unwrap_or_default();
+                    if !status.is_success()
+                        || crate::openai_responses_adapter::is_openai_compat_error_body(&body_text)
+                    {
+                        warn!(
+                            provider = %attempt.name,
+                            model = %attempt.model_name,
+                            %status,
+                            body = %body_text,
+                            "upstream error for codex responses, trying next attempt"
+                        );
+                        last_error =
+                            Some(anyhow!("{} 上游错误: {}", attempt.name, body_text));
+                        if is_free || !status.is_success() {
+                            continue;
+                        }
+                    }
                     state.reset_circuit(&provider.id).await;
                     state
                         .record_proxy_hit(
-                            &provider,
+                            attempt,
                             "v1/responses",
                             index,
                             started.elapsed().as_millis() as u64,
                             &headers,
-                            "responses_native",
-                            ok,
+                            "chat_completions_adapter",
+                            status.is_success(),
                             rules_injected,
                         )
                         .await;
-                    return into_axum_response(
-                        response,
-                        Some(state.stats.clone()),
-                        Some(token_attr_from(&headers, &provider)),
-                    )
-                    .await;
+                    if status.is_success() {
+                        let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
+                            .unwrap_or_else(|| {
+                                (
+                                    estimated_input,
+                                    crate::quick_chat::estimate_output_tokens(&body_text),
+                                )
+                            });
+                        if input > 0 || output > 0 {
+                            let attr = token_attr_from(&headers, attempt);
+                            state
+                                .stats
+                                .record_tokens_attributed(
+                                    input,
+                                    output,
+                                    Some(attr.0.as_str()),
+                                    Some(attr.1.as_str()),
+                                )
+                                .await;
+                        }
+                    }
+                    let bytes = if status.is_success() {
+                        crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
+                            &body_text,
+                            &attempt.public_model_id(),
+                            &tool_meta,
+                        )?
+                    } else {
+                        Bytes::from(body_text)
+                    };
+                    return Ok(Response::builder()
+                        .status(status)
+                        .header(http::header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(bytes))?);
                 }
                 Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
-                    warn!(
-                        provider = %provider.name,
-                        %status,
-                        body = %text,
-                        "native responses upstream error, will try chat/completions fallback"
-                    );
+                    last_error = Some(anyhow!("{} 返回 {}", attempt.name, response.status()));
                 }
                 Err(err) => {
-                    warn!(
-                        provider = %provider.name,
-                        error = %err,
-                        "native responses request failed, will try chat/completions fallback"
-                    );
+                    last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
                 }
             }
         }
 
-        let (chat_body, tool_meta) =
-            crate::openai_responses_adapter::responses_to_chat_with_meta(
-                &body_bytes,
-                &provider.model_name,
-            )?;
-        let target = build_target_url(&provider.base_url, "v1/chat/completions", query);
-        let mut builder = state.client.request(method.clone(), &target);
-        builder = copy_forward_headers(builder, &headers, &provider.api_key, AuthMode::OpenAi)?;
-
-        info!(
-            provider = %provider.name,
-            model = %provider.model_name,
-            base_url = %provider.base_url,
-            target_url = %target,
-            path = "v1/responses",
-            stream,
-            auto_adapt = provider.auto_adapt_base_url,
-            mode = "chat_completions_adapter",
-            custom_tools = tool_meta.custom_names.len(),
-            "proxying codex responses via chat completions"
-        );
-
-        if stream {
-            let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
-                std::str::from_utf8(&chat_body).unwrap_or(""),
-            );
-            let response = builder.body(chat_body).send().await?;
-            if response.status().is_success() || response.status().as_u16() < 500 {
-                let ok = response.status().is_success();
-                state.reset_circuit(&provider.id).await;
-                state
-                    .record_proxy_hit(
-                        &provider,
-                        "v1/responses",
-                        index,
-                        started.elapsed().as_millis() as u64,
-                        &headers,
-                        "chat_completions_adapter",
-                        ok,
-                        rules_injected,
-                    )
-                    .await;
-                let status = response.status();
-                let model = provider.public_model_id();
-                let mapped =
-                    crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
-                        response.bytes_stream(),
-                        model,
-                        tool_meta,
-                        estimated_input,
-                    );
-                let stats = Some(state.stats.clone());
-                let token_attr = Some(token_attr_from(&headers, &provider));
-                let tapped = tap_stream_for_token_stats(mapped, stats, token_attr);
-                return Ok(Response::builder()
-                    .status(status)
-                    .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
-                    .header(http::header::CACHE_CONTROL, "no-cache")
-                    .body(Body::from_stream(tapped))?);
-            }
-            state.trip_circuit(&provider.id).await;
-            last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
-            continue;
-        }
-
-        let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
-            std::str::from_utf8(&chat_body).unwrap_or(""),
-        );
-        match builder.body(chat_body).send().await {
-            Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
-                state.reset_circuit(&provider.id).await;
-                let status = response.status();
-                let body_text = response.text().await.unwrap_or_default();
-                if status.is_success()
-                    && crate::openai_responses_adapter::is_openai_compat_error_body(&body_text)
-                {
-                    warn!(
-                        provider = %provider.name,
-                        body = %body_text,
-                        "upstream returned error JSON for codex responses"
-                    );
-                    last_error =
-                        Some(anyhow!("{} 上游错误: {}", provider.name, body_text));
-                    continue;
-                }
-                state
-                    .record_proxy_hit(
-                        &provider,
-                        "v1/responses",
-                        index,
-                        started.elapsed().as_millis() as u64,
-                        &headers,
-                        "chat_completions_adapter",
-                        status.is_success(),
-                        rules_injected,
-                    )
-                    .await;
-                if status.is_success() {
-                    let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
-                        .unwrap_or_else(|| {
-                            (
-                                estimated_input,
-                                crate::quick_chat::estimate_output_tokens(&body_text),
-                            )
-                        });
-                    if input > 0 || output > 0 {
-                        let attr = token_attr_from(&headers, &provider);
-                        state
-                            .stats
-                            .record_tokens_attributed(
-                                input,
-                                output,
-                                Some(attr.0.as_str()),
-                                Some(attr.1.as_str()),
-                            )
-                            .await;
-                    }
-                }
-                let bytes = if status.is_success() {
-                    crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
-                        &body_text,
-                        &provider.public_model_id(),
-                        &tool_meta,
-                    )?
-                } else {
-                    Bytes::from(body_text)
-                };
-                return Ok(Response::builder()
-                    .status(status)
-                    .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(bytes))?);
-            }
-            Ok(response) => {
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 返回 {}", provider.name, response.status()));
-            }
-            Err(err) => {
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
-            }
-        }
+        state.trip_circuit(&provider.id).await;
     }
 
     Err(last_error.unwrap_or_else(|| anyhow!("Codex Responses 代理失败")))
@@ -1448,9 +1533,10 @@ fn prepare_upstream_provider(provider: &ProviderConfig) -> ProviderConfig {
 }
 
 /// 实验通道内部 failover 尝试序列；自定义源仅自身一次。
-fn upstream_attempts(provider: &ProviderConfig) -> Vec<ProviderConfig> {
+/// `failover_enabled == false` 时只打当前模型（便于定点排查）。
+fn upstream_attempts(provider: &ProviderConfig, failover_enabled: bool) -> Vec<ProviderConfig> {
     let primary = prepare_upstream_provider(provider);
-    if !crate::experimental_free::is_experimental_free(provider) {
+    if !failover_enabled || !crate::experimental_free::is_experimental_free(provider) {
         return vec![primary];
     }
     let mut out = vec![primary.clone()];
@@ -1866,6 +1952,16 @@ mod tests {
     }
 
     #[test]
+    fn free_channel_attempts_follow_failover_switch() {
+        let free = crate::experimental_free::make_experimental_free_provider();
+        let on = upstream_attempts(&free, true);
+        assert!(on.len() > 1, "failover on → multi free routes");
+        let off = upstream_attempts(&free, false);
+        assert_eq!(off.len(), 1, "failover off → only selected model");
+        assert_eq!(off[0].model_name, free.model_name);
+    }
+
+    #[test]
     fn orders_failover_providers() {
         let mut config = AppConfig::default();
         let first = ProviderConfig::new("a", "p", "https://a/v1", "k", "m1");
@@ -1876,5 +1972,9 @@ mod tests {
         let providers = ordered_providers(&config);
         assert_eq!(providers[0].model_name, "m2");
         assert_eq!(providers[1].model_name, "m1");
+        config.failover_enabled = false;
+        let only = ordered_providers(&config);
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].model_name, "m2");
     }
 }

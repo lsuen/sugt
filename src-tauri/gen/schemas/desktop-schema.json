@@ -405,6 +405,12 @@
           "markdownDescription": "Enables the get_config command"
         },
         {
+          "description": "Enables the get_lan_share_info command",
+          "type": "string",
+          "const": "allow-get-lan-share-info",
+          "markdownDescription": "Enables the get_lan_share_info command"
+        },
+        {
           "description": "Enables the get_status command",
           "type": "string",
           "const": "allow-get-status",

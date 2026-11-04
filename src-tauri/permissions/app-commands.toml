@@ -129,6 +129,11 @@ description = "Enables the update_gateway_settings command"
 commands.allow = ["update_gateway_settings"]
 
 [[permission]]
+identifier = "allow-get-lan-share-info"
+description = "Enables the get_lan_share_info command"
+commands.allow = ["get_lan_share_info"]
+
+[[permission]]
 identifier = "allow-test-provider-draft"
 description = "Enables the test_provider_draft command"
 commands.allow = ["test_provider_draft"]
