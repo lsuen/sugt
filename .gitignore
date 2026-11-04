@@ -57,9 +57,10 @@ scripts/.notify-*.json
 # Author-side packaging / release scripts (not shipped)
 /scripts/
 
-# Theme authoring guides ship with the product (other /docs/**/*.md stay local)
+# Theme authoring guides and the test report ship with the product (other /docs/**/*.md stay local)
 !/docs/THEME_AUTHORING.md
 !/docs/THEME_AUTHORING.zh.md
+!/docs/TEST_REPORT.md
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)
