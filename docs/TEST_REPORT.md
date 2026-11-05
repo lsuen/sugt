@@ -117,7 +117,7 @@
 3. **Windows CI 未在本机验证**：CI 已改为 `cargo test` 全量，但本机是 macOS，`windows_tests.rs` 由 `cfg(windows)` 跳过；Windows runner 结果需推送后观察。
 4. **未执行**：`npx tauri build` 完整桌面打包、Tauri 桌面 UI 手工交互、真实上游 LLM 请求（未配置密钥、未发起外部调用）。
 5. **全仓 `cargo fmt --check` 仍有既有差异**：只格式化了本轮新增的 6 个 Rust 文件，没有动既有文件。
-6. **未 push**：所有 11 个提交都在本地 `master`，相对 `origin/master` ahead 13；`origin/HEAD` 指向 `main`，推送前请确认目标分支。
+6. **未 push（第一轮当时的状态）**：当时 11 个提交在本地 `master`，相对 `origin/master` ahead 13；后续两轮又追加提交，当前状态以第 13 节为准。`origin/HEAD` 指向 `main`，推送前请确认目标分支。
 7. **残留文件未删除**：`_me_write_probe.md`、`debug.sh`、`.omo/` 只是被 `.gitignore` 隔离，文件仍在磁盘上。
 
 ## 10. 本轮提交清单（新→旧，不含本报告自身的提交）
@@ -146,7 +146,7 @@ P0 / P1 / P2 的既定目标全部落地，工作区干净；**所有实际跑�
 
 本轮按 `docs/AGENT_ADAPTER_DESIGN.md` 落地 P0 与 P1，工作区干净，所有提交均为本地原子提交、未 push。
 
-本轮 5 个原子提交：`d1ed7a4`（设计文档）、`8371e9a`（目录收敛）、`52f8791`（写入安全）、`45de787`（能力矩阵与预览）、以及本报告自身的提交。
+本轮 5 个原子提交：`d1ed7a4`（设计文档）、`8371e9a`（目录收敛）、`52f8791`（写入安全）、`45de787`（能力矩阵与预览）、`2a87251`（文档同步与验收）。
 
 | 验证命令 | 真实结果 |
 | --- | --- |
@@ -185,3 +185,97 @@ P0 / P1 / P2 的既定目标全部落地，工作区干净；**所有实际跑�
 3. 能力矩阵对 OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code 明确标注「只写环境变量、配置文件仅探测不写」，**未实现各自官方配置读写**；外部 Agent Skills 资料仅作参考，路径需按本机实际版本核验。
 4. P2 未做：skill 版本/增量更新、首次启动主动弹框（`discover_agents` 仍需输入 ≥2 字符）、LAN 与接管写入联动。
 5. 未执行：`tauri build` 完整打包、桌面 UI 手工交互、真实上游 LLM 请求；`cargo fmt --check` 全仓仍有既有差异，本轮只格式化新增文件。
+
+## 13. 追加验收：Codex 工具层全挂修复（同日第三轮）
+
+> 第 1–12 节是第一轮 / 第二轮的历史快照：其中的测试数量、提交清单、ahead 数均按当时记录，当前状态以本节为准。写本节前已复核并修正两处过期内容（第 9 节的 ahead 状态、第 12 节缺失的提交 `2a87251`），另修正了 `docs/AGENT_ADAPTER_DESIGN.md` 中错误的快照文件名 `sugt-overrides.json` → `sugt-takeover-state.json`。
+
+### 13.1 触发与症状
+
+用户实测 Codex 接管后：纯文本对话正常，但工具层全挂——所有 `shell_command` 调用返回 `aborted`；`read_mcp_resource` 找不到任何 server（file / agentfs / filesystem 皆报错）；`get_project_overview`、`compress_output` 提示 `unsupported call`。
+
+### 13.2 根因（逐条核对源码行号）
+
+| # | 现象 | 根因 | 位置 |
+| --- | --- | --- | --- |
+| 1 | `shell_command` aborted | OpenAI Codex prompting guide 明确它是 JSON 参数的 **function** 工具，但 `is_custom_tool_name` 的兜底名单把 `shell_command` 硬判为 freeform，回程输出 `custom_tool_call` + 一次性文本 input，客户端按 function 解析失败 | `openai_responses_adapter.rs:344-353`（旧） |
+| 2 | `unsupported call`（MCP / code-mode 工具） | `namespace` 工具只递归 children、丢掉命名空间前缀且回程无还原；未识别 `tools` 静默 `_ => {}`；未识别 `input` item 被序列化成 `role:user` 纯文本，工具闭环断开 | 同文件 `:218-229`、`:251`、`:466`（旧） |
+| 3 | 工具调用被上游拒绝 / 中断 | 历史回放里缺 `function_call_output` 时形成孤儿 `tool_calls`；SSE 缺 `response.in_progress` 与 `function_call_arguments.done`，客户端一直挂在 in_progress | 同文件 `:948`、`:1077`、`gateway.rs` 回落路径 |
+| 4 | `read_mcp_resource` 无 server | 这是 **Codex 客户端内置工具**，触发条件是客户端自己配置了 `[mcp_servers]`，不是网关能力；SUGT 全仓无 MCP 实现/路由。同时接管 `auth.json` 被整体替换，丢掉原有 ChatGPT 登录态字段 | `codex_config.rs:391-397`（旧）、`agent_adapters.rs:109-120` |
+| 5 | hosted 工具 / 长会话 aborted | 接管配置未声明第三方能力：缺 `requires_openai_auth = false`、`capabilities.remote_compaction = "unsupported"`，客户端会按官方账号路径申请 hosted 工具并向网关发 `compaction_trigger` item | `codex_config.rs:107-141`（旧） |
+
+### 13.3 外部佐证（联网调研，非推测）
+
+- **OpenAI 官方 Gateway compatibility requirements**：`A working Chat Completions or Anthropic Messages endpoint doesn't establish Responses compatibility.` / `The full loop must work: Codex receives a call, executes the tool, submits its result, and receives a final answer. A successful text request doesn't verify this loop.`
+- **openai/codex #26977**（2026-06，Codex Desktop + `wire_api=responses` 自定义 provider）：所有 MCP 工具 `unsupported call`、内置工具正常；社区兼容代理的做法正是「展平 namespace 工具 + 回程还原名称 + 修 tool history replay + 补 SSE / reasoning / compaction」。
+- **openai/codex #22970**（CC Switch proxy 场景）给出可用配方：`experimental_bearer_token` + `requires_openai_auth = false` + `web_search = "disabled"`。
+- **CC Switch #8676**（4.0.18）：第三方同名模型继承 `tool_mode: code_mode_only`、共用 `comp_hash`，旧会话持续 `unsupported call: exec`；修法为 `tool_mode: direct` + 独立 `comp_hash` + 完整重启桌面 app-server。
+- **同类桥**：LiteLLM proxy 把 namespace 展平成 `multi_agent_v1__spawn_agent`；kimi-codex-bridge 额外补孤儿 `function_call_output`、过滤 `reasoning` / `store` / `previous_response_id`；CLIProxyAPI 做 Responses↔Chat 双向转换；CodexProxy 过滤非标准工具类型；CC Switch 区分「原生 Responses 直连」与「Chat 必须开路由转换」。
+
+### 13.4 修复内容
+
+**协议层**（`openai_responses_adapter.rs`）
+
+1. `ChatToolMeta` 增加 `flattened_names`（展平名 → 客户端原名）与 `has_tool_declarations`。
+2. `is_custom_tool_name`：有工具声明时严格按声明判定；兜底名单移除 `shell_command`，仅保留确实是 freeform 的名字。
+3. `namespace` 工具展平为 `<namespace>__<name>` 并登记映射，回程在非流式 / 流式两条路径都还原原名。
+4. 未识别 `tools` 不再静默丢弃：带 schema 的降级为 `function`，hosted 工具记录告警后跳过。
+5. 未识别 `input` item 结构化识别：带 `call_id` + `output` → `role=tool`；带 `name` + `arguments/input` → `assistant.tool_calls`；其它保留文本并告警。
+6. 新增 `repair_orphan_tool_calls`，给缺失结果的 `tool_calls` 补配对 `role=tool` 消息。
+7. SSE 补 `response.in_progress`、`response.function_call_arguments.done` / `response.custom_tool_call_input.done`；`response.failed` 的 error 补齐 `type` / `code` / `param`。
+8. 非流式响应补齐 `created_at`、`output_text`、`parallel_tool_calls`、`tool_choice`、`store`、`incomplete_details`、`error` 等顶层字段。
+
+**接管配置层**（`codex_config.rs`）
+
+9. provider 表增加 `requires_openai_auth = false` 与 `capabilities.{remote_compaction = "unsupported", external_web_access = false}`。
+10. 用户原本没写 `web_search` 时注入 `disabled`；快照新增 `web_search_injected` 标志，释放时只在确认由 SUGT 注入且值未变时清理。
+11. `auth.json` 改为**合并写入**，只覆盖 `auth_mode` 与 `OPENAI_API_KEY`，保留原有 `tokens` / `account_id` 等登录态字段。
+12. 全程不碰 `[mcp_servers]`。
+
+**能力矩阵与文档**
+
+13. `agent_adapters.rs` 的 `writable_fields` 同步新增字段，`note` 明确「不代管 MCP」；`takeover_preview.rs` 增加 MCP 归属告警，SOUL 中英能力摘要同步。
+14. `AGENTS.md` 新增「Codex Responses tool compatibility」规范；`README.md` / `README.zh.md`、设计文档第 12 节同步。
+
+### 13.5 验证方法与真实结果
+
+**先写失败用例再改代码**：在 `tests/protocol_roundtrip.rs` 追加 7 个真实 Codex 形态用例（shell_command function、namespace 展平还原、MCP 风格工具结果、孤儿工具调用、未知工具类型降级、非流式顶层字段、SSE 生命周期），首次运行真实输出 `5 passed; 7 failed`，并打印出 `custom_tool_call` / 纯文本工具结果 / 缺失 SSE 事件，与根因逐条对应。修完后该套件 **12 passed / 0 failed**。
+
+| 验证命令 | 真实结果 |
+| --- | --- |
+| `cargo test --test protocol_roundtrip` | ✅ 12 passed / 0 failed（修复前 5 passed / 7 failed） |
+| `cargo test --test codex_gateway_e2e` | ✅ 2 passed / 0 failed：真实 HTTP 网关 + 本地 mock Chat 上游，覆盖两轮工具闭环与流式 SSE 全事件序列 |
+| `cargo test`（全量） | ✅ lib **193 passed / 0 failed / 1 ignored**；`codex_gateway_e2e` 2；`dev-platform-module` 8；`protocol_roundtrip` 12。合计 **215 passed / 0 failed** |
+| `npm test` | ✅ 主题契约 12 源 × 38 token、导入冒烟 8 例、`tsc --noEmit` 双配置零错误 |
+| `npm run build` | ✅ 双入口，1638 modules，1m28s |
+| `rustfmt --check`（本轮新增测试文件） | ✅ 两个新增 / 追加的测试文件已格式化 |
+
+端到端用例 `src-tauri/tests/codex_gateway_e2e.rs` 用 `axum::serve` 起真实网关路由与 mock 上游：第一轮 Codex 请求带 `shell_command` + `functions` namespace，上游返回两个 `tool_calls`，断言响应还原成 `function_call` 且名称分别为 `shell_command` / `exec_command`（非 `custom_tool_call`）；第二轮按 `function_call` + `function_call_output` 回灌，断言上游收到的 Chat messages 含两条结构化 `role=tool` 结果。流式用例断言 `response.in_progress` → `function_call_arguments.delta` → `function_call_arguments.done` → `response.completed` → `[DONE]` 完整序列。
+
+### 13.6 测试过程中的真实失败与迭代
+
+| 轮次 | 真实输出 | 处理 |
+| --- | --- | --- |
+| 新增 7 用例首跑 | `5 passed; 7 failed` | 作为失败基线保留，逐项修协议层与配置层 |
+| `cargo test --lib` 第 1 次 | `190 passed; 1 failed`：`lifts_additional_tools_into_chat_tools` 断言 `meta.custom_names.contains("exec")` | 该断言固定的是「namespace 工具不展平」的旧行为，正是 `unsupported call` 的成因。更新断言为展平名 `functions__exec`，并**补上** `flattened_names` 与 `restore_tool_name` 的回程还原断言，测试比原来更强 → 191 passed |
+| 全量大文件 rustfmt 检查 | `openai_responses_adapter.rs` 104 行、`codex_config.rs` 163 行、`gateway.rs` 236 行差异 | 用 `rustfmt --emit stdout` 逐条比对，确认差异全部来自既有代码风格（长链拆行等），本轮新增代码合规；只格式化两个新增测试文件，避免制造无关改动 |
+
+### 13.7 边界（如实列出）
+
+1. **未跑真实桌面客户端 / 真实外部 LLM**：本轮「端到端」是真实 HTTP 网关 + 本地 mock Chat 上游，覆盖两轮工具闭环与流式事件；没有实际拉起 Codex / ChatGPT Desktop 点按，也没有向任何真实模型服务商发请求。用户需要在真机重新接管后复测一次。
+2. **`code_mode_only` 同名模型风险仍在**：CC Switch #8676 指出客户端会按模型名继承官方工具协议。SUGT 未生成 model catalog（各 Codex 版本字段不稳定，不凭空构造），若上游模型名与官方同名，客户端仍可能套用官方 `tool_mode`。已在能力声明、预览与文档中说明，未做未经验证的 catalog 写入。
+3. **MCP 归属**：`read_mcp_resource` / `list_mcp_resources` 能否找到 server 完全取决于客户端自己的 `[mcp_servers]`；SUGT 不代管、不创建、不删除。
+4. **未实现的能力**（本次未扩大范围）：MCP server 代理 / 统一面板、原生 Responses 语义级代理（当前仅火山方舟命中时字节透传）、`encrypted_content`、富媒体 part 透传、按 provider 显式切换「直连 vs 转换」模式。
+5. 全仓 `cargo fmt --check` 仍有既有差异；未执行 `tauri build`；所有提交均未 push。
+
+### 13.8 本轮提交清单（新→旧）
+
+| 提交 | 内容 |
+| --- | --- |
+| `doc: 同步 Codex 工具兼容规范与测试报告`（本报告自身） | `AGENTS.md` 新增工具兼容规范、两份 README、设计文档第 12 节、本报告第 13 节 |
+| `630e175` | `test: 增加 Codex 工具闭环真实 HTTP 端到端验证` |
+| `dad6c40` | `fix: 加固 Codex 接管配置并声明第三方能力` |
+| `7efc106` | `fix: 补齐 Responses 工具协议闭环并修复 shell_command 误判` |
+
+四个提交均为本地原子提交、中文提交信息，**未 push**；`master` 相对 `origin/master` 的领先数请在执行推送前用 `git status -sb` 复核（`origin/HEAD` 指向 `main`，推送前需确认目标分支）。
+

@@ -88,7 +88,7 @@ pub struct ConfigCapability {
 | id | 配置载体 | 会写的字段 | skill 目录（个人 / 项目） | 回滚 |
 | --- | --- | --- | --- | --- |
 | `claude-code` | 用户环境变量 | `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`；清 `ANTHROPIC_API_KEY`、`CLAUDE_CODE_API_KEY` | `~/.claude/skills` / `.claude/skills` | unset 变量 |
-| `codex` | `~/.codex/config.toml` + `auth.json` + env 兜底 | `model_provider`、`model`、`openai_base_url`、`preferred_auth_method`、`cli_auth_credentials_store`、`model_providers.sugt.{name,base_url,wire_api}`、`auth.json.{auth_mode,OPENAI_API_KEY}` | `~/.agents/skills` / `.agents/skills` | 快照还原 |
+| `codex` | `~/.codex/config.toml` + `auth.json` | `model_provider`、`model`、`openai_base_url`、`preferred_auth_method`、`cli_auth_credentials_store`、`web_search`（仅原本缺失时注入）、`model_providers.sugt.{name,base_url,wire_api,requires_openai_auth,capabilities.{remote_compaction,external_web_access}}`、`auth.json.{auth_mode,OPENAI_API_KEY}`；**不写** `mcp_servers` | `~/.agents/skills` / `.agents/skills` | 快照还原 |
 | `opencode` | 通用 env（配置文件仅探测不写） | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `~/.config/opencode/skills`、`~/.opencode/skills`、`~/.claude/skills`、`~/.agents/skills` / `.opencode/skills` | unset |
 | `qwen-code` / `aider` / `gemini-cli` | 通用 env | `OPENAI_*` 变体 | `~/.agents/skills`（gemini 另 `~/.gemini/skills`）等 | unset |
 | `cursor` / `vscode` | 通用 env | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `.cursor/skills`、`~/.cursor/skills`、`.agents/skills` 等 | unset |
@@ -110,7 +110,7 @@ pub struct ConfigCapability {
 
 1. **解析失败即报错**：`toml::from_str` 不再 `unwrap_or_default()`，返回带路径的 Err，绝不覆盖。
 2. **备份**：首次接管前把 `config.toml`、`auth.json` 原样复制到 `<CODEX_HOME>/sugt-backup/`（带时间戳），已备份不重复覆盖。
-3. **快照**：写 `<CODEX_HOME>/sugt-overrides.json`，记录被覆盖字段的原值（含「原本不存在」）；`auth.json` 同理。
+3. **快照**：写 `<CODEX_HOME>/sugt-takeover-state.json`，保存接管前后 `config.toml` / `auth.json` 全文，以及 SUGT 是否注入过 `web_search`；`None` 表示文件原本不存在。
 4. **原子写**：写 `.tmp` 后 `rename`，避免半截文件。
 5. **释放时完整还原**：按快照恢复 `model`、`preferred_auth_method`、`cli_auth_credentials_store`、`auth.json`，并删除 `model_providers.sugt`；用户后续自行修改过的字段不覆盖。
 6. **技能目录替换**：`mount_to_dir` 改为「先拷到临时目录 → 成功后原子替换」，不再先删后拷。
@@ -136,7 +136,7 @@ pub struct TakeoverPreview {
 
 ## 9. SOUL 边界
 
-新增的命令全部是**只读**：`list_agent_capabilities`、`preview_takeover`。SOUL 可以解释「接入 Claude 会写这 2 个变量」「Codex 会改 7 个字段且可回滚」，并生成结构化计划；**实际写入仍由用户在 UI 点「接入」触发既有的 `apply_takeover_profile`**。ACL 只在白名单里增加这两个只读命令，不扩大 `me_*` 的 shell 权限。
+新增的命令全部是**只读**：`list_agent_capabilities`、`preview_takeover`。SOUL 可以解释「接入 Claude 会写这 2 个变量」「Codex 会按能力矩阵声明写一组字段且可回滚」，并生成结构化计划；**实际写入仍由用户在 UI 点「接入」触发既有的 `apply_takeover_profile`**。ACL 只在白名单里增加这两个只读命令，不扩大 `me_*` 的 shell 权限。
 
 ## 10. 落地顺序与验证
 
@@ -166,3 +166,13 @@ pub struct TakeoverPreview {
 **本轮未做（P2）**：skill 版本/来源/增量更新、首次启动主动弹框（目前仍需用户主动点「发现」并输入 ≥2 字符）、LAN 开关与接管写入联动、为 6 个客户端实现各自官方配置文件的完整读写。能力矩阵对这些客户端明确标注为「仅写环境变量、配置文件仅探测不写」，不虚报。
 
 **真实验证边界**：未执行 `tauri build` 完整打包、桌面 UI 手工交互、真实上游 LLM 请求；新增的两个只读命令未做端到端 UI 点击验证（仅类型检查与构建通过）。
+
+## 12. 追加：Codex 工具协议兼容（同日第三轮）
+
+用户实测 Codex 接管后纯文本对话正常、工具层全挂（`shell_command` aborted、`read_mcp_resource` 找不到 server、`get_project_overview` / `compress_output` unsupported call）。根因是「Responses → Chat 回落」只覆盖文本路径，叠加接管配置缺少第三方能力声明。本轮在处理协议转换的同时同步了能力矩阵：
+
+1. **接管配置**：`model_providers.sugt` 增加 `requires_openai_auth = false` 与 `capabilities.{remote_compaction = "unsupported", external_web_access = false}`；用户原本没写 `web_search` 时注入 `disabled`，释放时按快照标志精确清理；`auth.json` 改为合并写入，保留原有 ChatGPT 登录态字段。
+2. **MCP 边界**：`read_mcp_resource` / `list_mcp_resources` 是 Codex 客户端内置工具，只在配置了 `[mcp_servers]` 时可用。SUGT **不代管 MCP server**，接管与释放都不碰该表；接入预览与 SOUL 能力摘要已明确说明。
+3. **能力矩阵**：`writable_fields` 同步新增上述字段；预览会自动列出新增写入项，并对 Codex 增加一条 MCP 归属告警。
+
+协议层修复与完整验证见 `docs/TEST_REPORT.md` 第 13 节；端到端用例位于 `src-tauri/tests/codex_gateway_e2e.rs`。

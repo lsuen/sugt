@@ -52,7 +52,7 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 - 自动发现本机已安装的 Agent 客户端
 - Claude Code / OpenCode：写环境变量与启动脚本指向本机网关；解除接管时清理干净
-- **Codex（CLI / Desktop）**：写入 `~/.codex/config.toml` 的 `model_providers.sugt` 与 `wire_api = "responses"`（新版 Codex 往往忽略纯环境变量）。上游若无原生 Responses，网关会做 Responses → Chat 回落：提起 `additional_tools`、保留 function/custom 工具，并把 `reasoning_*` 与可见正文分开
+- **Codex（CLI / Desktop）**：写入 `~/.codex/config.toml` 的 `model_providers.sugt`（`wire_api = "responses"`、`requires_openai_auth = false`、本地压缩能力）并在需要时关闭 hosted `web_search`；`auth.json` 只覆盖认证方式与网关 Key，保留原有登录态字段。上游若无原生 Responses，网关会做 Responses → Chat 回落：展平 namespace 工具并在回程还原名称、按声明判定 function/custom、结构化保留工具结果与孤儿调用配对、补齐 SSE 生命周期事件。MCP server 仍由客户端自己的 `[mcp_servers]` 管理，SUGT 不代管
 
 ### SOUL / 小su
 

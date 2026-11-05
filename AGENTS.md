@@ -48,12 +48,24 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 - Prefer existing Axum routes and config.toml hot-reload patterns.
 - Codex takeover uses `model_providers.sugt` + `wire_api=responses` (see `codex_config.rs`).
 
+### Codex Responses tool compatibility
+
+A working Chat Completions bridge does **not** prove Responses compatibility. Keep the full tool loop working:
+
+- `shell_command` is an official JSON-argument **function** tool. Never classify it as a freeform `custom` tool; classify by the request's tool declarations (`ChatToolMeta`), not by a hardcoded name list.
+- Flatten `namespace` tools to `<namespace>__<name>` for Chat upstreams and restore the client name on the way back via `ChatToolMeta.flattened_names`.
+- Never silently drop unknown `tools` (degrade schema-bearing ones to `function`, log the rest) and never stringify structured tool items (`mcp_call`, `*_output`, etc.) into user text. Pair orphan `tool_calls` with a `role=tool` result before sending upstream.
+- Emit the complete SSE lifecycle: `response.in_progress`, `response.function_call_arguments.done` / `response.custom_tool_call_input.done`, `response.completed`, and a Responses-shaped `error` object on failure.
+- Validate with `src-tauri/tests/codex_gateway_e2e.rs` (real HTTP + mock upstream, streaming and non-streaming). A passing text-only request is not sufficient.
+
 ## Agent adapters (single source of truth)
 
 - All agent fingerprints, config capabilities and skill directory candidates live in `src-tauri/src/agent_adapters.rs`. Never hardcode `~/.claude/skills` etc. in a second module; derive from `by_id()` / `skill_dir_candidates()`.
 - `ConfigCapability.writable_fields` describes what SUGT **actually writes**, not what a client officially supports. Do not claim config-file writes for clients that only use env vars.
 - `preview_takeover` / `list_agent_capabilities` are read-only. Before applying a takeover, show the impact preview. SOUL gets the capability brief through `system_prompt` only — it must never write client config files itself.
 - Codex config writes are backed up and snapshotted; `apply_codex_config` fails on invalid TOML instead of overwriting. Keep `clear_sugt_codex_overrides` byte-for-byte revertible.
+- `auth.json` is merged, not replaced: preserve existing ChatGPT login fields. Declare third-party capabilities (`requires_openai_auth`, `capabilities.remote_compaction`, `web_search`) so the client does not request hosted tools the gateway cannot serve.
+- SUGT never writes or removes `mcp_servers`. `read_mcp_resource` / `list_mcp_resources` are client-side tools and only work when the client has its own MCP servers configured; say so in the preview and SOUL brief.
 
 ## Verification
 
@@ -63,4 +75,4 @@ npm run build                 # frontend production build (dual entry)
 cd src-tauri && cargo test    # Rust lib + integration tests
 ```
 
-`npm test` runs `test:themes`, `test:theme-pack` and `check` in order. CI runs `npm test` and `cargo test` (full suite, not just `--lib`). One macOS `launchctl` test is `#[ignore]`d; run it on a real GUI session with `cargo test -- --ignored`.
+`npm test` runs `test:themes`, `test:theme-pack` and `check` in order. CI runs `npm test` and `cargo test` (full suite, not just `--lib`). `cargo test` includes `tests/codex_gateway_e2e.rs`, which spins up a real gateway router and a mock Chat upstream to verify the two-turn Codex tool loop over HTTP. One macOS `launchctl` test is `#[ignore]`d; run it on a real GUI session with `cargo test -- --ignored`.

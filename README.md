@@ -52,7 +52,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 - Automatically discovers installed agent clients on your machine
 - Claude Code / OpenCode: environment variables and launch scripts point at the local gateway; releasing the takeover cleans them up
-- **Codex (CLI / Desktop)**: writes `~/.codex/config.toml` with `model_providers.sugt` and `wire_api = "responses"` (env alone is unreliable on new Codex). The gateway bridges Responses → Chat Completions when the upstream has no native Responses API — lifting `additional_tools`, keeping function/custom tools, and separating `reasoning_*` from visible `output_text`
+- **Codex (CLI / Desktop)**: writes `~/.codex/config.toml` with `model_providers.sugt` (`wire_api = "responses"`, `requires_openai_auth = false`, local compaction capabilities) and disables hosted `web_search` when the user has not configured it; `auth.json` only overrides the auth mode and gateway key, preserving existing login fields. When the upstream has no native Responses API, the gateway bridges to Chat Completions: flattening namespace tools and restoring their names on the way back, classifying function/custom tools by their declarations, preserving structured tool results and pairing orphan calls, and emitting the full SSE lifecycle events. MCP servers remain owned by the client's own `[mcp_servers]` table; SUGT does not manage them
 
 ### SOUL / su
 
