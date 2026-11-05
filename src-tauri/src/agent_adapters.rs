@@ -138,9 +138,7 @@ static ADAPTERS: &[AgentAdapter] = &[
             "~/.agents/skills",
         ],
         project_skill_dirs: &[".opencode/skills", ".agents/skills"],
-        config: ConfigCapability {
-            ..ENV_CAPABILITY
-        },
+        config: ConfigCapability { ..ENV_CAPABILITY },
     },
     AgentAdapter {
         id: "qwen-code",
@@ -179,9 +177,7 @@ static ADAPTERS: &[AgentAdapter] = &[
         settings_dirs: &["~/.gemini"],
         skill_dirs: &["~/.gemini/skills", "~/.agents/skills"],
         project_skill_dirs: &[".agents/skills"],
-        config: ConfigCapability {
-            ..ENV_CAPABILITY
-        },
+        config: ConfigCapability { ..ENV_CAPABILITY },
     },
     AgentAdapter {
         id: "cursor",

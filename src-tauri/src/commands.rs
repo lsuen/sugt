@@ -1040,6 +1040,23 @@ pub async fn release_takeover_profile(
         .ok_or_else(|| format!("未找到模板：{}", profile_id))
 }
 
+/// 接入影响预览（只读）：列出将写入的变量名、配置字段、技能目录与风险。
+#[tauri::command]
+pub async fn preview_takeover(
+    runtime: State<'_, AppRuntime>,
+    profile_id: String,
+) -> Result<crate::takeover_preview::TakeoverPreview, String> {
+    let config = runtime.config.read().await.clone();
+    crate::takeover_preview::build_preview(&runtime.paths.config_dir, &config, &profile_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Agent 能力清单（只读）：设置页与 SOUL 共用同一份能力矩阵。
+#[tauri::command]
+pub async fn list_agent_capabilities() -> Result<Vec<crate::takeover_preview::AgentCapabilityView>, String> {
+    Ok(crate::takeover_preview::list_capabilities())
+}
+
 #[tauri::command]
 pub async fn can_ai_parse_takeover(runtime: State<'_, AppRuntime>) -> Result<bool, String> {
     let config = runtime.config.read().await.clone();

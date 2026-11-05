@@ -3035,3 +3035,16 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   width: min(240px, 100%);
   accent-color: var(--accent);
 }
+
+.takeover-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.agent-discover-capability {
+  display: block;
+  margin-top: 2px;
+}

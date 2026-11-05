@@ -176,7 +176,9 @@ commands.allow = [
   "parse_takeover_config_path",
   "save_takeover_profile",
   "discover_agents",
-  "add_discovered_agents"
+  "add_discovered_agents",
+  "preview_takeover",
+  "list_agent_capabilities"
 ]
 
 [[permission]]

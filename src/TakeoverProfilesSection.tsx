@@ -31,6 +31,19 @@ export type TakeoverProfileView = {
   plugins_count?: number;
 };
 
+type TakeoverPreview = {
+  profile_id: string;
+  profile_name: string;
+  config_kind: string;
+  env_names: string[];
+  env_cleared: string[];
+  config_writes: { path: string; field: string }[];
+  skill_dirs: string[];
+  warnings: string[];
+  note: string;
+  revertable: boolean;
+};
+
 type ClientsEnvStatus = {
   has_issues?: boolean;
   claude?: { issues?: string[] };
@@ -341,6 +354,30 @@ function TakeoverProfileRow({
   onAdvanced: () => void;
 }) {
   const discovered = isDiscovered(p);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [preview, setPreview] = useState<TakeoverPreview | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+
+  const togglePreview = async () => {
+    if (previewOpen) {
+      setPreviewOpen(false);
+      return;
+    }
+    setPreviewOpen(true);
+    setPreviewBusy(true);
+    setPreviewError('');
+    try {
+      const next = await invoke<TakeoverPreview>('preview_takeover', { profileId: p.id });
+      setPreview(next);
+    } catch (err) {
+      setPreviewError(String(err));
+      setPreview(null);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
   const metaParts = [
     p.vendor,
     p.protocol,
@@ -359,6 +396,9 @@ function TakeoverProfileRow({
         <span className="hint compact takeover-profile-row-meta">{metaParts.join(' · ')}</span>
       </div>
       <div className="takeover-profile-row-actions">
+        <button type="button" className="tiny ghost" disabled={busy} title={t('client.previewTitle')} onClick={() => void togglePreview()}>
+          <ShieldCheck size={14} />{t('client.previewBtn')}
+        </button>
         <button
           type="button"
           className={`tiny ghost takeover-env-btn${discovered ? ' detected' : ''}`}
@@ -387,6 +427,40 @@ function TakeoverProfileRow({
           </button>
         )}
       </div>
+      {previewOpen && (
+        <div className="takeover-preview">
+          <strong className="hint compact">{t('client.previewTitle')}</strong>
+          {previewBusy && <span className="hint compact">{t('client.previewLoading')}</span>}
+          {previewError && <p className="agent-discover-warn">{previewError}</p>}
+          {preview && (
+            <>
+              <span className="hint compact">
+                {t('client.previewEnv')}：{preview.env_names.length ? preview.env_names.join(', ') : t('client.previewNone')}
+              </span>
+              {preview.env_cleared.length > 0 && (
+                <span className="hint compact">{t('client.previewCleared')}：{preview.env_cleared.join(', ')}</span>
+              )}
+              {preview.config_writes.length > 0 && (
+                <span className="hint compact">
+                  {t('client.previewConfigWrites')}：{preview.config_writes.map((w) => `${w.path} · ${w.field}`).join('；')}
+                </span>
+              )}
+              <span className="hint compact">
+                {t('client.previewSkillDirs')}：{preview.skill_dirs.length ? preview.skill_dirs.join('、') : t('client.previewNone')}
+              </span>
+              <span className="hint compact">
+                {t('client.previewRevert')}：{preview.revertable ? t('client.previewRevertYes') : t('client.previewRevertNo')}
+              </span>
+              {preview.warnings.length > 0 && (
+                <span className="hint compact">
+                  {t('client.previewWarnings')}：{preview.warnings.join('；')}
+                </span>
+              )}
+              <span className="hint compact">{preview.note}</span>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

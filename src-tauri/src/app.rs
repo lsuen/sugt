@@ -64,6 +64,8 @@ pub fn run() {
             commands::delete_takeover_profile,
             commands::set_takeover_settings_path,
             commands::can_ai_parse_takeover,
+            commands::preview_takeover,
+            commands::list_agent_capabilities,
             commands::parse_takeover_config_path,
             commands::save_takeover_profile,
             commands::discover_agents,

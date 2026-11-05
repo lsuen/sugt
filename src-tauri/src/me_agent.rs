@@ -373,6 +373,7 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
     let shell = shell_label();
     let host_os = host_os_label();
     let open_hint = open_file_hint();
+    let agent_caps = crate::takeover_preview::capability_brief(zh);
     if zh {
         format!(
             "你是小su，SUTAI 这款软件的灵魂和本体。你不是「网关」或后台服务，你就是用户身边的这个小伙伴。\n\
@@ -404,6 +405,7 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
 - 只读命令会被立刻执行，结果会回到你这里。\n\
 - 会创建、修改、删除文件的命令不会立刻执行。程序会先把命令给用户看，用户同意后才执行。不要自己再问「可以写吗」，把命令放进代码块即可。\n\
 - 不要把项目文件写进应用配置目录。用户明确要改应用配置时，工作目录会切到配置目录。\n\
+{agent_caps}\n\
 - 若模型区分 reasoning 与 content：可执行的 bash 代码块与给人看的回复必须写在 content 里，不要只写在 reasoning。\n\
 - 一次一小步。"
         )
@@ -438,6 +440,7 @@ How to reply:\n\
 - Read-only commands run immediately and their output comes back to you.\n\
 - Commands that create, change, or delete files do not run immediately. The app shows them to the user first. Do not ask for permission yourself; put the command in the fence.\n\
 - Do not write project files into the app config directory. When the user wants app config edited, the working directory is the config directory.\n\
+{agent_caps}\n\
 - If the model separates reasoning from content: put the user-visible reply and any ```bash fence in content, not only in reasoning.\n\
 - One small step at a time."
         )

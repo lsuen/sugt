@@ -20,6 +20,8 @@ export type DiscoveredAgent = {
   clear_vars: string[];
   warning?: string | null;
   requires_path: boolean;
+  writable_fields: string[];
+  config_note: string;
 };
 
 type Props = {
@@ -225,6 +227,16 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
                       <span className="hint compact agent-discover-hits">
                         {item.hit_reasons.join('；')}
                       </span>
+                      <span className="hint compact agent-discover-capability">
+                        {t('disc.willWrite', {
+                          fields: (item.writable_fields ?? []).length
+                            ? (item.writable_fields ?? []).join('、')
+                            : t('disc.noDeclaredFields'),
+                        })}
+                      </span>
+                      {item.config_note && (
+                        <span className="hint compact agent-discover-capability">{item.config_note}</span>
+                      )}
                       {item.cli_path && (
                         <code className="takeover-env-path">{t('disc.cliPath', { path: item.cli_path })}</code>
                       )}

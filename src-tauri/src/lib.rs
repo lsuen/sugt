@@ -35,6 +35,7 @@ pub mod overlay;
 pub mod process_util;
 pub mod sugt_skill;
 pub mod takeover_profiles;
+pub mod takeover_preview;
 pub mod trial;
 pub mod workspace_rules;
 
