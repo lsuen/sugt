@@ -1247,7 +1247,15 @@ async fn proxy_responses_via_chat(
                             .body(Body::from_stream(tapped))?);
                     }
                     Ok(response) if response.status().as_u16() < 500 && !is_free => {
-                        state.reset_circuit(&provider.id).await;
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        warn!(
+                            provider = %attempt.name,
+                            model = %attempt.model_name,
+                            %status,
+                            body = %text,
+                            "codex chat stream 上游返回客户端错误，改为 Responses failed 事件"
+                        );
                         state
                             .record_proxy_hit(
                                 attempt,
@@ -1260,19 +1268,11 @@ async fn proxy_responses_via_chat(
                                 rules_injected,
                             )
                             .await;
-                        let status = response.status();
-                        let model = attempt.public_model_id();
-                        let mapped =
-                            crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
-                                response.bytes_stream(),
-                                model,
-                                tool_meta,
-                                estimated_input,
-                            );
-                        let tapped = tap_stream_for_token_stats(
-                            mapped,
-                            Some(state.stats.clone()),
-                            Some(token_attr_from(&headers, attempt)),
+                        // 不能把 4xx 错误体当成功 SSE 流转发：客户端会收到空 completed，
+                        // 工具调用看起来「静默消失」。这里给一段明确的 failed 事件流。
+                        let failed = crate::openai_responses_adapter::upstream_failure_sse(
+                            &attempt.public_model_id(),
+                            &format!("上游 {} 返回 {}：{}", attempt.name, status, text),
                         );
                         return Ok(Response::builder()
                             .status(status)
@@ -1281,7 +1281,7 @@ async fn proxy_responses_via_chat(
                                 "text/event-stream; charset=utf-8",
                             )
                             .header(http::header::CACHE_CONTROL, "no-cache")
-                            .body(Body::from_stream(tapped))?);
+                            .body(Body::from(failed))?);
                     }
                     Ok(response) => {
                         let status = response.status();

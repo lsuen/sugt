@@ -10,6 +10,25 @@ use tracing::{info, warn};
 
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 
+/// Responses 标准字段中，无状态网关无法透传给 Chat 上游的部分。
+/// 这些字段不再静默丢弃：统一记录到 ChatToolMeta 并打日志，真机抓包时可直接
+/// 看出「客户端要了哪些能力、网关降级了哪些」，而不是面对一个无法解释的黑洞。
+const DEGRADED_RESPONSES_FIELDS: &[&str] = &[
+    "previous_response_id",
+    "store",
+    "reasoning",
+    "include",
+    "truncation",
+    "service_tier",
+    "metadata",
+    "prompt_cache_key",
+    "safety_identifier",
+    "background",
+    "conversation",
+    "text",
+    "prompt",
+];
+
 /// Chat 回落时保留的工具元数据，用于把 tool_calls 还原成 Codex 期望的 item 类型。
 #[derive(Debug, Clone, Default)]
 pub struct ChatToolMeta {
@@ -20,6 +39,8 @@ pub struct ChatToolMeta {
     /// 本次请求是否携带工具声明。有声明时严格按声明判定工具形态，
     /// 避免把官方 function 工具（如 shell_command）误判成 freeform custom。
     pub has_tool_declarations: bool,
+    /// 本次请求里被显式降级的 Responses 顶层字段名（可观测，便于真机诊断）。
+    pub dropped_request_fields: Vec<String>,
 }
 
 /// 将 OpenAI Responses 请求转为 Chat Completions（Codex → 仅 Chat 的上游）。
@@ -87,10 +108,29 @@ pub fn responses_to_chat_with_meta(
                     out_obj.insert(key.to_string(), v.clone());
                 }
             }
+            // Responses 用 max_output_tokens 控制输出长度；Chat 上游只认 max_tokens。
+            // 之前这个字段被白名单静默丢掉，长任务会被上游默认上限截断。
             if !out_obj.contains_key("max_tokens") {
-                if let Some(v) = obj.get("max_completion_tokens") {
+                if let Some(v) = obj
+                    .get("max_completion_tokens")
+                    .or_else(|| obj.get("max_output_tokens"))
+                {
                     out_obj.insert("max_tokens".to_string(), v.clone());
                 }
+            }
+
+            // 无状态网关依赖客户端重放完整 input；把降级字段显式暴露出来。
+            let degraded: Vec<&str> = DEGRADED_RESPONSES_FIELDS
+                .iter()
+                .copied()
+                .filter(|key| obj.contains_key(*key))
+                .collect();
+            if !degraded.is_empty() {
+                meta.dropped_request_fields = degraded.iter().map(|s| s.to_string()).collect();
+                warn!(
+                    fields = ?degraded,
+                    "Codex Responses 字段在当前无状态网关下降级，依赖客户端重放完整 input"
+                );
             }
 
             sanitize_tool_choice(out_obj);
@@ -474,6 +514,24 @@ fn arguments_value_to_string(arguments: &Value) -> String {
     }
 }
 
+/// 从「未识别」的 Responses item 里尽量提取纯文本。
+/// 之前直接 `item.to_string()` 会把整段 JSON 结构当成用户输入喂给模型，
+/// 既污染上下文又让工具语义丢失；这里退化成文本优先、原结构兜底。
+fn plain_response_item_text(item: &Value) -> Option<String> {
+    for key in ["text", "content", "output", "result"] {
+        let Some(value) = item.get(key) else {
+            continue;
+        };
+        if let Some(s) = value.as_str().filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
+        }
+        if let Some(s) = content_value_to_text(value).filter(|s| !s.is_empty()) {
+            return Some(s);
+        }
+    }
+    None
+}
+
 fn input_to_messages(input: Option<&Value>) -> Value {
     match input {
         None => json!([{"role": "user", "content": "ping"}]),
@@ -571,6 +629,9 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                     }],
                 }))
             }
+            // 客户端偶尔把系统级说明放进 input 数组；转成 system 而不是 user 文本。
+            "instructions" | "developer_message" => plain_response_item_text(item)
+                .map(|text| json!({ "role": "system", "content": text })),
             // 工具声明载体：已在 collect_chat_tools 提起，不能当成 user 文本
             "item_reference" | "reasoning" | "additional_tools" | "tool_search_output" => None,
             other => {
@@ -603,11 +664,14 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                         }],
                     }));
                 }
-                warn!(
-                    item_type = %other,
-                    "未识别的 Responses input item 保留为 user 文本"
-                );
-                Some(json!({ "role": "user", "content": item.to_string() }))
+                let text = plain_response_item_text(item).unwrap_or_else(|| {
+                    warn!(
+                        item_type = %other,
+                        "未识别的 Responses input item 无文本字段，按原结构降级"
+                    );
+                    item.to_string()
+                });
+                Some(json!({ "role": "user", "content": text }))
             }
         }
     } else if let Some(obj) = item.as_object() {
@@ -812,6 +876,37 @@ pub fn chat_json_to_responses_body(body: &str, model: &str) -> Result<Bytes> {
     chat_json_to_responses_body_with_meta(body, model, &ChatToolMeta::default())
 }
 
+/// 上游返回空 body / 非法 JSON 时构造 Responses 形状的失败响应。
+/// 之前会伪装成 `status: completed` 的空回复，客户端以为模型「正常地什么都没说」，
+/// 工具闭环就此静默断掉；现在明确失败并带上可诊断的 error 对象。
+fn responses_upstream_failure(model: &str, message: &str) -> Result<Bytes> {
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let out = json!({
+        "id": "sugt-resp-error",
+        "object": "response",
+        "created_at": created_at,
+        "status": "failed",
+        "model": model,
+        "output": [],
+        "output_text": "",
+        "usage": responses_usage(0, 0),
+        "parallel_tool_calls": false,
+        "tool_choice": "auto",
+        "store": false,
+        "incomplete_details": Value::Null,
+        "error": {
+            "message": message,
+            "type": "upstream_error",
+            "code": Value::Null,
+            "param": Value::Null,
+        },
+    });
+    Ok(Bytes::from(serde_json::to_vec(&out)?))
+}
+
 pub fn chat_json_to_responses_body_with_meta(
     body: &str,
     model: &str,
@@ -821,7 +916,18 @@ pub fn chat_json_to_responses_body_with_meta(
         return Ok(Bytes::from(body.to_string()));
     }
 
-    let chat: Value = serde_json::from_str(body).unwrap_or(json!({}));
+    if body.trim().is_empty() {
+        warn!("上游返回空响应体，降级为 Responses failed 而非伪装成功");
+        return responses_upstream_failure(model, "上游返回空响应体");
+    }
+
+    let chat: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = %err, "上游返回非法 JSON，降级为 Responses failed 而非伪装成功");
+            return responses_upstream_failure(model, &format!("上游返回非法 JSON：{err}"));
+        }
+    };
     let message = chat
         .get("choices")
         .and_then(|c| c.get(0))
@@ -1019,6 +1125,9 @@ struct ToolCallAccum {
     item_added: bool,
     output_index: u32,
     is_custom: bool,
+    /// 工具名还没到达时先攒住的参数分片。真实上游常把 arguments 分片放在
+    /// name 之前，若直接发 delta 会让客户端先收到参数、后收到工具声明。
+    pending_deltas: Vec<String>,
 }
 
 fn new_ids() -> (String, String, String) {
@@ -1172,6 +1281,9 @@ fn finalize_events(state: &mut SseMapState) -> String {
     apply_usage_fallback(state);
     let mut out = String::new();
     let mut completed_output: Vec<Value> = Vec::new();
+
+    // 先修「上游始终没给工具名」的分片，保证后面的 done / completed 拿到可解析的名字。
+    repair_anonymous_tool_calls(state, &mut out);
 
     // 仅有推理、没有正文/工具时：把推理兜底进正文，避免 Codex 空白气泡
     if state.text_buffer.is_empty()
@@ -1393,6 +1505,29 @@ fn failed_events(state: &mut SseMapState, message: &str) -> String {
     format_sse_data(&failed) + "data: [DONE]\n\n"
 }
 
+/// 上游返回 4xx 时，构造一段 Responses 形状的失败 SSE 直接交给客户端。
+/// 之前把错误体当作成功流转发，客户端只会收到一条空的 `response.completed`，
+/// 看起来像「模型正常地什么都没说」，错误完全不可诊断。
+pub fn upstream_failure_sse(model: &str, message: &str) -> String {
+    let failed = json!({
+        "type": "response.failed",
+        "sequence_number": 1,
+        "response": {
+            "id": "sugt-resp-error",
+            "object": "response",
+            "status": "failed",
+            "model": model,
+            "error": {
+                "message": message,
+                "type": "upstream_error",
+                "code": Value::Null,
+                "param": Value::Null,
+            },
+        },
+    });
+    format_sse_data(&failed) + "data: [DONE]\n\n"
+}
+
 fn content_value_to_text(content: &Value) -> Option<String> {
     match content {
         Value::String(s) if !s.is_empty() => Some(s.to_string()),
@@ -1493,6 +1628,98 @@ fn upstream_error_message(parsed: &Value) -> Option<String> {
     None
 }
 
+/// in_progress 阶段的工具 item 外壳，added 事件与 finalize 补发共用同一形状。
+fn tool_item_shell(id: &str, name: &str, is_custom: bool, meta: &ChatToolMeta) -> Value {
+    let client_name = restore_tool_name(name, meta);
+    if is_custom {
+        json!({
+            "type": "custom_tool_call",
+            "id": format!("ctc_{}", id),
+            "call_id": id,
+            "name": client_name,
+            "input": "",
+            "status": "in_progress",
+        })
+    } else {
+        json!({
+            "type": "function_call",
+            "id": format!("fc_{}", id),
+            "call_id": id,
+            "name": client_name,
+            "arguments": "",
+            "status": "in_progress",
+        })
+    }
+}
+
+fn arguments_delta_event(sequence: &mut u32, id: &str, output_index: u32, delta: &str) -> String {
+    *sequence += 1;
+    format_sse_data(&json!({
+        "type": "response.function_call_arguments.delta",
+        "sequence_number": *sequence,
+        "item_id": format!("fc_{}", id),
+        "output_index": output_index,
+        "delta": delta,
+    }))
+}
+
+/// 上游始终没给工具名时，在收尾阶段补一个可解析的名字和完整的 added / delta 事件。
+/// 空名字会让客户端直接解析失败，比「工具调用丢失」更难排查。
+fn repair_anonymous_tool_calls(state: &mut SseMapState, out: &mut String) {
+    let keys: Vec<usize> = state
+        .tool_calls
+        .iter()
+        .filter(|(_, tool)| tool.name.is_empty())
+        .map(|(key, _)| *key)
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    // 请求里恰好只声明了一个工具时，用它的原名兜底比中性占位名更可能被执行。
+    let mut declared: Vec<String> = state.tool_meta.custom_names.iter().cloned().collect();
+    declared.extend(state.tool_meta.flattened_names.values().cloned());
+    declared.sort();
+    declared.dedup();
+    let fallback = if declared.len() == 1 {
+        declared.remove(0)
+    } else {
+        "unknown_tool".to_string()
+    };
+
+    for key in keys {
+        let Some(tool) = state.tool_calls.get_mut(&key) else {
+            continue;
+        };
+        tool.name = fallback.clone();
+        tool.is_custom = state.tool_meta.custom_names.contains(&tool.name);
+        tool.item_added = true;
+        let pending = std::mem::take(&mut tool.pending_deltas);
+        let (id, output_index, name, is_custom) = (
+            tool.id.clone(),
+            tool.output_index,
+            tool.name.clone(),
+            tool.is_custom,
+        );
+        warn!(
+            call_id = %id,
+            fallback = %name,
+            "上游流式工具调用始终未提供 name，使用兜底工具名并补齐事件"
+        );
+        state.sequence += 1;
+        *out += &format_sse_data(&json!({
+            "type": "response.output_item.added",
+            "sequence_number": state.sequence,
+            "output_index": output_index,
+            "item": tool_item_shell(&id, &name, is_custom, &state.tool_meta),
+        }));
+        if !is_custom {
+            for delta in pending {
+                *out += &arguments_delta_event(&mut state.sequence, &id, output_index, &delta);
+            }
+        }
+    }
+}
+
 fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
     let delta = choice.get("delta").unwrap_or(choice);
     let tool_calls = delta
@@ -1530,6 +1757,7 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
                 item_added: false,
                 output_index,
                 is_custom: false,
+                pending_deltas: Vec::new(),
             }
         });
 
@@ -1544,66 +1772,51 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
             entry.name = name.to_string();
             entry.is_custom = is_custom_tool_name(name, &state.tool_meta);
         }
-        if let Some(args) = call
+        let args_fragment = call
             .get("function")
             .and_then(|f| f.get("arguments"))
             .and_then(|a| a.as_str())
-        {
-            entry.arguments.push_str(args);
+            .unwrap_or("")
+            .to_string();
+        if !args_fragment.is_empty() {
+            entry.arguments.push_str(&args_fragment);
         }
 
         if entry.id.is_empty() {
             entry.id = format!("call_{}_{}", state.response_id, index);
         }
 
-        if !entry.item_added && !entry.name.is_empty() {
+        let newly_added = !entry.item_added && !entry.name.is_empty();
+        if newly_added {
             entry.item_added = true;
             state.sequence += 1;
-            let client_name = restore_tool_name(&entry.name, &state.tool_meta);
-            let item = if entry.is_custom {
-                json!({
-                    "type": "custom_tool_call",
-                    "id": format!("ctc_{}", entry.id),
-                    "call_id": entry.id,
-                    "name": client_name,
-                    "input": "",
-                    "status": "in_progress",
-                })
-            } else {
-                json!({
-                    "type": "function_call",
-                    "id": format!("fc_{}", entry.id),
-                    "call_id": entry.id,
-                    "name": client_name,
-                    "arguments": "",
-                    "status": "in_progress",
-                })
-            };
-            let item_added = json!({
+            let item = tool_item_shell(&entry.id, &entry.name, entry.is_custom, &state.tool_meta);
+            out += &format_sse_data(&json!({
                 "type": "response.output_item.added",
                 "sequence_number": state.sequence,
                 "output_index": entry.output_index,
                 "item": item,
-            });
-            out += &format_sse_data(&item_added);
+            }));
+            // name 迟到时，把之前攒住的参数分片按原顺序补发，事件顺序才不会倒置。
+            if !entry.is_custom {
+                let pending = std::mem::take(&mut entry.pending_deltas);
+                let (id, output_index) = (entry.id.clone(), entry.output_index);
+                for fragment in pending {
+                    out +=
+                        &arguments_delta_event(&mut state.sequence, &id, output_index, &fragment);
+                }
+            }
         }
 
-        if let Some(args) = call
-            .get("function")
-            .and_then(|f| f.get("arguments"))
-            .and_then(|a| a.as_str())
-        {
-            // custom 工具的 Chat 参数是 JSON 分片，不能逐片 parse；完整 input 在 item.done 给出
-            if !args.is_empty() && !entry.is_custom {
-                state.sequence += 1;
-                let event = json!({
-                    "type": "response.function_call_arguments.delta",
-                    "sequence_number": state.sequence,
-                    "item_id": format!("fc_{}", entry.id),
-                    "output_index": entry.output_index,
-                    "delta": args,
-                });
-                out += &format_sse_data(&event);
+        // custom 工具的 Chat 参数是 JSON 分片，不能逐片 parse；完整 input 在 item.done 给出。
+        if !args_fragment.is_empty() && !entry.is_custom {
+            if entry.item_added {
+                let (id, output_index) = (entry.id.clone(), entry.output_index);
+                out +=
+                    &arguments_delta_event(&mut state.sequence, &id, output_index, &args_fragment);
+            } else {
+                // 工具名还没来：先攒住，绝不抢在 output_item.added 之前发 delta。
+                entry.pending_deltas.push(args_fragment);
             }
         }
     }
@@ -1623,8 +1836,11 @@ fn record_upstream_sample(state: &mut SseMapState, payload: &str) {
     if state.upstream_samples.len() >= 5 {
         return;
     }
-    let sample = if payload.len() > 500 {
-        format!("{}...", &payload[..500])
+    // 必须按字符边界截断：直接 &payload[..500] 会切在多字节汉字中间并 panic，
+    // 长中文回复会直接打断整条 SSE 流。
+    let sample = if payload.chars().count() > 500 {
+        let prefix: String = payload.chars().take(500).collect();
+        format!("{}...", prefix)
     } else {
         payload.to_string()
     };
@@ -1656,9 +1872,21 @@ fn process_upstream_payload(state: &mut SseMapState, payload: &str) -> String {
         return finalize_events(state);
     }
 
+    if payload.trim().is_empty() {
+        return String::new();
+    }
+
     record_upstream_sample(state, payload);
 
-    let parsed: Value = serde_json::from_str(payload).unwrap_or(json!({}));
+    // 单个坏分片不该毒化整条流：显式告警后跳过，后续正常分片继续处理。
+    let parsed: Value = match serde_json::from_str(payload) {
+        Ok(value) => value,
+        Err(err) => {
+            let preview: String = payload.chars().take(120).collect();
+            warn!(error = %err, payload = %preview, "跳过无法解析的上游 SSE 分片");
+            return String::new();
+        }
+    };
     if let Some(err) = upstream_error_message(&parsed) {
         warn!(error = %err, "upstream SSE returned error JSON");
         return failed_events(state, &err);
@@ -1764,44 +1992,48 @@ fn process_upstream_line(state: &mut SseMapState, line: &str) -> String {
 }
 
 fn drain_remainder(state: &mut SseMapState, parser: &mut SseLineParser) -> String {
-    let remainder = parser.buffer.trim().to_string();
+    if parser.buffer.is_empty() {
+        return String::new();
+    }
+    let raw = std::mem::take(&mut parser.buffer);
+    let decoded = String::from_utf8_lossy(&raw);
+    let remainder = decoded.trim();
     if remainder.is_empty() {
         return String::new();
     }
-    parser.buffer.clear();
     if remainder.starts_with('{') {
-        return process_upstream_payload(state, &remainder);
+        return process_upstream_payload(state, remainder);
     }
-    process_upstream_line(state, &remainder)
+    process_upstream_line(state, remainder)
 }
 
+/// 按字节攒行、按整行解码：上游 TCP chunk 完全可能把一个汉字切成两半，
+/// 逐 chunk `from_utf8_lossy` 会永久写入 U+FFFD 并损坏正文。
 struct SseLineParser {
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl SseLineParser {
     fn new() -> Self {
-        Self {
-            buffer: String::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     fn push(&mut self, chunk: &Bytes) -> Vec<String> {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        self.buffer.extend_from_slice(chunk);
         let mut lines = Vec::new();
         loop {
-            let Some(pos) = self.buffer.find('\n') else {
+            let Some(pos) = self.buffer.iter().position(|byte| *byte == b'\n') else {
                 break;
             };
-            let mut line = self.buffer.drain(..=pos).collect::<String>();
-            if line.ends_with('\n') {
-                line.pop();
+            let mut raw: Vec<u8> = self.buffer.drain(..=pos).collect();
+            if raw.last() == Some(&b'\n') {
+                raw.pop();
             }
-            if line.ends_with('\r') {
-                line.pop();
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
             }
-            if !line.is_empty() {
-                lines.push(line);
+            if !raw.is_empty() {
+                lines.push(String::from_utf8_lossy(&raw).into_owned());
             }
         }
         lines
