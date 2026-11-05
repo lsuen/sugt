@@ -1,4 +1,6 @@
+use crate::agent_adapters;
 use crate::model::AppConfig;
+pub use crate::agent_adapters::expand_home;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
@@ -81,8 +83,6 @@ pub fn builtin_profiles() -> Vec<TakeoverProfile> {
                 ("ANTHROPIC_AUTH_TOKEN", "{client_key}"),
             ]),
             vec!["ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"],
-            vec!["~/.claude"],
-            vec!["~/.claude/skills"],
             Some("claude"),
         ),
         profile(
@@ -97,8 +97,6 @@ pub fn builtin_profiles() -> Vec<TakeoverProfile> {
                 ("OPENAI_API_BASE", "{openai_base}"),
             ]),
             vec![],
-            vec!["~/.codex"],
-            vec!["~/.agents/skills"],
             Some("codex"),
         ),
     ]
@@ -112,10 +110,21 @@ fn profile(
     protocol: &str,
     env_vars: BTreeMap<String, String>,
     clear_vars: Vec<&str>,
-    settings_dirs: Vec<&str>,
-    skill_dirs: Vec<&str>,
     launch_command: Option<&str>,
 ) -> TakeoverProfile {
+    // 配置目录与技能目录只从 adapter 派生，禁止在这里另写一份路径。
+    let adapter = agent_adapters::by_id(id)
+        .unwrap_or_else(|| panic!("内置模板 {id} 缺少 AgentAdapter 声明"));
+    let settings_dirs: Vec<String> = adapter
+        .settings_dirs
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let skill_dirs: Vec<String> = adapter
+        .skill_dirs
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     TakeoverProfile {
         id: id.to_string(),
         name: name.to_string(),
@@ -124,9 +133,9 @@ fn profile(
         protocol: protocol.to_string(),
         env_vars,
         clear_vars: clear_vars.into_iter().map(|s| s.to_string()).collect(),
-        settings_dirs: settings_dirs.into_iter().map(|s| s.to_string()).collect(),
+        settings_dirs,
         settings_path: None,
-        skill_dirs: skill_dirs.into_iter().map(|s| s.to_string()).collect(),
+        skill_dirs,
         launch_command: launch_command.map(|s| s.to_string()),
         builtin: true,
     }
@@ -321,32 +330,6 @@ pub fn resolve_env(config: &AppConfig, profile: &TakeoverProfile) -> BTreeMap<St
         .collect()
 }
 
-pub fn expand_home(path: &str) -> Option<PathBuf> {
-    let path = path.trim();
-    if path.is_empty() {
-        return None;
-    }
-    if path.starts_with("~/") || path.starts_with("~\\") {
-        directories::UserDirs::new().map(|u| {
-            u.home_dir().join(
-                path.trim_start_matches('~')
-                    .trim_start_matches('/')
-                    .trim_start_matches('\\'),
-            )
-        })
-    } else if path == "~" {
-        directories::UserDirs::new().map(|u| u.home_dir().to_path_buf())
-    } else {
-        let p = Path::new(path);
-        if p.is_absolute() {
-            Some(p.to_path_buf())
-        } else {
-            // `.claude` 等相对路径按用户主目录解析
-            directories::UserDirs::new().map(|u| u.home_dir().join(path))
-        }
-    }
-}
-
 pub fn resolved_settings_path(profile: &TakeoverProfile) -> Option<PathBuf> {
     if let Some(custom) = profile.settings_path.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty())
     {
@@ -394,6 +377,10 @@ pub fn collect_skill_dirs(profile: &TakeoverProfile) -> Vec<PathBuf> {
         if let Some(path) = expand_home(dir) {
             push_unique(path);
         }
+    }
+    // 自定义模板可能没写 skill_dirs：按 adapter 声明补齐候选（仍只保留存在的目录）。
+    for path in agent_adapters::skill_dir_candidates(&profile.id) {
+        push_unique(path);
     }
     if let Some(root) = resolved_settings_path(profile) {
         push_unique(root.join("skills"));
@@ -751,6 +738,48 @@ mod tests {
         assert!(ids.contains(&"claude-code".to_string()));
         assert!(ids.contains(&"codex".to_string()));
         assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn builtin_profile_dirs_come_from_adapters() {
+        for profile in builtin_profiles() {
+            let adapter = agent_adapters::by_id(&profile.id)
+                .unwrap_or_else(|| panic!("{} 缺少 adapter", profile.id));
+            let settings: Vec<String> = adapter
+                .settings_dirs
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let skills: Vec<String> = adapter.skill_dirs.iter().map(|s| s.to_string()).collect();
+            assert_eq!(profile.settings_dirs, settings);
+            assert_eq!(profile.skill_dirs, skills);
+        }
+    }
+
+    #[test]
+    fn collect_skill_dirs_adds_adapter_candidates_for_custom_profiles() {
+        let custom = TakeoverProfile {
+            id: "gemini-cli".into(),
+            name: "Gemini CLI".into(),
+            vendor: "Google".into(),
+            description: String::new(),
+            protocol: "openai".into(),
+            env_vars: BTreeMap::new(),
+            clear_vars: vec![],
+            settings_dirs: vec![],
+            settings_path: None,
+            skill_dirs: vec![],
+            launch_command: None,
+            builtin: false,
+        };
+        // 不必要求目录真实存在，只验证候选已参与解析且不重复。
+        let adapter = agent_adapters::by_id("gemini-cli").unwrap();
+        assert!(!adapter.skill_dirs.is_empty());
+        assert_eq!(
+            agent_adapters::skill_dir_candidates("gemini-cli").len(),
+            adapter.skill_dirs.len()
+        );
+        let _ = collect_skill_dirs(&custom);
     }
 
     #[test]

@@ -60,10 +60,9 @@ pub fn resolve_agent_skills_dir(config_dir: &Path, profile: &TakeoverProfile) ->
     if let Some(first) = dirs.into_iter().next() {
         return Ok(first);
     }
-    Err(anyhow!(
-        "Agent「{}」未配置技能目录（skill_dirs）",
-        profile.name
-    ))
+    // 目录尚不存在时仍返回 adapter 的 canonical 路径，交由前端显示
+    // detected=false，而不是在这里把整个 Agent 静默丢弃。
+    crate::agent_adapters::canonical_skill_dir(&profile.id)
 }
 
 pub fn resolve_agent_skills_dir_by_id(config_dir: &Path, agent_id: &str) -> Result<PathBuf> {

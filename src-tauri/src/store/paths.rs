@@ -41,13 +41,11 @@ impl StorePaths {
     }
 
     pub fn claude_skills_dir() -> anyhow::Result<PathBuf> {
-        let home = Self::user_home()?;
-        Ok(home.join(".claude").join("skills"))
+        crate::agent_adapters::canonical_skill_dir("claude-code")
     }
 
     pub fn codex_skills_dir() -> anyhow::Result<PathBuf> {
-        let home = Self::user_home()?;
-        Ok(home.join(".agents").join("skills"))
+        crate::agent_adapters::canonical_skill_dir("codex")
     }
 
     pub fn claude_plugins_dir() -> anyhow::Result<PathBuf> {

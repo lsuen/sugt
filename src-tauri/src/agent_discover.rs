@@ -24,6 +24,10 @@ pub struct DiscoveredAgent {
     pub warning: Option<String>,
     /// 是否像纯 IDE（需用户补目录才能添加）
     pub requires_path: bool,
+    /// 该 Agent 会写入的字段名（不含值），来自能力矩阵
+    pub writable_fields: Vec<String>,
+    /// 配置方式说明
+    pub config_note: String,
 }
 
 struct Fingerprint {
@@ -33,8 +37,6 @@ struct Fingerprint {
     protocol: &'static str,
     keywords: &'static [&'static str],
     commands: &'static [&'static str],
-    settings_dirs: &'static [&'static str],
-    skill_dirs: &'static [&'static str],
     env_hints: &'static [&'static str],
     /// 纯 IDE / 编辑器，默认低置信
     ide_like: bool,
@@ -51,8 +53,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "anthropic",
             keywords: &["claude", "anthropic"],
             commands: &["claude"],
-            settings_dirs: &["~/.claude"],
-            skill_dirs: &["~/.claude/skills"],
             env_hints: &["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"],
             ide_like: false,
             env_vars: &[
@@ -68,8 +68,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["codex"],
             commands: &["codex"],
-            settings_dirs: &["~/.codex"],
-            skill_dirs: &["~/.agents/skills"],
             env_hints: &["OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"],
             ide_like: false,
             env_vars: &[
@@ -86,13 +84,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["opencode", "open-code"],
             commands: &["opencode"],
-            settings_dirs: &["~/.opencode", "~/.config/opencode"],
-            skill_dirs: &[
-                "~/.config/opencode/skills",
-                "~/.opencode/skills",
-                "~/.dev-agents/skills",
-                "~/.claude/skills",
-            ],
             env_hints: &["OPENCODE_API_KEY", "OPENAI_API_KEY"],
             ide_like: false,
             env_vars: &[
@@ -108,8 +99,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["qwen", "qwencode"],
             commands: &["qwen", "qwencode"],
-            settings_dirs: &["~/.qwen", "~/.qwencode"],
-            skill_dirs: &[],
             env_hints: &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
             ide_like: false,
             env_vars: &[
@@ -125,8 +114,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["aider"],
             commands: &["aider"],
-            settings_dirs: &["~/.aider"],
-            skill_dirs: &[],
             env_hints: &["OPENAI_API_KEY", "AIDER_"],
             ide_like: false,
             env_vars: &[
@@ -142,8 +129,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["gemini"],
             commands: &["gemini"],
-            settings_dirs: &["~/.gemini"],
-            skill_dirs: &[],
             env_hints: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             ide_like: false,
             env_vars: &[
@@ -159,8 +144,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["cursor"],
             commands: &["cursor"],
-            settings_dirs: &["~/.cursor"],
-            skill_dirs: &[],
             env_hints: &["CURSOR_"],
             ide_like: true,
             env_vars: &[
@@ -176,8 +159,6 @@ fn fingerprints() -> Vec<Fingerprint> {
             protocol: "openai",
             keywords: &["vscode", "code"],
             commands: &["code"],
-            settings_dirs: &[],
-            skill_dirs: &[],
             env_hints: &[],
             ide_like: true,
             env_vars: &[
@@ -258,6 +239,8 @@ pub fn discover_agents(config_dir: &Path, query: &str) -> Vec<DiscoveredAgent> {
             clear_vars: vec![],
             warning: Some("未识别到 Agent 特征，请补充目录".into()),
             requires_path: true,
+            writable_fields: vec![],
+            config_note: "未识别客户端：能力未声明，请补充目录后核对".into(),
         });
     }
 
@@ -309,8 +292,15 @@ fn probe_fingerprint(
         }
     }
 
+    // 路径只从 AgentAdapter 取，指纹表里不再维护第二份。
+    let adapter = crate::agent_adapters::by_id(fp.id);
+    let settings_candidates: &'static [&'static str] =
+        adapter.map(|a| a.settings_dirs).unwrap_or(&[]);
+    let skill_candidates: &'static [&'static str] =
+        adapter.map(|a| a.skill_dirs).unwrap_or(&[]);
+
     let mut settings_path = None;
-    for dir in fp.settings_dirs {
+    for dir in settings_candidates {
         if let Some(p) = expand_home(dir).filter(|p| p.is_dir()) {
             reasons.push(format!("配置目录: {}", p.display()));
             settings_path = Some(p.display().to_string());
@@ -319,7 +309,7 @@ fn probe_fingerprint(
     }
 
     let mut skill_dirs = Vec::new();
-    for dir in fp.skill_dirs {
+    for dir in skill_candidates {
         if let Some(p) = expand_home(dir).filter(|p| p.is_dir()) {
             reasons.push(format!("技能目录: {}", p.display()));
             skill_dirs.push(p.display().to_string());
@@ -391,6 +381,12 @@ fn probe_fingerprint(
         clear_vars: fp.clear_vars.iter().map(|s| s.to_string()).collect(),
         warning,
         requires_path,
+        writable_fields: adapter
+            .map(|a| a.config.writable_fields.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default(),
+        config_note: adapter
+            .map(|a| a.config.note.to_string())
+            .unwrap_or_else(|| "自定义客户端：能力未声明，请核对后再接入".to_string()),
     })
 }
 

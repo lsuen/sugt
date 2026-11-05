@@ -2,7 +2,8 @@
 ///
 /// 接管 Agent 时，把 SUGT 自带的 SKILL.md 复制到 Agent 的技能目录，让 Agent
 /// 能直接调用 sugt-cli 搜索/安装/管理其他技能。
-use crate::takeover_profiles::{expand_home, TakeoverProfile};
+use crate::agent_adapters;
+use crate::takeover_profiles::TakeoverProfile;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -16,20 +17,24 @@ pub const EMBEDDED_SKILL: &str = include_str!("../skills/sugt/SKILL.md");
 
 /// 找出 Agent 接管后应注入 SUGT skill 的目标目录。
 ///
-/// 优先用 takeover profile 的 skill_dirs，其次用 `~/.agents/skills`、用户主目录下的 `.claude/skills`。
+/// 目录只取「已存在」的 profile/adapter 候选；全部不存在时，才创建一个明确的
+/// canonical 目录。避免为任意自定义路径凭空 create_dir_all 造出无效目录。
 pub fn inject_targets_for_profile(profile: &TakeoverProfile) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for raw in &profile.skill_dirs {
-        if let Some(p) = expand_home(raw) {
-            if !out.contains(&p) {
-                out.push(p);
+    let mut raws: Vec<String> = profile.skill_dirs.clone();
+    if let Some(adapter) = agent_adapters::by_id(&profile.id) {
+        raws.extend(adapter.skill_dirs.iter().map(|s| s.to_string()));
+    }
+    for raw in raws {
+        if let Some(path) = agent_adapters::expand_home(&raw) {
+            if path.is_dir() && !out.contains(&path) {
+                out.push(path);
             }
         }
     }
-    // 兜底：把 SUGT skill 注入到 `~/.agents/skills`（跨 Agent 通用）
-    if let Some(p) = expand_home("~/.agents/skills") {
-        if !out.contains(&p) {
-            out.push(p);
+    if out.is_empty() {
+        if let Ok(dir) = agent_adapters::canonical_skill_dir(&profile.id) {
+            out.push(dir);
         }
     }
     out

@@ -1171,6 +1171,14 @@ pub async fn add_discovered_agents(
             clear_vars: item.clear_vars.clone(),
             warning: None,
             requires_path: item.requires_path,
+            writable_fields: crate::agent_adapters::config_capability(&item.id)
+                .writable_fields
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            config_note: crate::agent_adapters::config_capability(&item.id)
+                .note
+                .to_string(),
         };
         let profile = crate::agent_discover::discovered_to_profile(
             &snapshot,

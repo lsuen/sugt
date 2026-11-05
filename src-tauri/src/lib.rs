@@ -1,6 +1,7 @@
 pub mod anthropic_adapter;
 pub mod anthropic_client_detect;
 pub mod agent_advanced;
+pub mod agent_adapters;
 pub mod agent_discover;
 pub mod app;
 pub mod autostart;
