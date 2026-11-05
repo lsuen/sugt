@@ -114,6 +114,10 @@ pub fn build_preview(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
         warnings.push("该客户端暂不支持自动回滚，请自行记录原有配置".to_string());
     }
     if capability.kind == ConfigKind::CodexToml {
+        warnings.push(
+            "MCP server 由客户端自己的 [mcp_servers] 配置管理，SUGT 不代管；read_mcp_resource 等工具能否使用取决于客户端侧是否已启动 server"
+                .to_string(),
+        );
         if let Some(raw) = capability.config_path.and_then(agent_adapters::expand_home) {
             if raw.is_file() {
                 if let Ok(content) = std::fs::read_to_string(&raw) {
@@ -177,7 +181,7 @@ pub fn capability_brief(zh: bool) -> String {
         concat!(
             "本机 Agent 接入能力（程序已声明，不要凭记忆猜路径）：\n",
             "- Claude Code：只写环境变量 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN；技能目录 ~/.claude/skills\n",
-            "- Codex：写 ~/.codex/config.toml（model_providers.sugt、wire_api=responses）与 auth.json；技能目录 ~/.agents/skills；接管前有备份，取消可还原\n",
+            "- Codex：写 ~/.codex/config.toml（model_providers.sugt、wire_api=responses、requires_openai_auth=false、本地压缩、web_search=disabled）与 auth.json（保留原登录态）；不改 mcp_servers，MCP server 由客户端自管；技能目录 ~/.agents/skills；接管前有备份，取消可还原\n",
             "- OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code：只写 OPENAI_* 环境变量，技能目录按各自候选探测\n",
             "接入与取消接管必须由用户在「客户端」页点按钮完成；你只解释影响并给建议，绝不自己改这些客户端配置文件。"
         )
@@ -186,7 +190,7 @@ pub fn capability_brief(zh: bool) -> String {
         concat!(
             "Local agent takeover capabilities (declared by the app; do not guess paths):\n",
             "- Claude Code: user env ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN only; skills at ~/.claude/skills\n",
-            "- Codex: writes ~/.codex/config.toml (model_providers.sugt, wire_api=responses) and auth.json; skills at ~/.agents/skills; backed up before takeover and revertable\n",
+            "- Codex: writes ~/.codex/config.toml (model_providers.sugt, wire_api=responses, requires_openai_auth=false, local compaction, web_search=disabled) and auth.json while preserving existing login fields; never touches mcp_servers, MCP servers are managed by the client; skills at ~/.agents/skills; backed up before takeover and revertable\n",
             "- OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code: OPENAI_* env vars only; skill directories are probed per client\n",
             "Takeover and release are performed only when the user clicks the buttons on the Clients tab. Explain the impact and advise, but never edit those client config files yourself."
         )

@@ -19,6 +19,9 @@ struct TakeoverState {
     config_after: String,
     auth_before: Option<String>,
     auth_after: String,
+    /// 顶层 web_search 是否由 SUGT 注入（用户原本没写这个键）
+    #[serde(default)]
+    web_search_injected: bool,
 }
 
 fn state_path(codex_dir: &Path) -> PathBuf {
@@ -122,6 +125,14 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
         "cli_auth_credentials_store".to_string(),
         toml::Value::String("file".to_string()),
     );
+    // hosted web_search 的 schema 会打到不支持它的本地网关；用户没配置时显式关掉。
+    let web_search_injected = !table.contains_key("web_search");
+    if web_search_injected {
+        table.insert(
+            "web_search".to_string(),
+            toml::Value::String("disabled".to_string()),
+        );
+    }
 
     let mut provider = toml::Table::new();
     provider.insert("name".to_string(), toml::Value::String("SUGT".to_string()));
@@ -130,6 +141,24 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
         "wire_api".to_string(),
         toml::Value::String("responses".to_string()),
     );
+    // 第三方 provider 不要求 OpenAI 官方认证；不声明时客户端会按官方账号路径
+    // 申请 hosted 工具 / MCP 能力，在自定义网关上一律变成 unsupported call。
+    provider.insert(
+        "requires_openai_auth".to_string(),
+        toml::Value::Boolean(false),
+    );
+    // Codex CLI 0.162+ 默认把远程压缩交给服务端（compaction_trigger item），
+    // 本地网关解析不了会 400 / 中断任务；显式声明改用客户端本地压缩。
+    let mut capabilities = toml::Table::new();
+    capabilities.insert(
+        "remote_compaction".to_string(),
+        toml::Value::String("unsupported".to_string()),
+    );
+    capabilities.insert(
+        "external_web_access".to_string(),
+        toml::Value::Boolean(false),
+    );
+    provider.insert("capabilities".to_string(), toml::Value::Table(capabilities));
     let mut providers = match table.get("model_providers").and_then(|v| v.as_table()) {
         Some(existing) => existing.clone(),
         None => toml::Table::new(),
@@ -141,12 +170,17 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
     );
 
     let serialized = toml::to_string_pretty(&table).context("Codex config 序列化失败")?;
-    let auth_after = codex_auth_content(&crate::clients::client_api_key_for_config(config))?;
     let auth_before = if auth_path.is_file() {
         Some(std::fs::read_to_string(&auth_path)?)
     } else {
         None
     };
+    // 只覆盖认证方式与本地网关 Key，保留原有 ChatGPT 登录态字段
+    // （tokens / account_id / plan 等）；整体替换会让客户端丢失账号侧能力。
+    let auth_after = codex_auth_content(
+        &crate::clients::client_api_key_for_config(config),
+        auth_before.as_deref(),
+    )?;
 
     let previous = read_state(&codex_dir);
     if previous.is_none() {
@@ -163,6 +197,10 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
             .map(|s| s.auth_before.clone())
             .unwrap_or_else(|| auth_before.clone()),
         auth_after: auth_after.clone(),
+        web_search_injected: previous
+            .as_ref()
+            .map(|s| s.web_search_injected)
+            .unwrap_or(web_search_injected),
     };
 
     atomic_write(&config_path, &serialized)?;
@@ -193,7 +231,7 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
                 None => remove_file_if_exists(&config_path)?,
             }
         } else {
-            prune_sugt_fields(&config_path, config)?;
+            prune_sugt_fields(&config_path, config, state.web_search_injected)?;
         }
 
         let current_auth = if auth_path.is_file() {
@@ -212,8 +250,8 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
         return Ok(());
     }
 
-    // 兼容旧版本（没有快照）：沿用定点清理。
-    prune_sugt_fields(&config_path, config)
+    // 兼容旧版本（没有快照）：沿用定点清理；无法确认 web_search 归属时不碰它。
+    prune_sugt_fields(&config_path, config, false)
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {
@@ -225,7 +263,11 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 /// 只移除 SUGT 写入的字段，保留用户其它配置；用 toml_edit 保留注释与原格式。
-fn prune_sugt_fields(config_path: &Path, config: &AppConfig) -> Result<()> {
+fn prune_sugt_fields(
+    config_path: &Path,
+    config: &AppConfig,
+    web_search_injected: bool,
+) -> Result<()> {
     if !config_path.is_file() {
         return Ok(());
     }
@@ -267,6 +309,13 @@ fn prune_sugt_fields(config_path: &Path, config: &AppConfig) -> Result<()> {
     // 只删 SUGT 自己写进去的那个值；不再按 contains("localhost") 误删用户的本地服务。
     if doc.get("openai_base_url").and_then(|v| v.as_str()) == Some(expected.as_str()) {
         doc.remove("openai_base_url");
+        changed = true;
+    }
+    // 只删确认由 SUGT 注入的 web_search，且值仍是被注入的值；用户自己改过就保留。
+    if web_search_injected
+        && doc.get("web_search").and_then(|v| v.as_str()) == Some("disabled")
+    {
+        doc.remove("web_search");
         changed = true;
     }
     if changed {
@@ -387,12 +436,24 @@ pub fn codex_config_status(config: &AppConfig) -> CodexConfigStatus {
     }
 }
 
-/// 生成 auth.json 内容，供新版 Codex 读取 API Key（本地网关 dummy key 即可）。
-fn codex_auth_content(api_key: &str) -> Result<String> {
-    let value = serde_json::json!({
-        "auth_mode": "apikey",
-        "OPENAI_API_KEY": api_key,
-    });
+/// 生成 auth.json 内容：只覆盖认证方式与本地网关 Key，保留原有登录态字段。
+fn codex_auth_content(api_key: &str, existing: Option<&str>) -> Result<String> {
+    let mut value = match existing {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| serde_json::json!({})),
+        None => serde_json::json!({}),
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    let object = value
+        .as_object_mut()
+        .expect("已确保是 JSON object");
+    object.insert("auth_mode".to_string(), serde_json::json!("apikey"));
+    object.insert(
+        "OPENAI_API_KEY".to_string(),
+        serde_json::json!(api_key),
+    );
     Ok(serde_json::to_string_pretty(&value)?)
 }
 
@@ -561,6 +622,81 @@ mod tests {
             assert!(after.contains("# 用户手动新增"), "用户改动必须保留");
             assert!(!after.contains("model_provider = "), "SUGT 字段仍应清理");
             assert!(!after.contains("[model_providers.sugt]"));
+        });
+    }
+
+    #[test]
+    fn takeover_declares_third_party_capabilities_and_keeps_login_fields() {
+        with_codex_home(|home| {
+            let config = sample_config(18792);
+            let config_path = home.join("config.toml");
+            let auth_path = home.join("auth.json");
+            std::fs::write(
+                &config_path,
+                "[mcp_servers.file]\ncommand = \"npx\"\nargs = [\"-y\", \"mcp-server-filesystem\"]\n",
+            )
+            .unwrap();
+            std::fs::write(
+                &auth_path,
+                "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"keep\"},\"account_id\":\"acct_1\"}",
+            )
+            .unwrap();
+
+            apply_codex_config(&config).unwrap();
+            let taken = std::fs::read_to_string(&config_path).unwrap();
+            let table: toml::Table = toml::from_str(&taken).unwrap();
+            let provider = table["model_providers"]["sugt"].as_table().unwrap();
+            assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+            assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+            let capabilities = provider["capabilities"].as_table().unwrap();
+            assert_eq!(
+                capabilities["remote_compaction"].as_str(),
+                Some("unsupported")
+            );
+            assert_eq!(capabilities["external_web_access"].as_bool(), Some(false));
+            assert_eq!(table["web_search"].as_str(), Some("disabled"));
+            assert!(
+                table.get("mcp_servers").is_some(),
+                "接管绝不能碰用户自己的 MCP server 配置"
+            );
+
+            let auth: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+            assert_eq!(auth["auth_mode"], "apikey");
+            assert_eq!(auth["tokens"]["id_token"], "keep", "原登录态字段必须保留");
+            assert_eq!(auth["account_id"], "acct_1");
+            assert!(auth["OPENAI_API_KEY"].as_str().is_some());
+        });
+    }
+
+    #[test]
+    fn takeover_respects_user_web_search_and_prunes_only_injected_value() {
+        with_codex_home(|home| {
+            let config = sample_config(18793);
+            let config_path = home.join("config.toml");
+            std::fs::write(&config_path, "web_search = \"live\"\n").unwrap();
+            apply_codex_config(&config).unwrap();
+            let taken = std::fs::read_to_string(&config_path).unwrap();
+            assert!(
+                taken.contains("web_search = \"live\""),
+                "用户显式配置不能被覆盖：{taken}"
+            );
+            clear_sugt_codex_overrides(&config).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&config_path).unwrap(),
+                "web_search = \"live\"\n"
+            );
+
+            // 用户原本没有该键时，SUGT 注入并在释放后清掉（走兜底路径）。
+            std::fs::write(&config_path, "model = \"o3\"\n").unwrap();
+            apply_codex_config(&config).unwrap();
+            let mut edited = std::fs::read_to_string(&config_path).unwrap();
+            edited.push_str("\n# 用户手动新增\n");
+            std::fs::write(&config_path, &edited).unwrap();
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&config_path).unwrap();
+            assert!(after.contains("# 用户手动新增"));
+            assert!(!after.contains("web_search"), "注入的 web_search 应被清理");
         });
     }
 
