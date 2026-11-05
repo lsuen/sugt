@@ -266,7 +266,7 @@ P0 / P1 / P2 的既定目标全部落地，工作区干净；**所有实际跑�
 2. **`code_mode_only` 同名模型风险仍在**：CC Switch #8676 指出客户端会按模型名继承官方工具协议。SUGT 未生成 model catalog（各 Codex 版本字段不稳定，不凭空构造），若上游模型名与官方同名，客户端仍可能套用官方 `tool_mode`。已在能力声明、预览与文档中说明，未做未经验证的 catalog 写入。
 3. **MCP 归属**：`read_mcp_resource` / `list_mcp_resources` 能否找到 server 完全取决于客户端自己的 `[mcp_servers]`；SUGT 不代管、不创建、不删除。
 4. **未实现的能力**（本次未扩大范围）：MCP server 代理 / 统一面板、原生 Responses 语义级代理（当前仅火山方舟命中时字节透传）、`encrypted_content`、富媒体 part 透传、按 provider 显式切换「直连 vs 转换」模式。
-5. 全仓 `cargo fmt --check` 仍有既有差异；未执行 `tauri build`；所有提交均未 push。
+5. 全仓 `cargo fmt --check` 仍有既有差异；第三轮未执行 `tauri build`（第四轮已补 `--no-bundle` 编译，见 14.6）；所有提交均未 push。
 
 ### 13.8 本轮提交清单（新→旧）
 
@@ -278,4 +278,91 @@ P0 / P1 / P2 的既定目标全部落地，工作区干净；**所有实际跑�
 | `7efc106` | `fix: 补齐 Responses 工具协议闭环并修复 shell_command 误判` |
 
 四个提交均为本地原子提交、中文提交信息，**未 push**；`master` 相对 `origin/master` 的领先数请在执行推送前用 `git status -sb` 复核（`origin/HEAD` 指向 `main`，推送前需确认目标分支）。
+
+---
+
+## 14. 第四轮：隐藏问题兜底与打包层验证
+
+### 14.1 目标与范围
+
+第三轮修好了「工具闭环」，但 13.7 明确留了空白：没有打包、没有真机、mock 上游过于理想、请求字段白名单只有 7 个、`code_mode_only` 同名模型风险未处理。本轮把**代码里能确定的隐藏问题**逐个补掉，并对不确定字段一律采用可观测、可关闭的 fallback，不凭空构造未经验证的能力。
+
+范围：请求侧静默降级、流式异常分片、上游异常响应伪装成功、`code_mode_only` 规避、打包层编译。
+
+### 14.2 失败基线（先跑红）
+
+新增 `src-tauri/tests/codex_edge_cases.rs`，17 个用例首跑真实输出 `7 passed; 10 failed`。其中 `long_multibyte_payload_does_not_panic` 不是断言失败而是**真实 panic**：
+
+```
+thread 'long_multibyte_payload_does_not_panic' panicked at src/openai_responses_adapter.rs:1627:34:
+end byte index 500 is not a char boundary; it is inside '中' (bytes 498..501 of string)
+```
+
+其余 9 项失败同样逐条打印出现状：`max_output_tokens` 被丢成 `Null`、非法 JSON 被伪装成 `status: completed` 的空回复、未知 item 被序列化成 `{"meta":...,"text":...}` 塞进 user 文本、`output_item.added` 排在两个 `arguments.delta` 之后、匿名工具调用完全没有 `added` 事件、跨 chunk 的「中文测试」变成 U+FFFD。
+
+### 14.3 修复清单（逐条对应失败）
+
+| # | 问题 | 修复 | 位置 |
+|---|---|---|---|
+| 1 | 长中文 SSE 采样按字节 `&payload[..500]` 切断汉字导致 panic | 按字符边界截断 | `record_upstream_sample` |
+| 2 | 逐 chunk `from_utf8_lossy` 把跨 chunk 汉字变成 U+FFFD | `SseLineParser` 改字节缓冲、整行解码 | `SseLineParser::push` / `drain_remainder` |
+| 3 | 工具名迟到时 `arguments.delta` 抢在 `output_item.added` 之前 | `ToolCallAccum.pending_deltas` 攒分片，name 到达后先补 added 再按序 flush | `process_tool_call_delta` |
+| 4 | 上游始终不给 name → 空名 function_call、缺 added | 收尾 `repair_anonymous_tool_calls` 补占位名（请求里恰好一个工具时用其原名，否则 `unknown_tool`）并补齐事件 | `finalize_events` |
+| 5 | 单个非法 JSON 分片被 `unwrap_or({})` 吞掉并影响整条流 | 显式告警后跳过，后续分片继续 | `process_upstream_payload` |
+| 6 | 上游空 body / 非法 JSON 伪装成空 `completed` | 返回 Responses 形状 `status: failed` + `error` 对象 | `responses_upstream_failure` |
+| 7 | 上游 4xx 被当作成功 SSE 流转发 | 读取错误体，返回 `response.failed` 事件流 | `upstream_failure_sse` + `gateway.rs` 流式 4xx 分支 |
+| 8 | `max_output_tokens` 静默丢弃，长任务被上游默认上限截断 | 映射成 `max_tokens` | `responses_to_chat_with_meta` |
+| 9 | `input` 里的 `instructions` item 变 user JSON | 转成 `system` 消息 | `normalize_response_item` |
+| 10 | 未识别 item 整段 JSON 当用户输入 | `plain_response_item_text` 文本优先、原结构兜底 | `normalize_response_item` |
+| 11 | `previous_response_id` / `store` / `reasoning` / `include` 等静默丢弃 | `ChatToolMeta.dropped_request_fields` + 告警，真机抓包可查 | `DEGRADED_RESPONSES_FIELDS` |
+| 12 | 上游模型与官方同名 → 客户端套用 `code_mode_only` / `use_responses_lite` | `model` 写 `sugt-` 别名；幂等；`SUGT_CODEX_MODEL_ALIAS=off` 可关 | `codex_model_alias` |
+
+### 14.4 fallback 设计原则
+
+- **降级必须可观测**：不能透传的字段进元数据并打日志，而不是消失。
+- **失败必须显式**：空/非法上游、4xx 一律给 `failed`，绝不返回一条「正常地什么都没说」的空回复。
+- **不确定就留开关**：别名属于基于公开案例的兼容性推断，各 Codex 版本对未知 slug 行为不同，因此提供一行环境变量回退口。
+- **不凭空造能力**：调研确认公开的 `model_catalog_json` 方案是「导出真实目录再改 `use_responses_lite`/`tool_mode`」（linux.do 2026-09-25 排查、Codex #31870、CC Switch #8676）。手写一份只含单模型的 catalog 会**替换客户端整个内置模型目录**，风险大于收益，故不实现。
+- **不擅自改模型参数**：`arguments` 拼出非法 JSON 时保留原样并告警，只保证不 panic、不丢工具，不偷偷替换成 `{}`。
+
+### 14.5 外部佐证
+
+- **CC Switch #8676**：第三方同名模型继承 `tool_mode: code_mode_only`、共用 `comp_hash`，旧会话持续 `unsupported call: exec`；修法是 `tool_mode: direct` + 独立 `comp_hash` + 完整退出桌面 app-server。
+- **openai/codex #31870**：`use_responses_lite=true` 的模型会让客户端走内部 Responses-Lite 编码，Azure 侧直接报 unsupported-tools；社区做法是换一个不带该标记的模型。
+- **linux.do 排查报告（2026-09-25，Codex Desktop 0.155.0-alpha）**：`use_responses_lite=true` 会把 `exec`/`shell`/`apply_patch` 放进 `input[].additional_tools` 而非顶层 `tools`，中转服务只转发顶层 tools 就会「没有工具」；做法是导出真实目录改字段后指向 `model_catalog_json`。
+- **CC Switch v4.0.19 升级说明**：按工具协议给模型行分组 `comp_hash`，跨协议切换时先压缩历史，进一步印证「同名 / 共用哈希」这一类问题属于客户端模型目录语义。
+
+### 14.6 验证结果
+
+| 项目 | 结果 |
+|---|---|
+| `cargo test --test codex_edge_cases` | 16 passed / 0 failed（首跑 7 passed / 10 failed，含 1 个真实 panic） |
+| `cargo test` 全量 | 233 passed / 0 failed / 1 ignored：lib 194、edge_cases 16、codex_gateway_e2e 3、dev-platform-module 8、protocol_roundtrip 12 |
+| `src-tauri/tests/codex_gateway_e2e.rs` | 新增 `malformed_upstream_body_is_reported_as_responses_failure`：真实 HTTP 网关 + mock 上游返回纯文本，断言返回 `status: failed` 且 `error.message` 含「非法 JSON」 |
+| `npm test` | 主题契约（12 源 × 38 token）、导入冒烟、TypeScript 双配置检查全绿 |
+| `npm run build` | 双入口 1638 modules 生产构建通过 |
+| `npx tauri build --no-bundle` | **成功**，`Built application at: src-tauri/target/release/sugt`（24 MB）。前端 `npm run build` 双入口 1638 modules + Rust `release` profile 完整编译通过；总耗时 6m46s。第三轮「未执行 tauri build」的空白至此补上 |
+| `rustfmt` | 两个新测试文件已格式化；改动过的大文件用 `rustfmt --emit stdout --config skip_children=true` 逐条比对，确认本轮新增代码格式合规，既有风格差异未做无关改动 |
+
+### 14.7 边界与真机复测清单
+
+1. **打包层边界**：`--no-bundle` 只验证「前端资源 + Rust release 二进制能一起编译出来」，**未生成 `.app` / `.dmg` 安装包，未做 macOS 签名与公证，未跑 Windows 路径与 Windows CI**。仍未验证真实桌面客户端点按与真实外部 LLM 请求；本轮「端到端」依旧是真实 HTTP 网关 + 本地 mock Chat 上游。
+2. **`previous_response_id` 仍无服务端会话存储**：网关依赖客户端重放完整 `input`。字段已降级并打日志，但长会话压缩 / reasoning 续接的真实语义没有实现。真机请跑 20 轮以上或触发一次 compaction 验证。
+3. **`code_mode_only` 是缓解不是根治**：别名让客户端不再按官方 slug 匹配模型目录，但若你这版 Codex 对未知 slug 表现异常，用 `SUGT_CODEX_MODEL_ALIAS=off` 回退；若仍见 `get_project_overview` / `compress_output` unsupported call，下一步应按 14.5 的公开方案导出真实模型目录改字段，而不是继续猜。
+4. **MCP 归属不变**：`read_mcp_resource` 能否找到 server 只取决于客户端自己的 `[mcp_servers]`，SUGT 不代管。
+5. **app-server 缓存**：公开案例一致指出改完模型目录/配置必须**完整退出**桌面应用与其后台 app-server，仅刷新窗口无效。
+6. 全仓 `cargo fmt --check` 仍有既有差异；所有提交均未 push。
+
+**建议真机复测顺序**：完整退出 Codex/ChatGPT 桌面端 → 重新接管 → 新建会话 → ① 执行一条 shell 指令 ② 一次触发两个工具 ③ 一段 20 轮以上长会话 ④ 观察日志里 `dropped_request_fields` 与 `response.failed`。若 ① 或 ② 失败，把网关日志与抓到的 `/v1/responses` 请求体带回来定位。
+
+### 14.8 本轮提交清单（新→旧）
+
+| 提交 | 内容 |
+|---|---|
+| `doc: 同步降级与别名规范并追加第四轮测试报告`（本报告自身） | `AGENTS.md`、中英 README、设计文档第 13 节、本报告第 14 节；同时清理 13.7 与设计文档中「未执行 tauri build」的过期描述 |
+| `3e1ffaf` | `test: 增加异常上游响应的真实 HTTP 端到端验证` |
+| `12435d0` | `fix: Codex 接管增加模型别名 fallback 规避 code_mode_only` |
+| `19f8fa4` | `fix: 补齐 Responses 降级可观测性与流式异常分片兜底` |
+
+四个提交均为本地原子提交、中文提交信息，**未 push**。上一轮的四个提交（`7efc106` / `dad6c40` / `630e175` / 文档提交）同样未 push；`origin/HEAD` 指向 `main`，推送前需用 `git status -sb` 复核目标分支。
 

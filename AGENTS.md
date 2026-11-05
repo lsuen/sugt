@@ -56,7 +56,10 @@ A working Chat Completions bridge does **not** prove Responses compatibility. Ke
 - Flatten `namespace` tools to `<namespace>__<name>` for Chat upstreams and restore the client name on the way back via `ChatToolMeta.flattened_names`.
 - Never silently drop unknown `tools` (degrade schema-bearing ones to `function`, log the rest) and never stringify structured tool items (`mcp_call`, `*_output`, etc.) into user text. Pair orphan `tool_calls` with a `role=tool` result before sending upstream.
 - Emit the complete SSE lifecycle: `response.in_progress`, `response.function_call_arguments.done` / `response.custom_tool_call_input.done`, `response.completed`, and a Responses-shaped `error` object on failure.
-- Validate with `src-tauri/tests/codex_gateway_e2e.rs` (real HTTP + mock upstream, streaming and non-streaming). A passing text-only request is not sufficient.
+- **Degrade, never fake success.** An empty/invalid upstream body or a 4xx reply must produce a Responses-shaped `failed` response, not an empty `completed`. Fields the stateless gateway cannot forward (`previous_response_id`, `store`, `reasoning`, `include`, …) go into `ChatToolMeta.dropped_request_fields` with a warning instead of vanishing silently. Map `max_output_tokens` → `max_tokens`.
+- **Streaming is hostile input.** Accumulate SSE bytes (not decoded strings) across chunks, never slice `&str` at a fixed byte offset, buffer `arguments` fragments until the tool name arrives so `output_item.added` always precedes `arguments.delta`, and give anonymous tool calls a resolvable fallback name at finalize time.
+- `instructions` items in `input` become `system` messages; unknown items degrade to their plain text, never to a serialized JSON blob.
+- Validate with `src-tauri/tests/codex_gateway_e2e.rs` (real HTTP + mock upstream, streaming and non-streaming) and `src-tauri/tests/codex_edge_cases.rs` (malformed/edge payloads). A passing text-only request is not sufficient.
 
 ## Agent adapters (single source of truth)
 
@@ -65,6 +68,7 @@ A working Chat Completions bridge does **not** prove Responses compatibility. Ke
 - `preview_takeover` / `list_agent_capabilities` are read-only. Before applying a takeover, show the impact preview. SOUL gets the capability brief through `system_prompt` only — it must never write client config files itself.
 - Codex config writes are backed up and snapshotted; `apply_codex_config` fails on invalid TOML instead of overwriting. Keep `clear_sugt_codex_overrides` byte-for-byte revertible.
 - `auth.json` is merged, not replaced: preserve existing ChatGPT login fields. Declare third-party capabilities (`requires_openai_auth`, `capabilities.remote_compaction`, `web_search`) so the client does not request hosted tools the gateway cannot serve.
+- Codex `model` uses a `sugt-` alias so a same-named upstream model does not inherit the official `code_mode_only` / `use_responses_lite` tool protocol. Keep it switchable via `SUGT_CODEX_MODEL_ALIAS=off` and idempotent. Do **not** generate `model_catalog_json` from scratch — the published workaround exports the real catalog first, and a minimal hand-written catalog would replace the client's entire built-in model list.
 - SUGT never writes or removes `mcp_servers`. `read_mcp_resource` / `list_mcp_resources` are client-side tools and only work when the client has its own MCP servers configured; say so in the preview and SOUL brief.
 
 ## Verification

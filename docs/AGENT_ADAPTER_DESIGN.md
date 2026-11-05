@@ -88,7 +88,7 @@ pub struct ConfigCapability {
 | id | 配置载体 | 会写的字段 | skill 目录（个人 / 项目） | 回滚 |
 | --- | --- | --- | --- | --- |
 | `claude-code` | 用户环境变量 | `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`；清 `ANTHROPIC_API_KEY`、`CLAUDE_CODE_API_KEY` | `~/.claude/skills` / `.claude/skills` | unset 变量 |
-| `codex` | `~/.codex/config.toml` + `auth.json` | `model_provider`、`model`、`openai_base_url`、`preferred_auth_method`、`cli_auth_credentials_store`、`web_search`（仅原本缺失时注入）、`model_providers.sugt.{name,base_url,wire_api,requires_openai_auth,capabilities.{remote_compaction,external_web_access}}`、`auth.json.{auth_mode,OPENAI_API_KEY}`；**不写** `mcp_servers` | `~/.agents/skills` / `.agents/skills` | 快照还原 |
+| `codex` | `~/.codex/config.toml` + `auth.json` | `model_provider`、`model`（`sugt-` 别名，可用 `SUGT_CODEX_MODEL_ALIAS=off` 关闭）、`openai_base_url`、`preferred_auth_method`、`cli_auth_credentials_store`、`web_search`（仅原本缺失时注入）、`model_providers.sugt.{name,base_url,wire_api,requires_openai_auth,capabilities.{remote_compaction,external_web_access}}`、`auth.json.{auth_mode,OPENAI_API_KEY}`；**不写** `mcp_servers`、`model_catalog_json` | `~/.agents/skills` / `.agents/skills` | 快照还原 |
 | `opencode` | 通用 env（配置文件仅探测不写） | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `~/.config/opencode/skills`、`~/.opencode/skills`、`~/.claude/skills`、`~/.agents/skills` / `.opencode/skills` | unset |
 | `qwen-code` / `aider` / `gemini-cli` | 通用 env | `OPENAI_*` 变体 | `~/.agents/skills`（gemini 另 `~/.gemini/skills`）等 | unset |
 | `cursor` / `vscode` | 通用 env | `OPENAI_API_KEY`、`OPENAI_BASE_URL` | `.cursor/skills`、`~/.cursor/skills`、`.agents/skills` 等 | unset |
@@ -165,7 +165,7 @@ pub struct TakeoverPreview {
 
 **本轮未做（P2）**：skill 版本/来源/增量更新、首次启动主动弹框（目前仍需用户主动点「发现」并输入 ≥2 字符）、LAN 开关与接管写入联动、为 6 个客户端实现各自官方配置文件的完整读写。能力矩阵对这些客户端明确标注为「仅写环境变量、配置文件仅探测不写」，不虚报。
 
-**真实验证边界**：未执行 `tauri build` 完整打包、桌面 UI 手工交互、真实上游 LLM 请求；新增的两个只读命令未做端到端 UI 点击验证（仅类型检查与构建通过）。
+**真实验证边界**：当时未执行 `tauri build` 完整打包（第四轮已补 `--no-bundle` 编译，见 `docs/TEST_REPORT.md` 14.6）、桌面 UI 手工交互、真实上游 LLM 请求；新增的两个只读命令未做端到端 UI 点击验证（仅类型检查与构建通过）。
 
 ## 12. 追加：Codex 工具协议兼容（同日第三轮）
 
@@ -176,3 +176,14 @@ pub struct TakeoverPreview {
 3. **能力矩阵**：`writable_fields` 同步新增上述字段；预览会自动列出新增写入项，并对 Codex 增加一条 MCP 归属告警。
 
 协议层修复与完整验证见 `docs/TEST_REPORT.md` 第 13 节；端到端用例位于 `src-tauri/tests/codex_gateway_e2e.rs`。
+
+## 13. 追加：模型别名与可观测降级（同日第四轮）
+
+第三轮遗留的 `code_mode_only` 风险，公开资料给出的两种做法分别是「导出真实模型目录后改 `use_responses_lite` / `tool_mode`」与「给模型换一个不与官方同名的 slug」。前者需要 `model_catalog_json` 指向完整目录：凭空生成一份只含单个模型的 catalog 会**替换客户端整个内置模型目录**，风险大于收益，因此不采用。
+
+1. **别名 fallback**：`codex_config.rs` 把 `model` 写成 `sugt-<原模型名>`。网关侧本来就用 `upstream_model` 覆盖请求里的 `model`，所以别名只影响客户端看到的 slug，不改变上游路由。别名幂等，且可通过 `SUGT_CODEX_MODEL_ALIAS=off` 关闭——各 Codex 版本对未知 slug 的处理不完全一致，必须留出一行回退口。
+2. **可观测降级**：请求中无法透传给 Chat 上游的 Responses 字段（`previous_response_id`、`store`、`reasoning`、`include` 等）写入 `ChatToolMeta.dropped_request_fields` 并打日志，真机抓包时能直接看到「客户端要了什么、网关降级了什么」。`max_output_tokens` 则真正映射成 `max_tokens`，不再被静默丢弃。
+3. **预览与 SOUL 同步**：接入预览新增一条别名告警，中英能力摘要同步说明别名用途与关闭方式；`agent_adapters.rs` 的 `note` 标注别名行为。
+4. **未做**：不生成 `model_catalog_json`、不改写客户端内置模型目录、不实现服务端会话存储（`previous_response_id` 仍依赖客户端重放完整 `input`）。若真机复测仍见 `get_project_overview` / `compress_output` unsupported call，按公开方案导出真实目录并把 `use_responses_lite` 改为 `false` 是下一步，而不是继续猜测字段。
+
+协议层异常分片兜底与验证见 `docs/TEST_REPORT.md` 第 14 节。
