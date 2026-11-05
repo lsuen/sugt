@@ -421,7 +421,8 @@ impl GatewayState {
     }
 }
 
-fn build_router(state: GatewayState) -> Router {
+/// 构造网关路由。公开给集成测试，用真实 HTTP 请求验证 /v1/responses 全链路。
+pub fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/models", get(models))

@@ -37,7 +37,7 @@ sha2 = "0.10"
 tauri = { version = "2.9.1", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-shell = "2.3.1"
 thiserror = "1.0"
-tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal", "sync", "net"] }
 toml = "0.8"
 toml_edit = "0.20"
 tower = "0.5"
