@@ -1,5 +1,6 @@
 use crate::config::AppPaths;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct StorePaths {
@@ -82,4 +83,77 @@ pub fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
         std::fs::remove_dir_all(path)?;
     }
     Ok(())
+}
+
+/// 原子替换目录：先完整拷到临时目录，再切换；失败时回滚旧目录。
+///
+/// 替代「先 remove_dir_all 再 copy」，避免拷贝中途失败把用户已有技能删光。
+pub fn replace_dir(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("目标目录没有父目录：{}", dest.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let name = dest
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("dir");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging = parent.join(format!(".{name}.sugt-stage-{stamp}"));
+    let backup = parent.join(format!(".{name}.sugt-old-{stamp}"));
+
+    remove_dir_if_exists(&staging)?;
+    copy_dir_all(source, &staging)?;
+
+    let had_old = dest.exists();
+    if had_old {
+        remove_dir_if_exists(&backup)?;
+        std::fs::rename(dest, &backup)?;
+    }
+    if let Err(err) = std::fs::rename(&staging, dest) {
+        if had_old {
+            let _ = std::fs::rename(&backup, dest);
+        }
+        let _ = remove_dir_if_exists(&staging);
+        return Err(err.into());
+    }
+    if had_old {
+        let _ = remove_dir_if_exists(&backup);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_dir_swaps_content_without_leaving_temp_dirs() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("sugt-replace-{stamp}"));
+        let source = root.join("source");
+        let dest = root.join("skills").join("my-skill");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(source.join("fresh.txt"), "fresh").unwrap();
+        std::fs::write(dest.join("old.txt"), "old").unwrap();
+
+        replace_dir(&source, &dest).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dest.join("fresh.txt")).unwrap(), "fresh");
+        assert!(!dest.join("old.txt").exists(), "旧内容应被完整替换");
+        let leftovers: Vec<String> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("sugt-stage") || n.contains("sugt-old"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时目录未清理：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

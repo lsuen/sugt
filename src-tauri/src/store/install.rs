@@ -2,7 +2,7 @@ use crate::store::catalog::{
     find_skill_source, load_mounted_meta, load_staged_meta, mount_flags, parse_skill_md,
     save_mounted_meta, save_staged_meta, SkillCatalogItem, StagedSkillRecord, MountedSkillRecord,
 };
-use crate::store::paths::{copy_dir_all, remove_dir_if_exists, StorePaths};
+use crate::store::paths::{remove_dir_if_exists, replace_dir, StorePaths};
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,8 +32,7 @@ pub fn install_skill(store_paths: &StorePaths, skill_id: &str) -> Result<SkillCa
         .ok_or_else(|| anyhow!("未找到技能：{}", skill_id))?;
     let source = find_skill_source(store_paths, &item.repo_id, &item.relative_path)?;
     let dest = store_paths.staged_skill_dir(skill_id);
-    remove_dir_if_exists(&dest)?;
-    copy_dir_all(&source, &dest)?;
+    replace_dir(&source, &dest)?;
 
     let (name, _) = parse_skill_md(&source.join("SKILL.md")).unwrap_or((item.name.clone(), None));
     let mut staged = load_staged_meta(store_paths)?;
@@ -208,10 +207,7 @@ pub fn repo_skill_count(store_paths: &StorePaths, repo_id: &str) -> usize {
 
 pub(crate) fn mount_to_dir(source: &PathBuf, skills_dir: &PathBuf, folder_name: &str) -> Result<()> {
     std::fs::create_dir_all(skills_dir)?;
-    let dest = skills_dir.join(folder_name);
-    remove_dir_if_exists(&dest)?;
-    copy_dir_all(source, &dest)?;
-    Ok(())
+    replace_dir(source, &skills_dir.join(folder_name))
 }
 
 pub(crate) fn folder_name_from_record(record: &StagedSkillRecord) -> String {

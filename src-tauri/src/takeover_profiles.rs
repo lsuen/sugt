@@ -637,7 +637,7 @@ pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
         crate::clients::set_user_env_public(&name, &value)?;
     }
     if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
-        let _ = crate::codex_config::apply_codex_config(config);
+        crate::codex_config::apply_codex_config(config)?;
     }
     // 注入 SUGT 自带 skill，让 Agent 能调用 sugt-cli
     let targets = crate::sugt_skill::inject_targets_for_profile(&profile);
@@ -655,7 +655,7 @@ pub fn release_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Resul
         let _ = crate::clients::unset_user_env_public(name);
     }
     if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
-        let _ = crate::codex_config::clear_sugt_codex_overrides(config);
+        crate::codex_config::clear_sugt_codex_overrides(config)?;
     }
     // 清理 SUGT skill（仅在没有任何其他 active 接管时才完全移除）
     let still_active = config

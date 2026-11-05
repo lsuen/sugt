@@ -166,7 +166,7 @@ pub fn install_for(config_dir: &Path, config: &AppConfig, target: &str) -> Resul
             for (name, value) in codex_vars(&listen_url, &key) {
                 set_user_env(&name, &value)?;
             }
-            let _ = crate::codex_config::apply_codex_config(config);
+            crate::codex_config::apply_codex_config(config)?;
         }
         "all" => {
             // 兼容旧调用：也只装 Claude。Codex 需显式 target=codex
@@ -176,10 +176,11 @@ pub fn install_for(config_dir: &Path, config: &AppConfig, target: &str) -> Resul
             }
         }
         _ => {
-            clear_claude_conflicts()?;
-            for (name, value) in claude_vars(&listen_url, &key) {
-                set_user_env(&name, &value)?;
-            }
+            // 静默当成 Claude 会误写用户的环境变量，必须显式报错。
+            return Err(anyhow::anyhow!(
+                "未知的接管目标「{}」；可用值：claude / codex / all",
+                target
+            ));
         }
     }
     Ok(status(config_dir, config))
@@ -253,7 +254,7 @@ pub fn uninstall_for(
         }
     }
     if matches!(target.as_str(), "codex" | "all") {
-        let _ = crate::codex_config::clear_sugt_codex_overrides(config);
+        crate::codex_config::clear_sugt_codex_overrides(config)?;
     }
     Ok(status(config_dir, config))
 }
@@ -282,7 +283,7 @@ pub fn write_launch_scripts(paths: &AppPaths, config: &AppConfig) -> Result<()> 
         &client_api_key(config),
     )?;
     if config.codex_takeover_enabled {
-        let _ = crate::codex_config::apply_codex_config(config);
+        crate::codex_config::apply_codex_config(config)?;
     }
     Ok(())
 }

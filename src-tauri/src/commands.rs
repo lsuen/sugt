@@ -129,7 +129,10 @@ impl AppRuntime {
         self.gateway.replace_config(config.clone()).await;
         // 仅在用户显式启用 Codex 接管时写入 ~/.codex；避免每次保存配置误伤 OpenCode
         if config.codex_takeover_enabled {
-            let _ = crate::codex_config::apply_codex_config(&config);
+            // SUGT 自身配置已保存，不因 Codex 端失败回滚；但必须留下可见日志。
+            if let Err(err) = crate::codex_config::apply_codex_config(&config) {
+                tracing::warn!(error = %err, "Codex 配置写入失败（不影响 SUGT 配置保存）");
+            }
         }
         Ok(())
     }

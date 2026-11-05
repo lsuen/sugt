@@ -1,17 +1,91 @@
 use crate::model::AppConfig;
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// SUGT 在 Codex config.toml 里托管的 provider id（可安全增删，不碰用户其它 provider）。
 pub const SUGT_PROVIDER_ID: &str = "sugt";
 
+/// 接管前的原文件快照；释放时按它还原，而不是靠猜字段。
+const STATE_FILE: &str = "sugt-takeover-state.json";
+const BACKUP_DIR: &str = "sugt-backup";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TakeoverState {
+    /// 接管前 config.toml 全文；None 表示原本不存在
+    config_before: Option<String>,
+    /// SUGT 写入后的全文，用于判断用户是否自行改过
+    config_after: String,
+    auth_before: Option<String>,
+    auth_after: String,
+}
+
+fn state_path(codex_dir: &Path) -> PathBuf {
+    codex_dir.join(STATE_FILE)
+}
+
+fn read_state(codex_dir: &Path) -> Option<TakeoverState> {
+    let raw = std::fs::read_to_string(state_path(codex_dir)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// TOML 解析失败必须报错，绝不退化成空表后覆盖用户文件。
+fn parse_table(raw: &str, path: &Path) -> Result<toml::Table> {
+    toml::from_str(raw).with_context(|| {
+        format!(
+            "{} 不是合法 TOML，已中止写入以免覆盖原文件",
+            path.display()
+        )
+    })
+}
+
+/// 原子写：先写临时文件再 rename，避免半截文件。
+fn atomic_write(path: &Path, content: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config");
+    let tmp = path.with_file_name(format!("{name}.sugt-tmp"));
+    std::fs::write(&tmp, content)
+        .with_context(|| format!("无法写入临时文件 {}", tmp.display()))?;
+    #[cfg(windows)]
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("无法替换 {}", path.display()))?;
+    }
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("无法替换 {}", path.display()))?;
+    Ok(())
+}
+
+/// 首次接管前把用户原始文件留一份带时间戳的备份，快照丢失时仍可人工恢复。
+fn backup_once(codex_dir: &Path, config_path: &Path, auth_path: &Path) -> Result<()> {
+    let dir = codex_dir.join(BACKUP_DIR);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("无法创建备份目录 {}", dir.display()))?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if config_path.is_file() {
+        std::fs::copy(config_path, dir.join(format!("config-{stamp}.toml")))?;
+    }
+    if auth_path.is_file() {
+        std::fs::copy(auth_path, dir.join(format!("auth-{stamp}.json")))?;
+    }
+    Ok(())
+}
+
 /// 写入/合并 Codex 官方配置（新版 CLI 以 config.toml + model_providers 为准）。
+///
+/// 写前备份并快照原文件；连续调用不会覆盖最初的快照；解析失败直接中止。
 pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
     let codex_dir = codex_home_dir()?;
     std::fs::create_dir_all(&codex_dir)
         .with_context(|| format!("无法创建 Codex 目录 {}", codex_dir.display()))?;
     let config_path = codex_dir.join("config.toml");
+    let auth_path = codex_dir.join("auth.json");
     let openai_base = format!("{}/v1", config.listen_url());
     let public_model = config
         .providers
@@ -20,11 +94,14 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
         .map(|p| p.public_model_id())
         .unwrap_or_else(|| "gpt-4".to_string());
 
-    let mut table: toml::Table = if config_path.exists() {
-        let raw = std::fs::read_to_string(&config_path)?;
-        toml::from_str(&raw).unwrap_or_default()
+    let before_raw = if config_path.is_file() {
+        Some(std::fs::read_to_string(&config_path)?)
     } else {
-        toml::Table::new()
+        None
+    };
+    let mut table = match &before_raw {
+        Some(raw) => parse_table(raw, &config_path)?,
+        None => toml::Table::new(),
     };
 
     // 新版 Codex：model_provider + wire_api=responses（与 cc-switch 同类做法）
@@ -33,14 +110,10 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
         toml::Value::String(SUGT_PROVIDER_ID.to_string()),
     );
     table.insert("model".to_string(), toml::Value::String(public_model));
-
-    // 兼容旧字段：部分旧 CLI 仍读 openai_base_url
     table.insert(
         "openai_base_url".to_string(),
         toml::Value::String(openai_base.clone()),
     );
-
-    // 避免 ChatGPT 登录与 API Key 冲突导致 401
     table.insert(
         "preferred_auth_method".to_string(),
         toml::Value::String("apikey".to_string()),
@@ -51,19 +124,12 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
     );
 
     let mut provider = toml::Table::new();
-    provider.insert(
-        "name".to_string(),
-        toml::Value::String("SUGT".to_string()),
-    );
-    provider.insert(
-        "base_url".to_string(),
-        toml::Value::String(openai_base),
-    );
+    provider.insert("name".to_string(), toml::Value::String("SUGT".to_string()));
+    provider.insert("base_url".to_string(), toml::Value::String(openai_base));
     provider.insert(
         "wire_api".to_string(),
         toml::Value::String("responses".to_string()),
     );
-
     let mut providers = match table.get("model_providers").and_then(|v| v.as_table()) {
         Some(existing) => existing.clone(),
         None => toml::Table::new(),
@@ -75,56 +141,136 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
     );
 
     let serialized = toml::to_string_pretty(&table).context("Codex config 序列化失败")?;
-    std::fs::write(&config_path, serialized)
-        .with_context(|| format!("无法写入 {}", config_path.display()))?;
+    let auth_after = codex_auth_content(&crate::clients::client_api_key_for_config(config))?;
+    let auth_before = if auth_path.is_file() {
+        Some(std::fs::read_to_string(&auth_path)?)
+    } else {
+        None
+    };
 
-    write_codex_auth(&codex_dir, &crate::clients::client_api_key_for_config(config))?;
+    let previous = read_state(&codex_dir);
+    if previous.is_none() {
+        backup_once(&codex_dir, &config_path, &auth_path)?;
+    }
+    let state = TakeoverState {
+        config_before: previous
+            .as_ref()
+            .map(|s| s.config_before.clone())
+            .unwrap_or_else(|| before_raw.clone()),
+        config_after: serialized.clone(),
+        auth_before: previous
+            .as_ref()
+            .map(|s| s.auth_before.clone())
+            .unwrap_or_else(|| auth_before.clone()),
+        auth_after: auth_after.clone(),
+    };
 
+    atomic_write(&config_path, &serialized)?;
+    atomic_write(&auth_path, &auth_after)?;
+    atomic_write(
+        &state_path(&codex_dir),
+        &serde_json::to_string_pretty(&state)?,
+    )?;
     Ok(config_path)
 }
 
-/// 取消 Codex 接管：撤掉 SUGT provider / 指向本机网关的覆盖，不动其它用户配置。
+/// 取消 Codex 接管：优先按快照逐字节还原；用户改过文件时只定点清理 SUGT 字段。
 pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
-    let config_path = codex_home_dir()?.join("config.toml");
-    if !config_path.exists() {
+    let codex_dir = codex_home_dir()?;
+    let config_path = codex_dir.join("config.toml");
+    let auth_path = codex_dir.join("auth.json");
+
+    if let Some(state) = read_state(&codex_dir) {
+        let current_config = if config_path.is_file() {
+            Some(std::fs::read_to_string(&config_path)?)
+        } else {
+            None
+        };
+        if current_config.as_deref() == Some(state.config_after.as_str()) {
+            // 用户没有自行改动，整文件还原到接管前状态最可靠。
+            match &state.config_before {
+                Some(raw) => atomic_write(&config_path, raw)?,
+                None => remove_file_if_exists(&config_path)?,
+            }
+        } else {
+            prune_sugt_fields(&config_path, config)?;
+        }
+
+        let current_auth = if auth_path.is_file() {
+            Some(std::fs::read_to_string(&auth_path)?)
+        } else {
+            None
+        };
+        if current_auth.as_deref() == Some(state.auth_after.as_str()) {
+            match &state.auth_before {
+                Some(raw) => atomic_write(&auth_path, raw)?,
+                None => remove_file_if_exists(&auth_path)?,
+            }
+        }
+        // 用户自行改过 auth.json 时保留其改动，不猜测、不覆盖。
+        remove_file_if_exists(&state_path(&codex_dir))?;
         return Ok(());
     }
-    let raw = std::fs::read_to_string(&config_path)?;
-    let mut table: toml::Table = toml::from_str(&raw).unwrap_or_default();
+
+    // 兼容旧版本（没有快照）：沿用定点清理。
+    prune_sugt_fields(&config_path, config)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("无法删除 {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// 只移除 SUGT 写入的字段，保留用户其它配置；用 toml_edit 保留注释与原格式。
+fn prune_sugt_fields(config_path: &Path, config: &AppConfig) -> Result<()> {
+    if !config_path.is_file() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(config_path)?;
+    let mut doc: toml_edit::Document = raw.parse().with_context(|| {
+        format!(
+            "{} 不是合法 TOML，已中止写入以免覆盖原文件",
+            config_path.display()
+        )
+    })?;
     let expected = format!("{}/v1", config.listen_url());
     let mut changed = false;
 
-    if table
+    if doc
         .get("model_provider")
         .and_then(|v| v.as_str())
-        .is_some_and(|s| s == SUGT_PROVIDER_ID)
+        == Some(SUGT_PROVIDER_ID)
     {
-        table.remove("model_provider");
+        doc.remove("model_provider");
         changed = true;
     }
-
-    if let Some(providers) = table.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
-        if providers.remove(SUGT_PROVIDER_ID).is_some() {
-            changed = true;
-        }
-        if providers.is_empty() {
-            table.remove("model_providers");
+    {
+        if let Some(providers) = doc
+            .get_mut("model_providers")
+            .and_then(|v| v.as_table_mut())
+        {
+            if providers.remove(SUGT_PROVIDER_ID).is_some() {
+                changed = true;
+            }
         }
     }
-
-    let current = table
-        .get("openai_base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if current == expected || current.contains("127.0.0.1") || current.contains("localhost") {
-        table.remove("openai_base_url");
+    if doc
+        .get("model_providers")
+        .and_then(|v| v.as_table())
+        .is_some_and(|t| t.is_empty())
+    {
+        doc.remove("model_providers");
+    }
+    // 只删 SUGT 自己写进去的那个值；不再按 contains("localhost") 误删用户的本地服务。
+    if doc.get("openai_base_url").and_then(|v| v.as_str()) == Some(expected.as_str()) {
+        doc.remove("openai_base_url");
         changed = true;
     }
-
     if changed {
-        let serialized = toml::to_string_pretty(&table).context("Codex config 序列化失败")?;
-        std::fs::write(&config_path, serialized)
-            .with_context(|| format!("无法写入 {}", config_path.display()))?;
+        atomic_write(config_path, &doc.to_string())?;
     }
     Ok(())
 }
@@ -146,7 +292,7 @@ pub fn read_openai_base_url() -> Result<Option<String>> {
         return Ok(None);
     }
     let raw = std::fs::read_to_string(&config_path)?;
-    let table: toml::Table = toml::from_str(&raw).unwrap_or_default();
+    let table: toml::Table = parse_table(&raw, &config_path)?;
     // 优先读新版 model_providers.sugt.base_url
     if let Some(base) = table
         .get("model_providers")
@@ -241,16 +387,13 @@ pub fn codex_config_status(config: &AppConfig) -> CodexConfigStatus {
     }
 }
 
-/// 写入 auth.json，供新版 Codex 读取 API Key（本地网关 dummy key 即可）。
-fn write_codex_auth(codex_dir: &Path, api_key: &str) -> Result<()> {
-    let auth_path = codex_dir.join("auth.json");
+/// 生成 auth.json 内容，供新版 Codex 读取 API Key（本地网关 dummy key 即可）。
+fn codex_auth_content(api_key: &str) -> Result<String> {
     let value = serde_json::json!({
         "auth_mode": "apikey",
         "OPENAI_API_KEY": api_key,
     });
-    std::fs::write(&auth_path, serde_json::to_string_pretty(&value)?)
-        .with_context(|| format!("无法写入 {}", auth_path.display()))?;
-    Ok(())
+    Ok(serde_json::to_string_pretty(&value)?)
 }
 
 #[cfg(test)]
@@ -297,7 +440,7 @@ mod tests {
 
     #[test]
     fn codex_home_default_under_dot_codex() {
-        let _guard = CODEX_HOME_LOCK.lock().unwrap();
+        let _guard = CODEX_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("CODEX_HOME");
         std::env::remove_var("CODEX_HOME");
         let dir = codex_home_dir().unwrap();
@@ -310,41 +453,137 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_writes_model_providers_responses() {
-        let _guard = CODEX_HOME_LOCK.lock().unwrap();
+    /// 所有会写 CODEX_HOME 的测试共用互斥锁，并在结束时恢复环境变量。
+    fn with_codex_home<F: FnOnce(&Path)>(body: F) {
+        let _guard = CODEX_HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os("CODEX_HOME");
         let home = temp_codex_home();
         std::env::set_var("CODEX_HOME", &home);
-        let config = sample_config(18787);
-        let path = apply_codex_config(&config).unwrap();
-        assert!(path.exists());
-        let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("model_provider"));
-        assert!(raw.contains("sugt"));
-        assert!(raw.contains("wire_api"));
-        assert!(raw.contains("responses"));
-        assert!(raw.contains("127.0.0.1:18787/v1"));
-        let status = codex_config_status(&config);
-        assert!(status.matches_gateway);
-        assert_eq!(status.model_provider.as_deref(), Some("sugt"));
-        assert_eq!(status.wire_api.as_deref(), Some("responses"));
-        clear_sugt_codex_overrides(&config).unwrap();
-        let raw2 = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw2.contains("[model_providers.sugt]") && !raw2.contains("model_providers.sugt"));
-        // toml pretty may nest differently; ensure sugt provider gone
-        let table: toml::Table = toml::from_str(&raw2).unwrap();
-        assert!(table.get("model_provider").is_none());
-        let providers = table
-            .get("model_providers")
-            .and_then(|v| v.as_table())
-            .cloned()
-            .unwrap_or_default();
-        assert!(!providers.contains_key("sugt"));
+        body(&home);
         match previous {
             Some(value) => std::env::set_var("CODEX_HOME", value),
             None => std::env::remove_var("CODEX_HOME"),
         }
         let _ = std::fs::remove_dir_all(&home);
     }
+
+    #[test]
+    fn apply_then_release_restores_original_files_byte_for_byte() {
+        with_codex_home(|home| {
+            let config = sample_config(18787);
+            let config_path = home.join("config.toml");
+            let auth_path = home.join("auth.json");
+            let original_config = concat!(
+                "# 我自己的 Codex 配置\n",
+                "model = \"o3\"\n",
+                "\n[model_providers.mine]\n",
+                "name = \"Mine\"\n",
+                "base_url = \"https://mine.example/v1\"\n",
+                "wire_api = \"chat\"\n",
+            );
+            let original_auth = "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"keep\":1}}\n";
+            std::fs::write(&config_path, original_config).unwrap();
+            std::fs::write(&auth_path, original_auth).unwrap();
+
+            let path = apply_codex_config(&config).unwrap();
+            assert_eq!(path, config_path);
+            let taken = std::fs::read_to_string(&config_path).unwrap();
+            assert!(taken.contains("wire_api = \"responses\""));
+            assert!(taken.contains("model_providers.mine"), "用户自己的 provider 不能被删");
+            assert!(codex_config_status(&config).matches_gateway);
+
+            clear_sugt_codex_overrides(&config).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&config_path).unwrap(),
+                original_config,
+                "释放后 config.toml 必须逐字节还原"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&auth_path).unwrap(),
+                original_auth,
+                "释放后 auth.json 必须逐字节还原"
+            );
+            assert!(!home.join(STATE_FILE).exists(), "释放后应清理快照");
+            assert!(home.join(BACKUP_DIR).is_dir(), "首次接管应留下备份");
+        });
+    }
+
+    #[test]
+    fn invalid_toml_is_never_overwritten() {
+        with_codex_home(|home| {
+            let config = sample_config(18788);
+            let path = home.join("config.toml");
+            let broken = "this is = not = valid toml\n[[\n";
+            std::fs::write(&path, broken).unwrap();
+
+            let err = apply_codex_config(&config).unwrap_err();
+            assert!(
+                err.to_string().contains("不是合法 TOML"),
+                "实际错误：{err}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+            assert!(!home.join("auth.json").exists(), "失败时不能留下半个写入");
+        });
+    }
+
+    #[test]
+    fn second_apply_keeps_the_original_snapshot() {
+        with_codex_home(|home| {
+            let config = sample_config(18789);
+            let path = home.join("config.toml");
+            let original = "model = \"o3\"\n";
+            std::fs::write(&path, original).unwrap();
+            apply_codex_config(&config).unwrap();
+            apply_codex_config(&config).unwrap();
+            clear_sugt_codex_overrides(&config).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                original,
+                "连续接管不能把快照覆盖成 SUGT 自己的版本"
+            );
+        });
+    }
+
+    #[test]
+    fn release_preserves_edits_made_by_the_user() {
+        with_codex_home(|home| {
+            let config = sample_config(18790);
+            let path = home.join("config.toml");
+            std::fs::write(&path, "model = \"o3\"\n").unwrap();
+            apply_codex_config(&config).unwrap();
+
+            let mut edited = std::fs::read_to_string(&path).unwrap();
+            edited.push_str("\n# 用户手动新增\n");
+            std::fs::write(&path, &edited).unwrap();
+
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(after.contains("# 用户手动新增"), "用户改动必须保留");
+            assert!(!after.contains("model_provider = "), "SUGT 字段仍应清理");
+            assert!(!after.contains("[model_providers.sugt]"));
+        });
+    }
+
+    #[test]
+    fn legacy_prune_does_not_delete_unrelated_local_service() {
+        with_codex_home(|home| {
+            let config = sample_config(18791);
+            let path = home.join("config.toml");
+            let raw = concat!(
+                "openai_base_url = \"http://127.0.0.1:9999/my-own-service/v1\"\n",
+                "model_provider = \"sugt\"\n",
+                "\n[model_providers.sugt]\n",
+                "name = \"SUGT\"\n",
+            );
+            std::fs::write(&path, raw).unwrap();
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("my-own-service"),
+                "不能再按 contains(localhost) 误删用户的本地服务地址"
+            );
+            assert!(!after.contains("model_provider = "));
+        });
+    }
+
 }
