@@ -292,13 +292,26 @@ fn lifts_additional_tools_into_chat_tools() {
     let v: Value = serde_json::from_slice(&out).unwrap();
     let tools = v["tools"].as_array().expect("tools present");
     assert_eq!(tools.len(), 2);
-    assert!(meta.custom_names.contains("exec"));
+    // namespace 展平：避免多个 namespace 下的同名工具互相覆盖，也避免上游不认 namespace 类型。
+    // 回程必须还原成客户端原始名，否则 Codex 会返回 unsupported call。
+    assert!(meta.custom_names.contains("functions__exec"));
+    assert_eq!(
+        meta.flattened_names
+            .get("functions__exec")
+            .map(String::as_str),
+        Some("exec")
+    );
+    assert_eq!(restore_tool_name("functions__exec", &meta), "exec");
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t.pointer("/function/name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.contains(&"exec"));
-    assert!(names.contains(&"get_weather"));
+    assert!(names.contains(&"functions__exec"));
+    assert!(names.contains(&"functions__get_weather"));
+    assert_eq!(
+        restore_tool_name("functions__get_weather", &meta),
+        "get_weather"
+    );
     // additional_tools 不得变成 user 文本消息
     let msgs = v["messages"].as_array().unwrap();
     assert!(msgs.iter().all(|m| {

@@ -7,10 +7,12 @@
 //! 与文件内单元测试的区别：这里跨模块调用公开转换入口，验证字段在完整链路上不丢失。
 
 use bytes::Bytes;
+use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 use sugt_lib::anthropic_adapter::{anthropic_to_openai, openai_json_to_anthropic_json};
 use sugt_lib::openai_responses_adapter::{
-    chat_json_to_responses_body_with_meta, responses_to_chat_with_meta, ChatToolMeta,
+    chat_json_to_responses_body, chat_json_to_responses_body_with_meta,
+    chat_sse_to_responses_sse_with_meta, responses_to_chat_with_meta, ChatToolMeta,
 };
 
 fn parse(bytes: &Bytes) -> Value {
@@ -310,4 +312,269 @@ fn codex_freeform_tool_name_restores_custom_tool_call_without_meta() {
     assert_eq!(call["name"], "shell");
     assert_eq!(call["call_id"], "call_9");
     assert!(output.iter().all(|item| item["type"] != "function_call"));
+}
+
+// ===== Codex 真实工具链路回归：以下用例先以失败态记录问题，再逐项修复 =====
+
+fn user_message(text: &str) -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": text }]
+    })
+}
+
+fn chat_tool_response(call_id: &str, name: &str, arguments: &str) -> String {
+    json!({
+        "id": "chatcmpl-tool",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": Value::Null,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": arguments }
+                }]
+            }
+        }],
+        "usage": { "prompt_tokens": 8, "completion_tokens": 4 }
+    })
+    .to_string()
+}
+
+#[test]
+fn codex_shell_command_stays_a_function_call() {
+    // OpenAI Codex prompting guide 明确 shell_command 是 function 工具；
+    // 被判成 freeform custom_tool_call 时客户端解析失败并返回 aborted。
+    let request = json!({
+        "model": "gpt-5-codex",
+        "input": [user_message("列出当前目录")],
+        "tools": [{
+            "type": "function",
+            "name": "shell_command",
+            "description": "Runs a shell command and returns its output.",
+            "parameters": {
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"]
+            }
+        }],
+        "stream": false
+    });
+    let (chat_bytes, meta) =
+        responses_to_chat_with_meta(&json_bytes(&request), "upstream-model").unwrap();
+    let chat = parse(&chat_bytes);
+    assert_eq!(
+        chat.pointer("/tools/0/function/name")
+            .and_then(Value::as_str),
+        Some("shell_command")
+    );
+
+    let responses = parse(
+        &chat_json_to_responses_body_with_meta(
+            &chat_tool_response("call_shell", "shell_command", "{\"command\":\"ls\"}"),
+            "upstream-model",
+            &meta,
+        )
+        .unwrap(),
+    );
+    let output = responses["output"].as_array().expect("output 应为数组");
+    let call = output
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .unwrap_or_else(|| panic!("shell_command 应还原为 function_call，实际 output={output:?}"));
+    assert_eq!(call["name"], "shell_command");
+    assert_eq!(call["arguments"], "{\"command\":\"ls\"}");
+    assert!(output.iter().all(|item| item["type"] != "custom_tool_call"));
+}
+
+#[test]
+fn namespace_tools_are_flattened_and_restored() {
+    // Codex 把 MCP / 内置工具挂在 namespace 下；Chat 上游只认平铺 function。
+    let request = json!({
+        "input": [user_message("执行命令")],
+        "tools": [{
+            "type": "namespace",
+            "name": "functions",
+            "tools": [{
+                "type": "function",
+                "name": "exec_command",
+                "description": "run a command",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "cmd": { "type": "string" } }
+                }
+            }]
+        }],
+        "stream": false
+    });
+    let (chat_bytes, meta) =
+        responses_to_chat_with_meta(&json_bytes(&request), "upstream-model").unwrap();
+    let chat = parse(&chat_bytes);
+    let flat = chat
+        .pointer("/tools/0/function/name")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("namespace 工具未展平：{chat}"));
+    assert_eq!(flat, "functions__exec_command");
+
+    let responses = parse(
+        &chat_json_to_responses_body_with_meta(
+            &chat_tool_response("call_ns", flat, "{\"cmd\":\"pwd\"}"),
+            "upstream-model",
+            &meta,
+        )
+        .unwrap(),
+    );
+    let output = responses["output"].as_array().expect("output 应为数组");
+    let call = output
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .unwrap_or_else(|| panic!("展平工具回程未生成 function_call：{output:?}"));
+    assert_eq!(
+        call["name"], "exec_command",
+        "回程必须还原客户端认识的原始工具名，而不是把展平名直接丢给 Codex"
+    );
+}
+
+#[test]
+fn mcp_style_tool_output_stays_structured() {
+    // MCP 动态工具以非标准 item 类型出现；转成 user 纯文本会直接断掉工具闭环。
+    let request = json!({
+        "input": [
+            user_message("读取文件"),
+            {
+                "type": "mcp_call",
+                "call_id": "call_mcp_1",
+                "name": "read_file",
+                "arguments": "{\"path\":\"a.txt\"}"
+            },
+            {
+                "type": "mcp_call_output",
+                "call_id": "call_mcp_1",
+                "output": "文件内容"
+            }
+        ],
+        "stream": false
+    });
+    let (chat_bytes, _) =
+        responses_to_chat_with_meta(&json_bytes(&request), "upstream-model").unwrap();
+    let chat = parse(&chat_bytes);
+    let messages = chat["messages"].as_array().expect("messages 应为数组");
+    let tool_result = messages
+        .iter()
+        .find(|m| m["role"] == "tool" && m["tool_call_id"] == "call_mcp_1")
+        .unwrap_or_else(|| panic!("工具结果被降级成纯文本：{messages:?}"));
+    assert_eq!(tool_result["content"], "文件内容");
+    assert!(messages.iter().any(|m| m["role"] == "assistant"));
+}
+
+#[test]
+fn orphan_tool_calls_get_a_matching_tool_result() {
+    // 历史回放里缺 function_call_output 时，Chat 上游会因孤儿 tool_calls 报 400。
+    let request = json!({
+        "input": [
+            user_message("继续"),
+            {
+                "type": "function_call",
+                "call_id": "call_orphan",
+                "name": "get_weather",
+                "arguments": "{}"
+            }
+        ],
+        "stream": false
+    });
+    let (chat_bytes, _) =
+        responses_to_chat_with_meta(&json_bytes(&request), "upstream-model").unwrap();
+    let chat = parse(&chat_bytes);
+    let messages = chat["messages"].as_array().expect("messages 应为数组");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "tool" && m["tool_call_id"] == "call_orphan"),
+        "孤儿 tool_call 未补齐配对结果：{messages:?}"
+    );
+}
+
+#[test]
+fn unknown_tool_types_are_degraded_not_dropped() {
+    let request = json!({
+        "input": [user_message("搜索")],
+        "tools": [{
+            "type": "mcp",
+            "name": "mcp__server__search",
+            "description": "search docs",
+            "parameters": {
+                "type": "object",
+                "properties": { "query": { "type": "string" } }
+            }
+        }],
+        "stream": false
+    });
+    let (chat_bytes, _) =
+        responses_to_chat_with_meta(&json_bytes(&request), "upstream-model").unwrap();
+    let chat = parse(&chat_bytes);
+    assert_eq!(
+        chat.pointer("/tools/0/function/name")
+            .and_then(Value::as_str),
+        Some("mcp__server__search"),
+        "带 schema 的未识别工具应降级为 function，而不是静默丢弃：{chat}"
+    );
+}
+
+#[test]
+fn non_stream_response_has_codex_required_fields() {
+    let chat_response = json!({
+        "id": "chatcmpl-x",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "ok" }
+        }]
+    })
+    .to_string();
+    let responses = parse(&chat_json_to_responses_body(&chat_response, "m").unwrap());
+    assert!(responses.get("created_at").is_some(), "缺 created_at");
+    assert_eq!(responses["error"], Value::Null, "error 应为 null");
+    assert_eq!(
+        responses["incomplete_details"],
+        Value::Null,
+        "incomplete_details 应为 null"
+    );
+    assert_eq!(responses["output_text"], "ok");
+    assert_eq!(responses["store"], false);
+}
+
+#[tokio::test]
+async fn sse_emits_in_progress_and_tool_argument_done() {
+    let first = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"shell_command","arguments":"{\"command\":\"ls\"}"}}]}}]}"#;
+    let upstream = stream::iter(vec![
+        Ok(Bytes::from(format!("{first}\n\n"))),
+        Ok(Bytes::from(
+            r#"data: {"choices":[{"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#.to_string()
+                + "\n\n",
+        )),
+        Ok(Bytes::from("data: [DONE]\n\n")),
+    ]);
+    let mapped =
+        chat_sse_to_responses_sse_with_meta(upstream, "m".to_string(), ChatToolMeta::default(), 0);
+    let chunks: Vec<Bytes> = mapped.map(|r| r.expect("io")).collect().await;
+    let all = chunks
+        .iter()
+        .map(|b| String::from_utf8_lossy(b))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        all.contains("event: response.in_progress"),
+        "缺 in_progress：{all}"
+    );
+    assert!(
+        all.contains("event: response.function_call_arguments.done"),
+        "缺 arguments.done：{all}"
+    );
+    assert!(
+        all.contains("\"type\":\"function_call\""),
+        "工具项丢失：{all}"
+    );
+    assert!(all.contains("response.completed"), "缺终态事件：{all}");
 }

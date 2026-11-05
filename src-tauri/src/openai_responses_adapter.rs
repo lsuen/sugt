@@ -15,6 +15,11 @@ const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 pub struct ChatToolMeta {
     /// 由 Responses `custom` 转成的 Chat function 名（如 exec / apply_patch）
     pub custom_names: HashSet<String>,
+    /// namespace 展平后的上游工具名 → 客户端原始工具名，用于回程还原
+    pub flattened_names: HashMap<String, String>,
+    /// 本次请求是否携带工具声明。有声明时严格按声明判定工具形态，
+    /// 避免把官方 function 工具（如 shell_command）误判成 freeform custom。
+    pub has_tool_declarations: bool,
 }
 
 /// 将 OpenAI Responses 请求转为 Chat Completions（Codex → 仅 Chat 的上游）。
@@ -53,6 +58,8 @@ pub fn responses_to_chat_with_meta(
     }
     // 上游（OpenRouter/Kilo 等）会拒空 function.name；Codex 会话/插件偶发带入
     sanitize_chat_messages_tool_calls(&mut messages);
+    // 历史回放里缺 function_call_output 时，Chat 上游会因孤儿 tool_calls 直接 400。
+    repair_orphan_tool_calls(&mut messages);
 
     let stream = value
         .get("stream")
@@ -147,75 +154,143 @@ pub fn responses_to_chat_with_meta(
 fn collect_chat_tools_from_responses(body: &Value, meta: &mut ChatToolMeta) -> Vec<Value> {
     let mut chat_tools = Vec::new();
     let mut seen = HashSet::new();
+    let mut declared = false;
 
     if let Some(tools) = body.get("tools").and_then(|v| v.as_array()) {
+        declared = !tools.is_empty();
         for tool in tools {
-            push_response_tool_as_chat(tool, &mut chat_tools, &mut seen, meta);
+            push_response_tool_as_chat(tool, None, &mut chat_tools, &mut seen, meta);
         }
     }
     if let Some(input) = body.get("input") {
-        collect_input_declared_tools(input, &mut chat_tools, &mut seen, meta);
+        declared |= collect_input_declared_tools(input, &mut chat_tools, &mut seen, meta);
     }
+    meta.has_tool_declarations = declared;
     chat_tools
 }
 
+/// 返回 input 里是否出现过工具声明载体（additional_tools / tool_search_output）。
 fn collect_input_declared_tools(
     value: &Value,
     chat_tools: &mut Vec<Value>,
     seen: &mut HashSet<String>,
     meta: &mut ChatToolMeta,
-) {
+) -> bool {
     match value {
         Value::Array(items) => {
+            let mut found = false;
             for item in items {
-                collect_input_declared_tools(item, chat_tools, seen, meta);
+                found |= collect_input_declared_tools(item, chat_tools, seen, meta);
             }
+            found
         }
         Value::Object(obj) => {
             let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let mut found = false;
             if matches!(typ, "additional_tools" | "tool_search_output") {
                 if let Some(tools) = obj.get("tools").and_then(|v| v.as_array()) {
                     for tool in tools {
-                        push_response_tool_as_chat(tool, chat_tools, seen, meta);
+                        push_response_tool_as_chat(tool, None, chat_tools, seen, meta);
                     }
+                    found = true;
                 }
             }
             for child in obj.values() {
-                collect_input_declared_tools(child, chat_tools, seen, meta);
+                found |= collect_input_declared_tools(child, chat_tools, seen, meta);
+            }
+            found
+        }
+        _ => false,
+    }
+}
+
+/// namespace 里的工具展平成上游可识别的平铺名字，回程靠元数据还原。
+fn qualified_tool_name(prefix: Option<&str>, name: &str) -> String {
+    match prefix {
+        Some(p) if !p.is_empty() => format!("{p}__{name}"),
+        _ => name.to_string(),
+    }
+}
+
+/// 把展平后的名字写回 Chat function，并登记「上游名 → 客户端原名」映射。
+fn register_tool_name(
+    chat: &mut Value,
+    original: &str,
+    prefix: Option<&str>,
+    meta: &mut ChatToolMeta,
+) -> String {
+    let upstream = qualified_tool_name(prefix, original);
+    if upstream != original {
+        if let Some(function) = chat.pointer_mut("/function") {
+            if let Some(obj) = function.as_object_mut() {
+                obj.insert("name".to_string(), json!(upstream.clone()));
             }
         }
-        _ => {}
+        meta.flattened_names
+            .insert(upstream.clone(), original.to_string());
     }
+    upstream
+}
+
+/// 未识别但带 schema 的工具类型降级为普通 function；hosted 工具通常无 schema，跳过。
+fn fallback_unknown_tool_as_function(
+    tool: &Value,
+    prefix: Option<&str>,
+    meta: &mut ChatToolMeta,
+) -> Option<(String, Value)> {
+    let original = non_empty_name(tool, &["name", "/function/name"])?;
+    let has_schema = tool.get("parameters").is_some()
+        || tool.get("input_schema").is_some()
+        || tool.pointer("/function/parameters").is_some();
+    if !has_schema {
+        return None;
+    }
+    let mut chat = responses_function_to_chat_tool(tool)?;
+    let upstream = register_tool_name(&mut chat, original, prefix, meta);
+    Some((upstream, chat))
 }
 
 fn push_response_tool_as_chat(
     tool: &Value,
+    prefix: Option<&str>,
     chat_tools: &mut Vec<Value>,
     seen: &mut HashSet<String>,
     meta: &mut ChatToolMeta,
 ) {
-    match tool.get("type").and_then(|v| v.as_str()) {
-        Some("function") => {
-            if let Some(chat) = responses_function_to_chat_tool(tool) {
-                let name = chat
+    let typ = tool
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    match typ {
+        "function" => {
+            if let Some(mut chat) = responses_function_to_chat_tool(tool) {
+                let original = chat
                     .pointer("/function/name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let name = register_tool_name(&mut chat, &original, prefix, meta);
                 if !name.is_empty() && seen.insert(name) {
                     chat_tools.push(chat);
                 }
             }
         }
-        Some("custom") => {
-            if let Some((name, chat)) = responses_custom_to_chat_tool(tool) {
+        "custom" => {
+            if let Some((original, mut chat)) = responses_custom_to_chat_tool(tool) {
+                let name = register_tool_name(&mut chat, &original, prefix, meta);
                 if seen.insert(name.clone()) {
                     meta.custom_names.insert(name);
                     chat_tools.push(chat);
                 }
             }
         }
-        Some("namespace") => {
+        "namespace" => {
+            let ns = tool
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("namespace");
+            let child_prefix = qualified_tool_name(prefix, ns);
             let children = tool
                 .get("tools")
                 .or_else(|| tool.get("children"))
@@ -223,11 +298,11 @@ fn push_response_tool_as_chat(
             if let Some(children) = children {
                 for child in children {
                     // Codex 把 exec/apply_patch 等 custom 挂在 functions namespace 下
-                    push_response_tool_as_chat(child, chat_tools, seen, meta);
+                    push_response_tool_as_chat(child, Some(&child_prefix), chat_tools, seen, meta);
                 }
             }
         }
-        Some("tool_search") => {
+        "tool_search" => {
             let name = "tool_search".to_string();
             if seen.insert(name.clone()) {
                 chat_tools.push(json!({
@@ -248,7 +323,23 @@ fn push_response_tool_as_chat(
                 }));
             }
         }
-        _ => {}
+        other => {
+            if let Some((name, chat)) = fallback_unknown_tool_as_function(tool, prefix, meta) {
+                if seen.insert(name.clone()) {
+                    warn!(
+                        tool_type = other,
+                        tool_name = %name,
+                        "未识别的 Responses 工具类型已降级为 function"
+                    );
+                    chat_tools.push(chat);
+                }
+            } else {
+                warn!(
+                    tool_type = other,
+                    "跳过无 schema 的未识别工具类型（hosted 工具由客户端自管）"
+                );
+            }
+        }
     }
 }
 
@@ -345,11 +436,22 @@ fn is_custom_tool_name(name: &str, meta: &ChatToolMeta) -> bool {
     if meta.custom_names.contains(name) {
         return true;
     }
-    // 无 meta 时的兜底：Codex 常见 freeform 工具
-    matches!(
-        name,
-        "exec" | "apply_patch" | "shell_command" | "write_stdin" | "shell"
-    )
+    // 请求里带工具声明时严格按声明判定：没有 custom 声明就不是 freeform 工具。
+    // 否则会把官方 function 工具（shell_command）误判成 custom_tool_call，客户端直接 aborted。
+    if meta.has_tool_declarations {
+        return false;
+    }
+    // 无声明的历史回放兜底：仅保留确实是 freeform 的名字。
+    // shell_command 是 OpenAI 官方 Responses 的 JSON 参数 function 工具，绝不能归入此处。
+    matches!(name, "exec" | "apply_patch" | "write_stdin" | "shell")
+}
+
+/// 回程把 namespace 展平名还原成客户端认识的原始工具名。
+fn restore_tool_name(name: &str, meta: &ChatToolMeta) -> String {
+    meta.flattened_names
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
 }
 
 pub use crate::responses_upstream::{
@@ -360,6 +462,14 @@ pub use crate::responses_upstream::{
 fn output_value_to_string(output: &Value) -> String {
     match output {
         Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn arguments_value_to_string(arguments: &Value) -> String {
+    match arguments {
+        Value::String(s) => s.clone(),
+        Value::Null => "{}".to_string(),
         other => other.to_string(),
     }
 }
@@ -463,7 +573,42 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
             }
             // 工具声明载体：已在 collect_chat_tools 提起，不能当成 user 文本
             "item_reference" | "reasoning" | "additional_tools" | "tool_search_output" => None,
-            _ => Some(json!({ "role": "user", "content": item.to_string() })),
+            other => {
+                // MCP / local_shell / tool_search 等非标准工具 item 必须保住 call_id ↔ output 结构，
+                // 否则 Chat 上游只看到一段 JSON 文本，工具闭环直接断掉。
+                let call_id = item.get("call_id").and_then(|v| v.as_str());
+                if let Some(call_id) = call_id {
+                    if let Some(output) = item.get("output").or_else(|| item.get("result")) {
+                        return Some(json!({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": output_value_to_string(output),
+                        }));
+                    }
+                }
+                if let Some(name) = non_empty_name(item, &["name", "/function/name"]) {
+                    let call_id = call_id.unwrap_or("call");
+                    let arguments = item
+                        .get("arguments")
+                        .or_else(|| item.get("input"))
+                        .map(arguments_value_to_string)
+                        .unwrap_or_else(|| "{}".to_string());
+                    return Some(json!({
+                        "role": "assistant",
+                        "content": Value::Null,
+                        "tool_calls": [{
+                            "id": call_id,
+                            "type": "function",
+                            "function": { "name": name, "arguments": arguments },
+                        }],
+                    }));
+                }
+                warn!(
+                    item_type = %other,
+                    "未识别的 Responses input item 保留为 user 文本"
+                );
+                Some(json!({ "role": "user", "content": item.to_string() }))
+            }
         }
     } else if let Some(obj) = item.as_object() {
         // 无 type 的 Chat 形消息：保留 tool_calls，稍后统一净化空 name
@@ -578,6 +723,44 @@ fn sanitize_chat_messages_tool_calls(messages: &mut Vec<Value>) {
             dropped,
             patched, "sanitized empty tool_calls.function.name before upstream chat"
         );
+    }
+}
+
+/// 补齐历史里缺少 function_call_output 的 tool_calls。
+/// Chat Completions 要求每个 assistant tool_call 紧跟一条 role=tool 结果，
+/// 缺失时上游（Kimi / DeepSeek / OpenRouter 等）会直接 400 或中断整轮。
+fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
+    let mut answered: HashSet<String> = HashSet::new();
+    for msg in messages.iter() {
+        if let Some(id) = msg.get("tool_call_id").and_then(Value::as_str) {
+            answered.insert(id.to_string());
+        }
+    }
+    let mut repaired: Vec<Value> = Vec::with_capacity(messages.len());
+    let mut added = 0u32;
+    for msg in messages.drain(..) {
+        let calls = msg
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        repaired.push(msg);
+        for call in calls {
+            let id = call.get("id").and_then(Value::as_str).unwrap_or("");
+            if id.is_empty() || !answered.insert(id.to_string()) {
+                continue;
+            }
+            repaired.push(json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": "(工具结果缺失，已由 SUGT 补齐配对)",
+            }));
+            added += 1;
+        }
+    }
+    *messages = repaired;
+    if added > 0 {
+        warn!(added, "paired orphan tool_calls before upstream chat");
     }
 }
 
@@ -696,11 +879,12 @@ pub fn chat_json_to_responses_body_with_meta(
                 .and_then(|v| v.as_str())
                 .unwrap_or("call")
                 .to_string();
-            let name = call
+            let upstream_name = call
                 .pointer("/function/name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("function")
-                .to_string();
+                .unwrap_or("function");
+            // 判定用展平后的名字（meta 里存的就是发给上游的名字），输出还原成客户端原名。
+            let name = restore_tool_name(upstream_name, meta);
             let arguments = call
                 .pointer("/function/arguments")
                 .map(|v| match v {
@@ -708,7 +892,7 @@ pub fn chat_json_to_responses_body_with_meta(
                     other => other.to_string(),
                 })
                 .unwrap_or_else(|| "{}".to_string());
-            if is_custom_tool_name(&name, meta) {
+            if is_custom_tool_name(upstream_name, meta) {
                 output.push(json!({
                     "type": "custom_tool_call",
                     "id": format!("ctc_{call_id}_{idx}"),
@@ -744,13 +928,33 @@ pub fn chat_json_to_responses_body_with_meta(
         .get("usage")
         .map(normalize_chat_usage_to_responses)
         .unwrap_or_else(|| responses_usage(0, 0));
+    let output_text = output
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Responses 客户端会反序列化完整响应对象，缺失的顶层字段会让整条响应解析失败。
     let out = json!({
         "id": id,
         "object": "response",
+        "created_at": created_at,
         "status": "completed",
         "model": model,
         "output": output,
+        "output_text": output_text,
         "usage": usage,
+        "parallel_tool_calls": false,
+        "tool_choice": "auto",
+        "store": false,
+        "incomplete_details": Value::Null,
+        "error": Value::Null,
     });
     Ok(Bytes::from(serde_json::to_vec(&out)?))
 }
@@ -852,6 +1056,21 @@ fn created_event(state: &SseMapState) -> String {
         }
     });
     format_sse_data(&created)
+}
+
+fn in_progress_event(state: &SseMapState) -> String {
+    let event = json!({
+        "type": "response.in_progress",
+        "sequence_number": state.sequence,
+        "response": {
+            "id": state.response_id,
+            "object": "response",
+            "status": "in_progress",
+            "model": state.model,
+            "output": [],
+        }
+    });
+    format_sse_data(&event)
 }
 
 fn message_prelude_events(state: &mut SseMapState) -> String {
@@ -1077,12 +1296,13 @@ fn finalize_events(state: &mut SseMapState) -> String {
     let mut tools: Vec<&ToolCallAccum> = state.tool_calls.values().collect();
     tools.sort_by_key(|t| t.output_index);
     for tool in tools {
+        let client_name = restore_tool_name(&tool.name, &state.tool_meta);
         let item = if tool.is_custom {
             json!({
                 "type": "custom_tool_call",
                 "id": format!("ctc_{}", tool.id),
                 "call_id": tool.id,
-                "name": tool.name,
+                "name": client_name,
                 "input": custom_tool_input_from_chat_arguments(&tool.arguments),
                 "status": "completed",
             })
@@ -1091,11 +1311,31 @@ fn finalize_events(state: &mut SseMapState) -> String {
                 "type": "function_call",
                 "id": format!("fc_{}", tool.id),
                 "call_id": tool.id,
-                "name": tool.name,
+                "name": client_name,
                 "arguments": tool.arguments,
                 "status": "completed",
             })
         };
+        // 客户端靠 done 事件确认参数流结束；只发 delta 会让工具调用一直挂在 in_progress。
+        let arguments_done = if tool.is_custom {
+            json!({
+                "type": "response.custom_tool_call_input.done",
+                "sequence_number": state.sequence,
+                "item_id": format!("ctc_{}", tool.id),
+                "output_index": tool.output_index,
+                "input": custom_tool_input_from_chat_arguments(&tool.arguments),
+            })
+        } else {
+            json!({
+                "type": "response.function_call_arguments.done",
+                "sequence_number": state.sequence,
+                "item_id": format!("fc_{}", tool.id),
+                "output_index": tool.output_index,
+                "arguments": tool.arguments,
+            })
+        };
+        state.sequence += 1;
+        out += &format_sse_data(&arguments_done);
         let item_done = json!({
             "type": "response.output_item.done",
             "sequence_number": state.sequence,
@@ -1142,7 +1382,12 @@ fn failed_events(state: &mut SseMapState, message: &str) -> String {
             "object": "response",
             "status": "failed",
             "model": state.model,
-            "error": { "message": message },
+            "error": {
+                "message": message,
+                "type": "upstream_error",
+                "code": Value::Null,
+                "param": Value::Null,
+            },
         }
     });
     format_sse_data(&failed) + "data: [DONE]\n\n"
@@ -1233,7 +1478,6 @@ fn extract_reasoning_delta(parsed: &Value) -> Option<String> {
     None
 }
 
-
 fn upstream_error_message(parsed: &Value) -> Option<String> {
     if let Some(err) = parsed.get("error") {
         if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
@@ -1315,12 +1559,13 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
         if !entry.item_added && !entry.name.is_empty() {
             entry.item_added = true;
             state.sequence += 1;
+            let client_name = restore_tool_name(&entry.name, &state.tool_meta);
             let item = if entry.is_custom {
                 json!({
                     "type": "custom_tool_call",
                     "id": format!("ctc_{}", entry.id),
                     "call_id": entry.id,
-                    "name": entry.name,
+                    "name": client_name,
                     "input": "",
                     "status": "in_progress",
                 })
@@ -1329,7 +1574,7 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
                     "type": "function_call",
                     "id": format!("fc_{}", entry.id),
                     "call_id": entry.id,
-                    "name": entry.name,
+                    "name": client_name,
                     "arguments": "",
                     "status": "in_progress",
                 })
@@ -1607,6 +1852,9 @@ pub fn chat_sse_to_responses_sse_with_meta(
         state.created_sent = true;
         state.sequence = 1;
         yield Ok(Bytes::from(created_event(&state)));
+        state.sequence = 2;
+        yield Ok(Bytes::from(in_progress_event(&state)));
+        state.sequence = 3;
 
         pin_mut!(input);
         while let Some(chunk) = input.next().await {
