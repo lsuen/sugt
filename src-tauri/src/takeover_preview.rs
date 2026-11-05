@@ -118,6 +118,10 @@ pub fn build_preview(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
             "MCP server 由客户端自己的 [mcp_servers] 配置管理，SUGT 不代管；read_mcp_resource 等工具能否使用取决于客户端侧是否已启动 server"
                 .to_string(),
         );
+        warnings.push(
+            "客户端看到的模型名会加 sugt- 前缀，避免继承官方模型的 code_mode_only / use_responses_lite 工具协议；若这版 Codex 对未知 slug 表现异常，设环境变量 SUGT_CODEX_MODEL_ALIAS=off 后重新接入即可回退"
+                .to_string(),
+        );
         if let Some(raw) = capability.config_path.and_then(agent_adapters::expand_home) {
             if raw.is_file() {
                 if let Ok(content) = std::fs::read_to_string(&raw) {
@@ -181,7 +185,7 @@ pub fn capability_brief(zh: bool) -> String {
         concat!(
             "本机 Agent 接入能力（程序已声明，不要凭记忆猜路径）：\n",
             "- Claude Code：只写环境变量 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN；技能目录 ~/.claude/skills\n",
-            "- Codex：写 ~/.codex/config.toml（model_providers.sugt、wire_api=responses、requires_openai_auth=false、本地压缩、web_search=disabled）与 auth.json（保留原登录态）；不改 mcp_servers，MCP server 由客户端自管；技能目录 ~/.agents/skills；接管前有备份，取消可还原\n",
+            "- Codex：写 ~/.codex/config.toml（model_providers.sugt、wire_api=responses、requires_openai_auth=false、本地压缩、web_search=disabled、模型别名 sugt- 前缀）与 auth.json（保留原登录态）；别名避免客户端把上游模型当官方模型套用 code_mode_only 工具协议，可用环境变量 SUGT_CODEX_MODEL_ALIAS=off 关闭；不改 mcp_servers，MCP server 由客户端自管；技能目录 ~/.agents/skills；接管前有备份，取消可还原\n",
             "- OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code：只写 OPENAI_* 环境变量，技能目录按各自候选探测\n",
             "接入与取消接管必须由用户在「客户端」页点按钮完成；你只解释影响并给建议，绝不自己改这些客户端配置文件。"
         )
@@ -190,7 +194,7 @@ pub fn capability_brief(zh: bool) -> String {
         concat!(
             "Local agent takeover capabilities (declared by the app; do not guess paths):\n",
             "- Claude Code: user env ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN only; skills at ~/.claude/skills\n",
-            "- Codex: writes ~/.codex/config.toml (model_providers.sugt, wire_api=responses, requires_openai_auth=false, local compaction, web_search=disabled) and auth.json while preserving existing login fields; never touches mcp_servers, MCP servers are managed by the client; skills at ~/.agents/skills; backed up before takeover and revertable\n",
+            "- Codex: writes ~/.codex/config.toml (model_providers.sugt, wire_api=responses, requires_openai_auth=false, local compaction, web_search=disabled, sugt- model alias) and auth.json while preserving existing login fields; the alias prevents the client from inheriting the official code_mode_only tool protocol (disable with SUGT_CODEX_MODEL_ALIAS=off); never touches mcp_servers, MCP servers are managed by the client; skills at ~/.agents/skills; backed up before takeover and revertable\n",
             "- OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code: OPENAI_* env vars only; skill directories are probed per client\n",
             "Takeover and release are performed only when the user clicks the buttons on the Clients tab. Explain the impact and advise, but never edit those client config files yourself."
         )

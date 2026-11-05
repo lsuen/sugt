@@ -80,6 +80,28 @@ fn backup_once(codex_dir: &Path, config_path: &Path, auth_path: &Path) -> Result
     Ok(())
 }
 
+/// 给客户端看到的模型名加 SUGT 前缀，避免同名官方 slug 继承 code_mode_only /
+/// use_responses_lite 工具协议（CC Switch #8676、Codex #31870 均指向这个根因）。
+/// 网关侧本来就用 upstream_model 覆盖请求里的 model，所以别名不影响上游路由。
+/// 各 Codex 版本对未知 slug 的处理不完全一致，因此保留关闭开关作为回退口。
+fn codex_model_alias_enabled() -> bool {
+    !std::env::var("SUGT_CODEX_MODEL_ALIAS")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "off" | "0" | "false" | "disabled"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn codex_model_alias(public_model: &str, enabled: bool) -> String {
+    if !enabled || public_model.starts_with("sugt-") {
+        return public_model.to_string();
+    }
+    format!("sugt-{}", public_model)
+}
+
 /// 写入/合并 Codex 官方配置（新版 CLI 以 config.toml + model_providers 为准）。
 ///
 /// 写前备份并快照原文件；连续调用不会覆盖最初的快照；解析失败直接中止。
@@ -112,7 +134,14 @@ pub fn apply_codex_config(config: &AppConfig) -> Result<PathBuf> {
         "model_provider".to_string(),
         toml::Value::String(SUGT_PROVIDER_ID.to_string()),
     );
-    table.insert("model".to_string(), toml::Value::String(public_model));
+    // 别名只影响客户端看到的 slug；网关始终用 upstream_model 覆盖请求里的 model。
+    table.insert(
+        "model".to_string(),
+        toml::Value::String(codex_model_alias(
+            &public_model,
+            codex_model_alias_enabled(),
+        )),
+    );
     table.insert(
         "openai_base_url".to_string(),
         toml::Value::String(openai_base.clone()),
@@ -626,6 +655,21 @@ mod tests {
     }
 
     #[test]
+    fn model_alias_is_idempotent_and_switchable() {
+        assert_eq!(codex_model_alias("gpt-5.6-sol", true), "sugt-gpt-5.6-sol");
+        assert_eq!(
+            codex_model_alias("gpt-5.6-sol", false),
+            "gpt-5.6-sol",
+            "开关关闭时必须保持上游原名"
+        );
+        assert_eq!(
+            codex_model_alias("sugt-gpt-5.6-sol", true),
+            "sugt-gpt-5.6-sol",
+            "重复接管不能叠前缀"
+        );
+    }
+
+    #[test]
     fn takeover_declares_third_party_capabilities_and_keeps_login_fields() {
         with_codex_home(|home| {
             let config = sample_config(18792);
@@ -655,6 +699,12 @@ mod tests {
             );
             assert_eq!(capabilities["external_web_access"].as_bool(), Some(false));
             assert_eq!(table["web_search"].as_str(), Some("disabled"));
+            assert!(
+                table["model"]
+                    .as_str()
+                    .is_some_and(|model| model.starts_with("sugt-")),
+                "客户端看到的模型名必须避开官方 slug 以规避 code_mode_only"
+            );
             assert!(
                 table.get("mcp_servers").is_some(),
                 "接管绝不能碰用户自己的 MCP server 配置"

@@ -124,7 +124,7 @@ static ADAPTERS: &[AgentAdapter] = &[
             ],
             clear_vars: &[],
             revertable: true,
-            note: "写 config.toml 与 auth.json（保留原有登录态字段）；声明第三方能力与本地压缩；不改 mcp_servers，MCP server 由客户端自行配置；接管前备份并快照，释放时完整还原",
+            note: "写 config.toml 与 auth.json（保留原有登录态字段）；model 使用 sugt- 前缀别名，可用 SUGT_CODEX_MODEL_ALIAS=off 关闭；声明第三方能力与本地压缩；不改 mcp_servers，MCP server 由客户端自行配置；接管前备份并快照，释放时完整还原",
         },
     },
     AgentAdapter {
