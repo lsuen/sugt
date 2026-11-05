@@ -366,3 +366,81 @@ async fn codex_streaming_tool_call_keeps_the_full_event_sequence() {
     assert!(stream.contains("event: response.completed"), "流：{stream}");
     assert!(stream.contains("data: [DONE]"), "流：{stream}");
 }
+
+/// 上游返回纯文本（非法 JSON）时，网关过去会伪装成一条空 completed 回复，
+/// 客户端以为模型「正常地什么都没说」，工具闭环静默断掉且无从排查。
+async fn malformed_upstream_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        "upstream returned plain text, not json",
+    )
+}
+
+#[tokio::test]
+async fn malformed_upstream_body_is_reported_as_responses_failure() {
+    let upstream = Router::new().route("/*path", any(malformed_upstream_handler));
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("异常 mock 上游可绑定");
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream)
+            .await
+            .expect("异常 mock 上游运行失败");
+    });
+
+    let mut provider = ProviderConfig::new(
+        "mock",
+        "openai",
+        format!("http://{upstream_addr}/v1"),
+        "test-key",
+        "mock-model",
+    );
+    provider.id = "e2e-malformed".into();
+    provider.protocol = ProviderProtocol::OpenAi;
+    let config = AppConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        providers: vec![provider],
+        active_provider_id: Some("e2e-malformed".into()),
+        ..Default::default()
+    };
+    let gateway = build_router(GatewayState::new(config, None).expect("网关状态可构造"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("网关可绑定");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, gateway).await.expect("网关运行失败");
+    });
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/responses"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(
+            json!({
+                "model": "gpt-5-codex",
+                "input": "hi",
+                "stream": false
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("网关必须响应 /v1/responses");
+    let text = response.text().await.expect("响应体可读");
+    let value: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("失败响应也必须是合法 Responses JSON：{err}，原文：{text}"));
+    assert_eq!(
+        value["status"], "failed",
+        "异常上游不能伪装成 completed：{value}"
+    );
+    assert!(
+        value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("非法 JSON")),
+        "失败原因必须可诊断：{value}"
+    );
+}
