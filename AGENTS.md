@@ -48,6 +48,13 @@ SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefe
 - Prefer existing Axum routes and config.toml hot-reload patterns.
 - Codex takeover uses `model_providers.sugt` + `wire_api=responses` (see `codex_config.rs`).
 
+## Agent adapters (single source of truth)
+
+- All agent fingerprints, config capabilities and skill directory candidates live in `src-tauri/src/agent_adapters.rs`. Never hardcode `~/.claude/skills` etc. in a second module; derive from `by_id()` / `skill_dir_candidates()`.
+- `ConfigCapability.writable_fields` describes what SUGT **actually writes**, not what a client officially supports. Do not claim config-file writes for clients that only use env vars.
+- `preview_takeover` / `list_agent_capabilities` are read-only. Before applying a takeover, show the impact preview. SOUL gets the capability brief through `system_prompt` only — it must never write client config files itself.
+- Codex config writes are backed up and snapshotted; `apply_codex_config` fails on invalid TOML instead of overwriting. Keep `clear_sugt_codex_overrides` byte-for-byte revertible.
+
 ## Verification
 
 ```bash

@@ -141,3 +141,47 @@ d1aacf8 chore: 忽略本地探测与调试残留文件
 P0 / P1 / P2 的既定目标全部落地，工作区干净；**所有实际跑过的验证均通过**：`npm test`、`npm run build`、`cargo check`、`cargo test` 全量、`rustfmt --check`（新文件）。共修复 12 个问题，其中 4 个是测试执行过程中新暴露的（远程包背景解析、集成测试目标编译、测试竞态、系统级测试隔离）。
 
 需要注意的只有第 9 节列出的边界：生产代码的深度拆分未做、1 个系统级测试被 ignore、Windows CI 与桌面打包尚未在本机验证、提交尚未推送。
+
+## 12. 追加验收：AgentAdapter 能力矩阵（同日第二轮）
+
+本轮按 `docs/AGENT_ADAPTER_DESIGN.md` 落地 P0 与 P1，工作区干净，所有提交均为本地原子提交、未 push。
+
+本轮 5 个原子提交：`d1ed7a4`（设计文档）、`8371e9a`（目录收敛）、`52f8791`（写入安全）、`45de787`（能力矩阵与预览）、以及本报告自身的提交。
+
+| 验证命令 | 真实结果 |
+| --- | --- |
+| `npm test` | ✅ 主题契约 12 源 × 38 token、导入冒烟 8 例、`tsc --noEmit` 双配置零错误 |
+| `npm run build` | ✅ 双入口 `dist/index.html` + `dist/overlay.html`，构建 1m37s |
+| `cargo test`（全量） | ✅ lib **191 passed / 0 failed / 1 ignored**；`dev-platform-module` 8 passed；`protocol_roundtrip` 5 passed。合计 **204 passed** |
+| `rustfmt --check`（本轮新增 Rust 文件） | ✅ `FORMAT OK` |
+
+### 本轮新增并修复的问题
+
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| 1 | skill 目录在四个模块各写一份，且自带 skill 会为任意自定义路径凭空建目录 | 新建 `agent_adapters.rs` 作为唯一真相源，四处改为派生；注入只取已存在目录，兜底仅一个 canonical 路径 |
+| 2 | `hub.rs` 找不到技能目录时把整个 Agent 静默丢弃 | 返回 canonical 路径并标记 `detected=false` |
+| 3 | `codex_config.rs` 的 TOML 解析失败退化成空表并整文件覆盖用户配置 | 解析失败即报错中止，绝不覆盖 |
+| 4 | Codex 接管无备份、释放只还原 3 个字段，`model` / `preferred_auth_method` / `auth.json` 丢失 | 接管前备份 + 原文快照，释放逐字节还原；连续接管不覆盖最初快照 |
+| 5 | 用户接管期间自己改了 config.toml，释放时会被整文件重写并丢掉注释 | 改用 `toml_edit` 保留注释与格式，只定点清理 SUGT 字段 |
+| 6 | `contains("localhost")` 会误删用户自己的本地服务地址 | 只删 SUGT 写入的那个值 |
+| 7 | 技能安装 / 挂载「先删后拷」，中途失败会丢数据 | `replace_dir` 原子目录替换 + 失败回滚 |
+| 8 | `install_for` 未知 target 静默装成 Claude | 显式报错 |
+| 9 | Codex 写入错误被 `let _ =` 吞掉，用户以为接管成功 | 向 UI 传播，配置保存路径记入日志 |
+| 10 | 接入前无法知道会改什么；各 Agent 能力无声明 | 新增能力矩阵 + `preview_takeover` 只读预览（含冲突、非法 TOML、目录缺失告警），前端行内展示 |
+
+### 测试过程中的真实失败与迭代
+
+| 轮次 | 真实输出 | 处理 |
+| --- | --- | --- |
+| 目录收敛脚本第 1 次 | `AssertionError: expected 16 fingerprint path blocks, got 0` | 缩进按 12 空格重写正则，文件未被写入（先确认真实状态再重跑） |
+| Codex 安全测试第 1 次 | `4 passed; 2 failed`：`用户改动必须保留` + `PoisonError` | 根因是 `toml::to_string_pretty` 重写丢注释 → 改用 `toml_edit 0.20` 保留格式；测试锁改用 `into_inner()` 容忍中毒，避免连锁误报 |
+| `toml_edit::DocumentMut` 编译 | `E0425 cannot find type DocumentMut` | 0.20 的类型名是 `Document`，按编译器提示改用 `Document`，复跑 6 passed |
+
+### 边界（如实列出）
+
+1. **P1 按保守定义交付**：SOUL 获得的是注入 `system_prompt` 的能力矩阵（中英两份），能解释影响并明确「绝不自己改客户端配置」；**没有新增 `me_*` 命令、没有扩大 shell 权限**。原因是 `me_agent.rs` 无工具调用机制，注册命令它也无法调用。
+2. 新增的 `preview_takeover` / `list_agent_capabilities` 只做了编译、类型检查与构建验证，**未做桌面 UI 端到端点击验证**。
+3. 能力矩阵对 OpenCode / Qwen Code / Aider / Gemini CLI / Cursor / VS Code 明确标注「只写环境变量、配置文件仅探测不写」，**未实现各自官方配置读写**；外部 Agent Skills 资料仅作参考，路径需按本机实际版本核验。
+4. P2 未做：skill 版本/增量更新、首次启动主动弹框（`discover_agents` 仍需输入 ≥2 字符）、LAN 与接管写入联动。
+5. 未执行：`tauri build` 完整打包、桌面 UI 手工交互、真实上游 LLM 请求；`cargo fmt --check` 全仓仍有既有差异，本轮只格式化新增文件。
