@@ -645,3 +645,18 @@ end byte index 500 is not a char boundary; it is inside '中' (bytes 498..501 of
 - **文档**：`AGENTS.md`（Release & packaging 规范）、`README.md` / `README.zh.md`（删个人情况段落、修 brew 命令、补固定资产名表）、`docs/AGENT_ADAPTER_DESIGN.md`、`docs/孙测测/scripts/check_version_consistency.py`、`docs/孙测测/MAP.md`、本报告、`.gitignore`（孙测测目录入库）
 - **远端仓库**：`lsuen/homebrew-sugt` 的 `Casks/sugt.rb` 与 `README.md`
 - **lsuenweb**：`src/projects.rs`、`src/main.rs`、`assets/projects.toml`、`assets/templates/download.html`、`AGENTS.md`、`docs/MAP.md`
+
+### 18.6 首跑暴露的两项缺陷（push 后真实 CI 证据，非本地推断）
+
+推送 `v1.1.8` tag 后，GitHub Actions 首跑给出了本节证据；按上线闭环要求，逐条复验后重建 tag 再跑。
+
+| ID / 标题 | 复现 / 触发条件 | 预期 | 实际（已确认证据） | 现象与影响 | 根因 | 修复后结果与验收 | 优先级 / 级别 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| DEF-018 `npm ci` 在 macOS 报 EBADPLATFORM，release 两条 mac 腿全挂 | 在 `macos-15` / `macos-15-intel` 上执行 `npm ci` | 三腿构建成功、publish 上传 5 个资产 | run `42246105220`：job `127988623937` 日志 `npm error notsup Unsupported platform for @tauri-apps/cli-win32-x64-msvc@2.9.0: wanted {"os":"win32","cpu":"x64"} (current: {"os":"darwin","cpu":"arm64"})`；两个 mac job `completed failure`，`publish: completed skipped`，`gh release view v1.1.8` 返回 `release not found`。Windows job `completed success`，上传 22,455,666 字节 artifact | 用户拿不到任何 macOS 包，Release 根本不会创建；Windows 产物孤立 | `package.json` 把 Windows 专用二进制 `@tauri-apps/cli-win32-x64-msvc` 写成**根 devDependency**；lockfile 顶层对应条目无 `optional: true`，npm 视为必需依赖做 os/cpu 校验。`@tauri-apps/cli` 自身已通过 optionalDependencies 按平台安装二进制，重复声明有害 | 删除该 devDependency，`npm install --package-lock-only` 重生成 lock（diff 仅 2 处：根声明 + 顶层非 optional 条目，嵌套 2.11.2 optional 条目保留）；本机 macOS `npm ci` 退出码 0，`npm test` / `npm run build` 通过；重建 tag 后以 CI 三腿结果验收 | P0 / Blocker | 已修复，待 CI 复验 |
+| DEF-019 `ci` 工作流在 Windows 长期假红（3 个用例） | `windows-latest` 上 `cargo test` | 0 failed | run `42246044892`：`212 passed; 3 failed`。① `agent_adapters::tests::expand_home_handles_all_path_forms` 断言 `/tmp/x`，Windows 得 `C:/tmp/x`；② `me_agent::tests::prompt_names_both_directories_and_a_fresh_shell` 断言 `/tmp/sugt-home/projects`；③ `me_agent::tests::shell_runs_in_the_given_directory` 执行 `pwd && cat marker.txt`，PowerShell 的 `pwd` 输出表格且 `&&` 不可用，报 `Os { code: 3, ... The system cannot find the path specified }`。历史 run `40217193771`、`40199740654` 同样失败 | 每次 push 的 CI 都是红的，掩盖真实回归；发布质量门禁失效 | 单元测试硬编码 Unix 路径字面量与 POSIX shell 语法，未考虑 CI 跑在 Windows | 绝对路径改用 `std::env::temp_dir()` 构造；提示词断言改为 `projects_root(&config).display().to_string()`；shell 用例按 `cfg(windows)` 选 `cat marker.txt`（bash 与 PowerShell 均支持），路径回显断言只保留在 Unix。本机 `cargo test` 223+23+4+8+12+2 = **272 passed / 0 failed / 1 ignored**；以修复后 Windows CI run 结果验收 | P1 / Major | 已修复，待 CI 复验 |
+
+**首跑其它结论（已确认）**：Windows 腿 `npx tauri build --bundles nsis` + `cargo build --bin sugt-cli` + 稳定名打包全部成功，说明 Windows 侧路径、NSIS 产物定位、`Compress-Archive` 逻辑正确；`macos-15` 与 `macos-15-intel` runner label 可用，set up job / checkout / setup-node / rust-toolchain 四步都通过，失败点唯一且已定位到 `npm ci`。
+
+**排除项**：不是 macOS runner 缺 Rust target（日志显示 `rustc 1.99.1 host: aarch64-apple-darwin` 正常）；不是 `setup-node` 缓存污染（失败发生在 `npm ci` 首次解析阶段）；不是 Windows 的 `npm ci` 也失败（Windows job 全程 success，证明 optionalDependencies 在 win32 上能正确装到 `cli-win32-x64-msvc@2.11.2`）；不是代码回归（本地 272 用例全绿、前端构建通过）。
+
+**处理结果**：因 `publish` 被跳过、远端 `v1.1.8` Release 不存在，删除并重建同名轻量 tag 到修复后的 HEAD，重新走一次完整的 tag push 自动发布链路，保证 tag 指向的构建号与最终产物一致（避免「构建号不可追溯」）。

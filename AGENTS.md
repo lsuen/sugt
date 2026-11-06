@@ -92,6 +92,8 @@ A working Chat Completions bridge does **not** prove Responses compatibility. Ke
 - **Download site reads `/releases/latest` too.** `lsuenweb` maps kinds to explicit asset names in `assets/projects.toml` and falls back to substring rules. Once names are stable, a new release only replaces same-named assets — neither repository needs a code or link change.
 - **Version lives in six places**, not four: `package.json`, `package-lock.json` (two keys), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`, `src/release-notes.ts`. Run `python3 docs/孙测测/scripts/check_version_consistency.py --root .` before tagging.
 - **Changing an asset name is a five-place edit**: `release.yml` env, this section, both READMEs, the Homebrew cask, and `lsuenweb/assets/projects.toml`. Do it together or not at all.
+- **Never declare platform-specific CLI binaries in devDependencies.** `@tauri-apps/cli` already installs the matching binary via optionalDependencies; pinning `@tauri-apps/cli-win32-x64-msvc` makes `npm ci` fail with `EBADPLATFORM` on macOS/Linux and kills the macOS release legs. Regenerate the lockfile with `npm install --package-lock-only` after any dependency edit.
+- **Unit tests must be OS-neutral.** CI runs `cargo test` on `windows-latest`: build absolute paths from `std::env::temp_dir()` instead of `/tmp/...` literals, and cfg-gate POSIX-only shell commands (PowerShell's `pwd` prints a table, not a path).
 
 ## Verification
 
