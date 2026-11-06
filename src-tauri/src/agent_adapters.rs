@@ -564,6 +564,10 @@ mod tests {
         assert_eq!(expand_home("~"), Some(home.clone()));
         assert_eq!(expand_home(".claude"), Some(home.join(".claude")));
         assert_eq!(expand_home(""), None);
-        assert_eq!(expand_home("/tmp/x"), Some(PathBuf::from("/tmp/x")));
+        // Windows 上 "/tmp/x" 没有盘符，会被当成相对路径回落到主目录；
+        // 因此绝对路径用例必须用当前平台的临时目录构造，不能写 Unix 字面量。
+        let absolute = std::env::temp_dir().join("sugt-absolute-x");
+        let absolute_text = absolute.to_string_lossy().to_string();
+        assert_eq!(expand_home(&absolute_text), Some(absolute));
     }
 }

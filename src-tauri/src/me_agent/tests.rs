@@ -315,23 +315,26 @@ fn project_work_dir_is_under_projects_and_config_is_the_parent() {
 
 #[test]
 fn prompt_names_both_directories_and_a_fresh_shell() {
-    let config = Path::new("/tmp/sugt-home");
+    // 用当前平台的临时目录构造路径：Windows 上 "/tmp/..." 会被渲染成盘符路径，
+    // 断言里写 Unix 字面量必然假红。
+    let config = std::env::temp_dir().join("sugt-home");
     let work = config.join("projects").join("default");
     let prompt = system_prompt(
         true,
         &work,
-        &projects_root(config),
-        config,
+        &projects_root(&config),
+        &config,
         "项目「default」里",
     );
-    assert!(prompt.contains("/tmp/sugt-home/projects"));
+    let expected_projects = projects_root(&config).display().to_string();
+    assert!(prompt.contains(&expected_projects), "{prompt}");
     assert!(prompt.contains("config.toml"));
     assert!(prompt.contains("新的 shell"));
     let english = system_prompt(
         false,
         &work,
-        &projects_root(config),
-        config,
+        &projects_root(&config),
+        &config,
         "project \"default\"",
     );
     assert!(english.contains("new shell"));
@@ -343,14 +346,22 @@ fn shell_runs_in_the_given_directory() {
     fs::write(dir.join("marker.txt"), "here").unwrap();
     // 本用例只验证工作目录与输出，不验证超时；并发跑全量套件时 shell 启动可能被拖慢，
     // 放宽到 15s 避免偶发假红。超时行为由 `shell_times_out_and_stops` 单独覆盖。
-    let outcome = run_shell(&dir, "pwd && cat marker.txt", Duration::from_secs(15), 1000);
+    // PowerShell 的 pwd 输出是表格而非纯路径；bash 与 PowerShell 都支持 cat，
+    // 所以 Windows 上只验证「命令在给定 cwd 里读到 marker」，路径断言留给 Unix。
+    #[cfg(not(windows))]
+    let (command, check_cwd) = ("pwd && cat marker.txt", true);
+    #[cfg(windows)]
+    let (command, check_cwd) = ("cat marker.txt", false);
+    let outcome = run_shell(&dir, command, Duration::from_secs(15), 1000);
     assert_eq!(outcome.exit_code, Some(0), "{}", outcome.output);
     assert!(outcome.output.contains("here"), "{}", outcome.output);
-    let shown = outcome.output.lines().next().unwrap().trim();
-    assert_eq!(
-        Path::new(shown).canonicalize().unwrap(),
-        dir.canonicalize().unwrap()
-    );
+    if check_cwd {
+        let shown = outcome.output.lines().next().unwrap().trim();
+        assert_eq!(
+            Path::new(shown).canonicalize().unwrap(),
+            dir.canonicalize().unwrap()
+        );
+    }
 }
 
 #[test]
