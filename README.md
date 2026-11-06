@@ -1,7 +1,5 @@
 # SUGT — Local AI Gateway & LLM Skill Console
 
-> Heads-up: my day job took a hit recently and I'm looking at delivery gigs for a while — updates will be sparse. The code is fully open source; fork it and play. Stars are few and I'm not chasing traffic — if this helped you and you're willing, a share would mean a lot.
-
 **SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, DashScope, and self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
 
 - **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
@@ -30,6 +28,10 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 ## Features
 
+### Console layout
+
+Seven main tabs: Dashboard, Models, Clients, Skills, SOUL, Rules, Settings. Logs and About moved **into Settings**, which now has six sticky horizontal sub-tabs — **Overview** (first), General, Appearance, Advanced, Logs, About. Overview is read-only and shows service state, LAN sharing status/URLs/key/model, active upstream, endpoints and build id, plus shortcuts into the relevant sub-tabs. Log polling only runs while the Logs sub-tab is visible.
+
 ### Local AI Gateway
 
 - Axum HTTP server embedded in the Tauri process, speaking **OpenAI Chat Completions**, **Anthropic Messages**, and **OpenAI Responses**
@@ -50,7 +52,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 
 ### One-Click Agent Takeover
 
-- Automatically discovers installed agent clients on your machine
+- A single catalog of 22 known clients (Chinese and global: Claude Code, Codex, CodeBuddy, Trae, Lingma, iFlow, Kimi CLI, Qoder, Comate, CodeGeeX, Windsurf, Cline, Copilot CLI, Kiro, Goose, Factory Droid, and more). Discovery lists the whole catalog even with an empty query, so a client does not need local traces before you can pick and take it over. Unconfirmed clients declare env-var capability only, never a fake config-file write
 - Claude Code / OpenCode: environment variables and launch scripts point at the local gateway; releasing the takeover cleans them up
 - **Codex (CLI / Desktop)**: writes `~/.codex/config.toml` with `model_providers.sugt` (`wire_api = "responses"`, `requires_openai_auth = false`, local compaction capabilities) and disables hosted `web_search` when the user has not configured it; `model` gets a `sugt-` alias so the client does not inherit the official `code_mode_only` / `use_responses_lite` tool protocol (disable with `SUGT_CODEX_MODEL_ALIAS=off`); `auth.json` only overrides the auth mode and gateway key, preserving existing login fields. When the upstream has no native Responses API, the gateway bridges to Chat Completions: flattening namespace tools and restoring their names on the way back, classifying function/custom tools by their declarations, preserving structured tool results and pairing orphan calls, and emitting the full SSE lifecycle events. Responses fields that cannot be forwarded are degraded observably; empty/invalid upstream bodies and 4xx replies produce Responses-shaped failure objects instead of fake empty successes; streaming tolerates late tool names, out-of-order indexes, malformed arguments and multibyte characters split across chunks. MCP servers remain owned by the client's own `[mcp_servers]` table; SUGT does not manage them
 
@@ -62,10 +64,13 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - Long shell output is trimmed (head + tail kept) so context stays usable on larger projects
 - Reasons with **your** configured upstream model through the local gateway; paste screenshots when the model supports vision
 - Separate chat history per working place; stop a run mid-flight; hand heavier work to Claude Code or Codex
+- **Management intents are read-only routing**: su is given live facts (known clients, taken-over clients, installed skills, repos) and can suggest one of Clients / Skills / Takeover preview / Settings as a clickable card. It never writes client configs, clones repos or installs skills itself — takeover, install and mount stay on deterministic commands with an impact preview and your confirmation. All of this works with the model unavailable, minus the suggestions
 
 ### Skills Console
 
 - Refresh skill indexes from Git repositories, Gitee, or custom sources
+- Paste a GitHub / Gitee / GitLab / Bitbucket / GitCode URL to install skills directly into Local Skills: host allowlist, shallow clone (proxy-aware, `main` → `master` fallback), `SKILL.md` scan, atomic landing, transactional rollback on failure, idempotent ids. The UI then guides you to Local Skills to mount them to an agent
+- Trigger words are read from `SKILL.md` frontmatter (`triggers` / `触发词` / `when_to_use`, comma-separated or YAML list) and shown as chips; the rule-based "optimization advice" dialog explains missing metadata and how to fix it. No invented triggers, no model required
 - Install, uninstall, mount, and unmount Skills — your library is always preserved
 - Mount the same Skill across multiple agents; Markdown-rendered skill panels
 
@@ -93,7 +98,7 @@ SUGT is intentionally small: a compatible local gateway, one-click takeover for 
 - Built-in skins: Cyber Console, Street, Skate, Brickyard, Shan-shui, HIPHOP, Jazz Night, plus **Anime Boy** / **Anime Girl** (illustrated backdrops with frosted glass panels)
 - Themes are **one CSS file (or JSON pack) each** on a fixed ~40-token contract — background images, translucent surfaces, and `backdrop-filter` glass included
 - Settings → Appearance to switch; import a `theme.json`, a `.zip` or a whole folder; overlay a custom background without changing colors
-- Status bar is on by default and opens a solid log drawer; full logs stay on the Logs tab
+- Status bar is on by default and opens a solid log drawer; full logs live in Settings → Logs
 - Authoring guide: [docs/THEME_AUTHORING.md](docs/THEME_AUTHORING.md) · Agent rules: [AGENTS.md](AGENTS.md)
 
 ## Screenshots
@@ -114,11 +119,11 @@ Skills — local mount and repo discovery.
 
 ![Local skills](docs/images/english-client-skills-local.png)
 
-Settings — language, gateway, and overlay options.
+Settings — Overview, language, gateway, appearance, and overlay options.
 
 ![Settings](docs/images/english-settings.png)
 
-Logs — request and gateway activity.
+Settings → Logs — request and gateway activity.
 
 ![Logs](docs/images/english-logs.png)
 
@@ -126,7 +131,7 @@ Logs — request and gateway activity.
 
 SUGT ships with built-in **English / 中文** support. All UI text is rendered through a single dictionary layer with zero third-party dependencies.
 
-**Switching languages**: open **Settings** → **Language** and pick one of:
+**Switching languages**: open **Settings → General → Language** and pick one of:
 
 | Option | Behavior |
 | --- | --- |
@@ -153,24 +158,36 @@ The UI refreshes immediately after switching — every panel, dialog, toast, and
 winget install lsuen.SUGT
 ```
 
-**Windows (direct)** — download the NSIS installer (`SUTAI_*_x64-setup.exe`) or the zip from [GitHub Releases](https://github.com/lsuen/sugt/releases).
+**Windows (direct)** — from [GitHub Releases](https://github.com/lsuen/sugt/releases): `SUTAI-windows-x64-setup.exe` (NSIS installer) or `SUTAI-windows-x64.zip` (portable).
 
-**macOS (Homebrew)** — prebuilt cask from the open-source tap:
+**macOS (Homebrew)** — rolling-release cask from the open-source tap:
 
 ```bash
-# first install
 brew tap lsuen/homebrew-sugt
-brew trust lsuen/sugt        # one-time: trust this unsigned tap
+brew trust --cask lsuen/homebrew-sugt/sugt   # Homebrew 6.0+ requires explicit trust for third-party taps
 brew install --cask sugt
 
-# later updates
-brew update
-brew upgrade --cask sugt
+# later: reinstall whatever is currently latest
+brew upgrade --cask --greedy sugt
 ```
+
+The cask uses `version :latest` with a fixed download URL, so a new SUGT release never needs a tap update. Skip `brew trust` on Homebrew < 6.0.
 
 Launch from Applications as **SUTAI**. The app is unsigned: on first launch, right-click → **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
 
-**In-app updates:** About → Check for Updates. Fallback order is direct GitHub → your configured GitHub proxy → built-in/remote mirrors. Windows can silent-install the NSIS package; macOS replaces the `.app` when writable, otherwise opens the download folder for a manual drag into Applications. Homebrew / winget remain install channels.
+**Release packages (stable names).** Asset filenames never carry a version number — only the git tag does:
+
+| Platform | Asset |
+| --- | --- |
+| Windows installer | `SUTAI-windows-x64-setup.exe` |
+| Windows portable | `SUTAI-windows-x64.zip` |
+| macOS Apple Silicon | `SUTAI-macos-arm64.zip` |
+| macOS Intel | `SUTAI-macos-x64.zip` |
+| SHA256 list | `SUTAI-checksums.txt` |
+
+`https://github.com/lsuen/sugt/releases/latest/download/<asset>` therefore always resolves to the newest build. The download site, the Homebrew cask and the in-app updater all read `/releases/latest`, so publishing a new version only replaces the same-named assets — no link or config changes anywhere. Tags stay semantic (`v1.1.8`) because the in-app updater compares the tag with the bundled `CARGO_PKG_VERSION`; a fixed `latest` tag would silently disable update checks. Windows and both macOS architectures are built by `.github/workflows/release.yml` on every `v*` tag push.
+
+**In-app updates:** Settings → About → Check for Updates. Fallback order is direct GitHub → your configured GitHub proxy → built-in/remote mirrors. Windows can silent-install the NSIS package; macOS replaces the `.app` when writable, otherwise opens the download folder for a manual drag into Applications. Homebrew / winget remain install channels.
 
 Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/Library/Application Support/sugt/` (auto-migrates from legacy `Documents/.sugt` when Documents is iCloud-synced). Override with `SUGT_CONFIG_DIR`.
 

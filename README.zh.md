@@ -1,7 +1,5 @@
 # SUGT — 本地 AI 网关 & 大模型技能中控台
 
-> 前段时间饭碗被砸，正琢磨要不要去送外卖，一时半会儿腾不出手再维护了。代码已全开源，自己玩就好；星不多，我也懒得做流量推广——要是帮到你、又愿意的，求顺手推广一下。
-
 **SUGT（su gateway）** 是一款本机 AI 网关与技能中控台。集中管理多个 LLM 服务商的 API Key（OpenAI、Anthropic、魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek、DashScope、自建模型），通过本地 OpenAI / Anthropic 兼容代理，让 Claude Code、Codex、OpenCode 等 AI 编码客户端统一接入本机端点，并在一个面板里切换上游模型；同时提供可发现、可安装、可挂载的技能（Skills）中控台，卸下也不会丢库。
 
 - **一套 Key，处处可用**：所有 AI 客户端的 Base URL 与鉴权，收拢到本机一个网关。
@@ -30,6 +28,10 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 ## 功能特性
 
+### 界面结构
+
+主导航 7 个页签：控制台、模型、客户端、技能、SOUL、规则、设置。「日志」「关于」收进**设置**；设置拆成 6 个冻结在首行的横向子页签——**概览**（首位）、常规、外观、高级、日志、关于。概览只读展示服务状态、局域网共享是否开启与连接信息（hosts / Base URL / Key / 模型）、当前上游、端点、版本构建号与快捷跳转。高频日志轮询仅在日志子页可见时运行。
+
 ### 本地 AI 网关（Gateway）
 
 - 在 Tauri 进程内启动 Axum HTTP 服务器，同时支持 **OpenAI Chat Completions**、**Anthropic Messages**、**OpenAI Responses** 三种协议
@@ -50,7 +52,7 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 ### 客户端一键接管
 
-- 自动发现本机已安装的 Agent 客户端
+- 单一目录收录 22 个国内外常见客户端（Claude Code、Codex、CodeBuddy、Trae、通义灵码、iFlow、Kimi CLI、Qoder、Comate、CodeGeeX、Windsurf、Cline、Copilot CLI、Kiro、Goose、Factory Droid 等）。空查询也会列出完整目录，不必等本机留下痕迹才能挑选并接管；官方技能目录未确认的客户端只声明环境变量能力，不虚报配置文件写入
 - Claude Code / OpenCode：写环境变量与启动脚本指向本机网关；解除接管时清理干净
 - **Codex（CLI / Desktop）**：写入 `~/.codex/config.toml` 的 `model_providers.sugt`（`wire_api = "responses"`、`requires_openai_auth = false`、本地压缩能力）并在需要时关闭 hosted `web_search`；`model` 使用 `sugt-` 前缀别名，避免客户端把上游模型当官方模型套用 `code_mode_only` / `use_responses_lite` 工具协议（可用 `SUGT_CODEX_MODEL_ALIAS=off` 关闭）；`auth.json` 只覆盖认证方式与网关 Key，保留原有登录态字段。上游若无原生 Responses，网关会做 Responses → Chat 回落：展平 namespace 工具并在回程还原名称、按声明判定 function/custom、结构化保留工具结果与孤儿调用配对、补齐 SSE 生命周期事件。网关对无法透传的 Responses 字段做可观测降级，对上游空/非法响应与 4xx 统一返回 Responses 形状的失败对象，不再伪装成空成功；流式分片容忍迟到工具名、乱序 index、非法参数与跨 chunk 多字节字符。MCP server 仍由客户端自己的 `[mcp_servers]` 管理，SUGT 不代管
 
@@ -62,10 +64,13 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 - 过长的终端输出会裁掉头尾保留，大项目里上下文更稳
 - 经本机网关，用**你配置的上游大模型**替小su思考；支持粘贴截图（需上游支持视觉）
 - 按工作目录分别保留对话；可中途停下；重活可交给 Claude Code 或 Codex
+- **管理类意图只做只读路由**：小su 会拿到本机事实（已知客户端、已接管客户端、已装技能、仓库目录），可给出「客户端 / 技能 / 接管影响 / 设置」建议卡片，点击只做页面跳转。它不会自己写客户端配置、克隆仓库或安装技能；接管、安装、挂载仍走确定性命令 + 后果预览 + 用户确认。模型不可用时这些功能照常可用，只是少了建议与解释
 
 ### 技能中控台
 
 - 从 Git 仓库、Gitee、自定义源刷新技能索引
+- 粘贴 GitHub / Gitee / GitLab / Bitbucket / GitCode 地址即可把技能装进「本地技能」：host 白名单、浅克隆（复用 GitHub 代理，`main` 失败回落 `master`）、扫描 `SKILL.md`、原子落地、失败事务回滚、重复安装幂等；装完界面会引导去「技能 → 本地技能」勾选挂载到目标 Agent
+- 触发词从 `SKILL.md` frontmatter 读取（`triggers` / `触发词` / `when_to_use`，支持逗号、顿号与 YAML 列表），以 chips 展示；「优化建议」弹窗按规则给出缺 frontmatter、描述过短、无触发词、无分节等可操作建议。不编造触发词，也不依赖模型
 - 安装、卸载、挂载、取消挂载——技能库永远保留
 - 同一技能可挂载到多个 Agent；Markdown 渲染的技能面板
 
@@ -93,7 +98,7 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 - 内置：赛博控制台、街头粉笔、滑板场、嘻哈砖墙、山水墨、HIPHOP、爵士夜，以及带插画背景与毛玻璃的 **二次元男 / 二次元女**
 - 每个主题独立文件（或 JSON 主题包），固定约 40 个令牌契约；支持背景图、透明表面、毛玻璃
 - 设置 → 外观 切换；可导入 `theme.json`、`.zip` 或整个文件夹；自定义背景只叠插画、不改配色
-- 状态栏默认开启，点开是实体日志抽屉；完整日志仍在「日志」页
+- 状态栏默认开启，点开是实体日志抽屉；完整日志在「设置 → 日志」子页
 - 制作说明：[docs/THEME_AUTHORING.zh.md](docs/THEME_AUTHORING.zh.md) · Agent 约定：[AGENTS.md](AGENTS.md)
 
 ## 界面预览
@@ -114,11 +119,11 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 ![本地技能](docs/images/client-skills-local.png)
 
-设置：语言、网关与悬浮窗选项。
+设置：概览、语言、网关、外观与悬浮窗选项。
 
 ![设置](docs/images/english-settings.png)
 
-日志：请求与网关活动。
+设置 → 日志：请求与网关活动。
 
 ![日志](docs/images/english-logs.png)
 
@@ -126,7 +131,7 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 
 SUGT 内置 **中文 / English** 双语支持，所有界面文本均通过统一的字典层渲染，不依赖任何第三方 i18n 库（零额外依赖）。
 
-**语言切换方式**：打开「设置」→「语言」，在「跟随系统 / 中文 / English」三者间选择。
+**语言切换方式**：打开「设置」→「常规」→「语言」，在「跟随系统 / 中文 / English」三者间选择。
 
 | 选项 | 行为 |
 | --- | --- |
@@ -153,24 +158,36 @@ SUGT 内置 **中文 / English** 双语支持，所有界面文本均通过统�
 winget install lsuen.SUGT
 ```
 
-**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 NSIS 安装包（`SUTAI_*_x64-setup.exe`）或 zip。
+**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 `SUTAI-windows-x64-setup.exe`（NSIS 安装包）或 `SUTAI-windows-x64.zip`（便携包）。
 
-**macOS（Homebrew）**：开源 tap 预编译 cask：
+**macOS（Homebrew）**：开源 tap 的滚动发布 cask：
 
 ```bash
-# 首次安装
 brew tap lsuen/homebrew-sugt
-brew trust lsuen/sugt        # 一次性：信任本开源 tap
+brew trust --cask lsuen/homebrew-sugt/sugt   # Homebrew 6.0+ 第三方 tap 需显式信任
 brew install --cask sugt
 
-# 以后更新
-brew update
-brew upgrade --cask sugt
+# 以后更新：重新装回当前最新版
+brew upgrade --cask --greedy sugt
 ```
+
+cask 使用 `version :latest` + 固定下载地址，SUGT 发新版时 tap 无需改动。Homebrew < 6.0 可跳过 `brew trust`。
 
 从「应用程序」打开 **SUTAI**。应用未签名：首次启动请右键 →「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
-**应用内更新**：打开「关于」→「检查更新」。会按「直连 GitHub → 你配置的 GitHub 代理 → 内置/远端镜像」回退；Win 可静默安装 NSIS，macOS 在可写时自动替换 `.app`，否则打开下载目录供手动拖入「应用程序」。Homebrew / winget 仍可作为安装渠道。
+**发布包（固定文件名）**：release 资产名一律不带版本号，只有 git tag 带版本号。
+
+| 平台 | 资产名 |
+| --- | --- |
+| Windows 安装包 | `SUTAI-windows-x64-setup.exe` |
+| Windows 便携包 | `SUTAI-windows-x64.zip` |
+| macOS Apple Silicon | `SUTAI-macos-arm64.zip` |
+| macOS Intel | `SUTAI-macos-x64.zip` |
+| SHA256 清单 | `SUTAI-checksums.txt` |
+
+因此 `https://github.com/lsuen/sugt/releases/latest/download/<资产名>` 永远指向最新构建。下载站、Homebrew cask 与应用内更新都读 `/releases/latest`，以后发新版**只需替换同名 release 资产**，两边仓库与配置都不用再动。tag 仍保持语义化（`v1.1.8`），因为应用内更新要用 tag 与内置的 `CARGO_PKG_VERSION` 比较；若固定成 `latest`，更新检查会永远不提示。Windows 与 macOS 双架构由 `.github/workflows/release.yml` 在每次推送 `v*` tag 时自动构建。
+
+**应用内更新**：打开「设置」→「关于」→「检查更新」。会按「直连 GitHub → 你配置的 GitHub 代理 → 内置/远端镜像」回退；Win 可静默安装 NSIS，macOS 在可写时自动替换 `.app`，否则打开下载目录供手动拖入「应用程序」。Homebrew / winget 仍可作为安装渠道。
 
 配置目录：Windows / Linux 默认 `Documents/.sugt/`；macOS 默认 `~/Library/Application Support/sugt/`（若文稿已进 iCloud，会从旧的 `Documents/.sugt` 自动迁过去）。可用环境变量 `SUGT_CONFIG_DIR` 覆盖。
 

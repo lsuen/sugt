@@ -1,8 +1,8 @@
 # SUGT 测试报告
 
-- **日期**：2026-11-05
-- **分支**：`master`，相对 `origin/master` ahead 13，**未 push**
-- **范围**：P0 固化未提交 WIP → P1 主题校验与协议测试 → P2 巨型模块拆分 → 全链路功能测试 → 文档审计
+- **报告跨度**：2026-11-05 ~ 2026-11-06；第 1–17 节记录各轮当时状态，当前状态与发布结论以第 18 节为准
+- **分支**：`master`；第 18 节记录 1.1.8 打版与 push，前 17 节的 ahead / 未 push 均为当时快照
+- **范围**：P0 固化未提交 WIP → P1 主题校验与协议测试 → P2 巨型模块拆分 → 全链路功能测试 → 文档审计 → 1.1.8 打版评估与升级迁移回归 → 发布链路整改与放行
 - **原则**：本报告只记录本机真实执行过的命令与真实输出；未验证、未执行、受限的项目在第 9 节明确列出。
 
 ## 1. 环境
@@ -14,7 +14,7 @@
 | Rust / Cargo | 1.97.1 / 1.97.1 |
 | 前端 | React 18 + TypeScript 5.7 + Vite 6.4.3 |
 | 后端 | Tauri 2.9 + Axum 0.7 |
-| 项目版本 | 1.1.7 |
+| 项目版本 | 第 1–17 节为 1.1.7（当时环境）；第 18 节打版为 **1.1.8** |
 
 ## 2. 交付概览
 
@@ -366,3 +366,282 @@ end byte index 500 is not a char boundary; it is inside '中' (bytes 498..501 of
 
 四个提交均为本地原子提交、中文提交信息，**未 push**。上一轮的四个提交（`7efc106` / `dad6c40` / `630e175` / 文档提交）同样未 push；`origin/HEAD` 指向 `main`，推送前需用 `git status -sb` 复核目标分支。
 
+## 15. 第五轮：1.1.8 打版评估与升级迁移回归（2026-11-06）
+
+### 15.1 评估结论
+
+**需要打 1.1.8，但不能按当前 `master` 直接打 tag。**
+
+- 对照 `git show origin/master:src-tauri/src/codex_config.rs`：1.1.7 用 `std::fs::write` 直接覆盖 `config.toml`、用 `write_codex_auth` 覆盖 `auth.json`，`clear` 只删 `model_provider` / `model_providers.sugt` / `openai_base_url`，属数据丢失级缺陷，叠加工具层全挂。
+- `1.1.7..HEAD` 共 28 提交 / 76 文件 / 9830+ 2185-，含应用内更新、主题导入、LAN failover 等新功能，不是补丁级改动。
+- 1.1.7 完全没有应用内更新模块（`src-tauri/src/update/*`、`src/UpdateSection.tsx` 均为 1.1.7 之后新增），老用户不会自动收到新版，必须公告并引导手动下载。
+- 阻断项：1.1.7 升级用户没有快照，取消接管仍残留 SUGT 写入的固定值（DEF-004），即最需要修复的存量用户没被修到。
+
+### 15.2 缺陷报告（按标准字段）
+
+| ID | 问题是什么 / 导致的现象 | 复现步骤 | 预期结果 | 实际结果 | 优先级 / 严重级别 | 修复后结果 |
+| --- | --- | --- | --- | --- | --- | --- |
+| DEF-004 | 1.1.7 升级用户无快照，取消接管后残留 `model` / 鉴权固定值与假 `auth.json`，形成半接管、ChatGPT 登录态不可用 | 1.1.7 启用接管 → 升级 1.1.8 → 保存一次设置（触发自动 apply）→ 取消接管 | `config.toml` / `auth.json` 不残留 SUGT 写入值 | legacy prune 只清 `sugt-` 前缀 model，三项与 auth.json 全保留；自动 apply 还会把污染态写成 `config_before` | **P0 / 阻断** | 识别 1.1.7 形态后按已知写入值清理；auth.json 按确定性归属做字段级 prune，tokens / account_id 等一律保留 |
+| DEF-005 | 流式错误判定未同步非流式防护，`error:null` 分片把整轮对话判成 failed 且事件序列错乱 | `stream:true`，上游任一 SSE 分片带 `error:null` 或 `{}` | 与非流式一致，正常收尾 `response.completed` | 先发 `response.failed` 并置 `completed=true`，后续增量乱序且永远收不到终态 | P1 / 高 | 流式与非流式共用 `is_real_error_value`，两条 SSE 用例转绿 |
+| DEF-006 | `/v1/responses` 上游失败统一落到通用 502，客户端报「网关响应格式错误」而非真实上游故障 | 上游 4xx（非流式）/ 5xx（流式），单一 provider | Responses 形状 `status: failed` / `response.failed` SSE | `{"error":{"type":"sugt_gateway_error","code":502}}` | P1 / 中高 | 在 `proxy_request` 的 `v1/responses` 分支就地包装，attempt 耗尽 / 5xx / 熔断全部闭合 |
+| DEF-007 | Windows `atomic_write` 先删原文件再 rename，失败即丢用户 `config.toml` / `auth.json` | Windows 上目标被占用或权限导致 rename 失败 | 写入失败时原文件保持不变 | 原文件已删，只剩 `*.sugt-tmp` | P1 / 中（平台限定） | 统一 `replace_with_backup`：备份 → 替换 → 失败回滚 → 清理 tmp |
+
+### 15.3 先红后绿（真实输出，未做结果粉饰）
+
+- 先写 7 条回归用例跑红基线：`cargo test --lib` 为 `198 passed / 3 failed`（残留 `model = "demo-model"`、假 key、tmp 文件）；`codex_edge_cases` 为 `21 passed / 2 failed`（打印出发出的 `response.failed`，message 为 `"null"` / `"{}"`）；新增 `release_1_1_8_e2e` 为 `0 passed / 2 failed`（收到 `sugt_gateway_error` 502）。
+- 红基线中**既有测试全部通过**，证明用例打在缺陷上而不是空跑。
+- 修完后全量 `252 passed / 0 failed / 1 ignored`：lib 203、edge_cases 23、codex_gateway_e2e 4、dev-platform 8、protocol_roundtrip 12、release_1_1_8_e2e 2。
+
+### 15.4 修复落点
+
+| 文件 | 改动 |
+| --- | --- |
+| `src-tauri/src/codex_config.rs` | 新增 `legacy_1_1_7_gateway_base`、`prune_sugt_auth_fields`、`replace_with_backup`；`clear_sugt_codex_overrides` 在有快照但 auth 被改过时也做字段级清理；`prune_sugt_fields` 增加 legacy 分支；`atomic_write` 改为备份回滚 |
+| `src-tauri/src/openai_responses_adapter.rs` | 抽出 `is_real_error_value`，流式 `upstream_error_message` 与非流式共用；`responses_upstream_failure` 改为 `pub(crate)` |
+| `src-tauri/src/gateway.rs` | 新增 `responses_failure_response`；`v1/responses` 分支包装 `proxy_responses_via_chat` 的 `Err` |
+| `src-tauri/tests/codex_edge_cases.rs` | 新增 2 条 SSE `error:null` / `{}` 用例 |
+| `src-tauri/tests/release_1_1_8_e2e.rs` | 新增文件：真实 HTTP 网关 + mock 上游 4xx / 5xx 两条用例 |
+| `AGENTS.md` | 固化四条防回归规范（升级迁移、错误判定对称、失败出口闭合、禁止先删后搬） |
+
+### 15.5 验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test`（全量） | **252 passed / 0 failed / 1 ignored** |
+| `npm test` | 主题契约 12 源 × 38 token、主题包冒烟 8、`tsc --noEmit` 双配置检查全绿 |
+| `npm run build`（含在 tauri beforeBuildCommand 中） | 双入口 1638 modules 生产构建通过 |
+| `npx tauri build --no-bundle` | 成功，`src-tauri/target/release/sugt`（release 编译 2m55s） |
+| `cargo build --release` | 最终格式微调后用同一份代码增量复验，19:43 重新生成 `sugt` / `sugt-cli` |
+| `rustfmt --check` | 两个测试文件通过；三个大文件只修本轮新增段格式，既有风格差异未做无关改动 |
+| `git diff --check` | 无空白错误 |
+
+### 15.6 边界与发版前待办
+
+1. **版本号四处仍是 1.1.7**（`package.json:3`、`src-tauri/Cargo.toml:3`、`src-tauri/Cargo.lock:3531`、`src-tauri/tauri.conf.json:4`）；按约定等确认目标平台后再改。
+2. **打包链路缺失**：本地 `scripts/` 目录不存在，`package.json` 全部 `package:release*` 指向失效 ps1；`release-feature.yml` 仅 Windows portable zip 且 `workflow_dispatch` 需预置 tag；macOS 的 1.1.7 两个 zip 是 10-26 历史产物，当前流程无法复现；签名公证未做。
+3. **1.1.7 无应用内更新**：必须公告引导手动下载，并写清升级后如何干净退出接管。
+4. **真机验收**：本机 `sugt-takeover-state.json` 是新版接管态，常规复测测不出升级路径，需专门构造 1.1.7 遗留形态；真实外部 LLM 请求、20 轮以上长会话、48 工具是否存在同名仍未验证。
+5. **本轮未修的 P2**：state 文件无锁且损坏静默降级、config/auth/state 三文件无事务、匿名工具兜底名不在声明内、custom 工具流式无 delta、`dropped_request_fields` 白名单外的字段仍静默丢弃。
+6. `--no-bundle` 只验证前端资源 + Rust release 二进制可编译，**未生成 `.app` / `.dmg`**。
+
+### 15.7 工作区状态
+
+本轮改动全在工作区，**未 commit、未 push**：`AGENTS.md`、`docs/TEST_REPORT.md`、`src-tauri/src/codex_config.rs`、`src-tauri/src/gateway.rs`、`src-tauri/src/openai_responses_adapter.rs`、`src-tauri/tests/codex_edge_cases.rs`，新增 `src-tauri/tests/release_1_1_8_e2e.rs`。`master` 相对 `origin/master` ahead 28，远端 tag `v1.1.7` 指向 `9d14dee`。
+
+## 16. 第六轮：导航重组 + 能力进化回归（2026-11-06）
+
+### 16.1 报告头
+
+| 项 | 内容 |
+| --- | --- |
+| 报告编号 | SUGT-TR-16 / 第六轮能力进化回归 |
+| 测试范围 | 设置导航重组（主 Tab 9→7、6 个横向子 Tab、概览页、sticky）、Agent 目录补全与发现、GitHub 地址安装 skill、触发词与规则化建议、SOUL 只读编排层；并对 1.1.8 前五轮成果做全量回归 |
+| 被测版本 | 工作区 HEAD `2254b4b` + 本轮未提交改动；四处版本号仍为 `1.1.7`（未打版） |
+| 环境 | macOS（aarch64）、Node / Vite 6.4.3、Rust edition 2021、Tauri 2.9；`cargo test` 全量、`npm test`、`npm run build`、`npx tauri build --no-bundle` |
+| 测试类型 | 功能、业务、UI 结构、架构边界、安全（host 白名单 / 路径穿越 / 事务回滚）、回归 |
+| 结论 | **通过（可进入真机验收）**；无阻断项，遗留风险见 16.7 |
+
+### 16.2 用例与结果统计
+
+| 套件 | 用例数 | 结果 |
+| --- | --- | --- |
+| `cargo test --lib` | 219 passed / 1 ignored | 全绿（较第五轮 203 → 219，新增 16 条） |
+| `tests/codex_edge_cases.rs` | 23 | 全绿 |
+| `tests/codex_gateway_e2e.rs` | 4 | 全绿 |
+| `tests/dev-platform-module.rs` | 8 | 全绿 |
+| `tests/protocol_roundtrip.rs` | 12 | 全绿 |
+| `tests/release_1_1_8_e2e.rs` | 2 | 全绿 |
+| **Rust 合计** | **268 passed / 0 failed / 1 ignored** | 1 ignored 为 macOS GUI `launchctl` 用例 |
+| `npm test` | 主题契约 12 源 × 38 token、主题包冒烟 8、`tsc --noEmit` 双配置 | 全绿 |
+| `npm run build` | 1642 modules 双入口生产构建 | 通过 |
+| `npx tauri build --no-bundle` | 前端 + Rust release 编译（2m42s），产物 `src-tauri/target/release/sugt` | 通过 |
+| `git diff --check` | 无空白错误 | 通过 |
+
+基线可追溯：先跑出 `217 passed / 2 failed / 1 ignored` 的红基线（`soul_context` 断言过严、`github_install` 的 `..` 清洗缺口），修复后转绿；另有 1 条高负载下偶发假红，见 DEF-008。既有 217 条全通过，说明新增用例打在新增缺陷上，不是空跑。
+
+### 16.3 本轮新增用例（16 条，按能力分组）
+
+| 能力 | 用例 | 判定点 |
+| --- | --- | --- |
+| Agent 目录 | `catalog_covers_domestic_and_global_clients`、`unconfirmed_skill_dirs_always_have_a_shared_fallback` | 14 个国内外客户端进目录；未确认目录必含 `~/.agents/skills` 兜底且不虚报写配置 |
+| 发现链路 | `empty_query_lists_every_known_agent`、`newly_added_domestic_and_global_clients_are_searchable`、`catalog_item_uses_a_safe_env_template_for_new_clients` | 空查询返回完整目录；新增客户端可搜；env 模板安全 |
+| GitHub 安装 | `only_known_hosts_are_allowed`、`path_traversal_in_repo_parts_is_rejected`、`import_ids_are_stable_and_sanitized`、`scan_finds_skill_md_and_skips_dot_dirs`、`repo_root_can_be_a_single_skill` | host 白名单、路径穿越、id 稳定且无 `..`、扫描规则、仓库根即单技能 |
+| 触发词 / 建议 | `parses_trigger_words_from_separated_values`、`parses_yaml_list_triggers`、`missing_frontmatter_produces_actionable_suggestions` | 逗号/顿号、YAML list、缺 frontmatter 给可操作建议 |
+| SOUL 编排 | `brief_is_bilingual_and_never_requests_a_write`、`brief_exposes_runtime_facts_without_panicking_on_missing_files`、`brief_contains_all_four_route_tokens` | 双语、禁写、读目录失败降级、四类 route 齐全 |
+
+前端无单测框架，UI 由 `tsc --noEmit` 双配置 + 生产构建 + 静态核对覆盖：`en` 字典为 `Record<keyof typeof zh, string>`，**缺键会直接编译失败**，因此本轮新增的 zh/en 键成对由 `npm test` 保证。
+
+### 16.4 缺陷报告
+
+| ID | DEF-008 | DEF-009 |
+| --- | --- | --- |
+| 标题 | 高负载下 `shell_runs_in_the_given_directory` 用 5s 超时导致全量套件偶发假红 | GitHub 安装生成的技能 id 残留 `..`，目录名带路径穿越语义 |
+| 复现 / 触发条件 | 全量 `cargo test` 与前端构建并发、两个 `run_loop` 用例各跑 60s+ 时；单独运行 `cargo test --lib me_agent::tests::shell_runs_in_the_given_directory -- --exact` | 调 `make_import_id(parsed, "../evil")`；或 owner/repo 含连续点号时生成 id |
+| 预期结果 | 用例稳定通过，超时行为由专门用例验证 | id 只含一个路径组件，不含 `..`、`/`、`` |
+| 实际结果（证据） | `test result: FAILED. 218 passed; 1 failed; 1 ignored`；`assertion left == right failed: /private/var/.../sugt-me-echo-...`，`left: None, right: Some(0)`，即 `run_shell` 在 5s 被 kill 后 `exit_code=None` | 红基线 `store::github_install::tests::import_ids_are_stable_and_sanitized` 失败；`git__owner-repo__..--evil` |
+| 导致的现象 | 全量套件假红，阻断放行判定；不影响任何用户功能 | 技能落地目录名污染；真实 clone 的相对路径不会产生 `..`，但函数对外暴露且 id 直接用作 `skills_dir` 子目录名 |
+| 根因 | `src-tauri/src/me_agent/tests.rs:344` 只验证工作目录与输出，却与超时行为共用 5s 硬超时 | `src-tauri/src/store/github_install.rs` 原 `sanitize()` 保留点号，且未过滤纯点号路径段 |
+| 修复后的结果 / 验收 | 超时放宽到 15s 并注释说明；单独复跑 3 次均 0.29s 通过，全量 `219 passed / 0 failed / 1 ignored` | 新增 `sanitize_relative()` 丢弃 `.`/`..` 段并把点号折叠为 `-`；`import_ids_are_stable_and_sanitized` 补 5 组穿越形态断言，全量转绿 |
+| 优先级 / 严重级别 | P2 / 一般 Major（测试稳定性） | P2 / 一般 Major（防御性，非用户可见） |
+| 状态 | 已修复 | 已修复 |
+
+**排除项（已核实不成立）**：① Def-008 不是本轮功能回归——单独复跑 3 次 0.29s 全绿、cwd 断言未报错；② 不是 shell 不存在或 spawn 失败——`pwd` 已输出正确路径，另一条 `shell_times_out_and_stops` 正常；③ 不是磁盘满或构建产物损坏——同环境 `tauri build --no-bundle` release 编译成功；④ Def-009 不影响已安装技能存量——`staged.json` 中已有 id 未变（合法相对路径无点号段），仅新安装路径受影响。
+
+### 16.5 修复落点
+
+| 层 | 文件 |
+| --- | --- |
+| 导航 / UI | `src/main.tsx`、`src/SettingsPanel.tsx`、`src/SettingsOverview.tsx`、`src/LogsSection.tsx`、`src/AboutSection.tsx`、`src/TakeoverPreviewModal.tsx`、`src/styles.css`、`src/i18n.ts` |
+| Agent 单一真相源 | `src-tauri/src/agent_adapters.rs`、`src-tauri/src/agent_discover.rs`、`src/AgentDiscoverModal.tsx` |
+| 技能安装 / 元数据 | `src-tauri/src/store/github_install.rs`（新增）、`store/mod.rs`、`store/commands.rs`、`app.rs`、`permissions/app-commands.toml`、`store/catalog.rs`、`store/hub.rs`、`agent_advanced.rs`、`src/SkillsPanel.tsx`、`gen/schemas/acl-manifests.json`（命令注册生成物） |
+| SOUL 只读编排 | `src-tauri/src/soul_context.rs`（新增）、`lib.rs`、`me_agent.rs`、`src/MePanel.tsx` |
+| 测试加固 | `src-tauri/src/me_agent/tests.rs` |
+| 文档 | `AGENTS.md`、`docs/AGENT_ADAPTER_DESIGN.md` 第 14 节、`README.md`、`README.zh.md`、本报告 |
+
+### 16.6 架构边界复核（本轮红线）
+
+- SOUL **只注入事实、只输出 `[[SUGT_ROUTE]]` 标记**，前端剥离标记渲染建议按钮，点击仅跳转页面；没有任何工具循环、bash 写配置、下载仓库或安装技能路径。接管/安装/挂载仍走确定性命令 + `TakeoverPreviewModal` 后果预览 + 用户确认。
+- GitHub 安装不写客户端配置、不登记 `repos.toml`，host 白名单 + 浅克隆 + `SKILL.md` 扫描 + 原子落地 + 失败回滚 + 幂等 id；依赖本机 `git`，不支持私有仓库鉴权。
+- 触发词与优化建议是**规则化**的，不编造、不依赖 LLM；模型不可用时全部功能仍可用，只少了意图路由与解释。
+- 新增 14 个客户端只声明 `UserEnv` 能力，未确认官方 skill 目录的一律含 `~/.agents/skills` 兜底。
+
+### 16.7 遗留风险与真机验收（未做，不影响本轮放行结论）
+
+1. 版本号四处仍为 `1.1.7`；打包脚本、tag、push 按约定未动，需先确认目标平台。
+2. 未生成 `.app` / `.dmg`（`--no-bundle` 只验证前端资源 + release 二进制）。
+3. 真机待验：设置子 Tab sticky 在矮窗口表现、日志轮询 gate 的 CPU 收益、GitHub 安装在国内网络（含代理）成功率、SOUL 建议卡片在弱模型下的意图命中率、1.1.7 legacy 升级路径与 Codex 客户端工具层。
+4. 既有 P2 未动：`window.confirm` 两处（`TakeoverProfilesSection.tsx:123`、`SkillsPanel.tsx:471`）、硬编码白色叠加、state 文件无锁且损坏静默降级、config/auth/state 三文件无事务、`dropped_request_fields` 白名单外字段仍静默丢弃。
+5. 全仓 `cargo fmt --check` 仍有既有风格差异；本轮只保证新增段格式，`git diff --check` 无空白错误。
+
+### 16.8 放行结论与工作区状态
+
+**通过率 268/268（1 ignored），0 失败，前端类型检查 / 构建 / 打包全部通过；无 P0 / Blocker，可进入真机验收，暂不建议直接打 tag。** 阻断依据仍沿用 15.6：1.1.7 无应用内更新、打包链路缺失、版本号未改、真机升级路径未验。
+
+本轮 38 个改动/新增文件全部在工作区，**未 commit、未 push**；未改版本号、未建 tag。
+
+## 17. 第七轮：窗口净高补偿 + Codex 接管行为核查（2026-11-06 晚）
+
+### 17.1 报告头
+
+| 项 | 内容 |
+| --- | --- |
+| 报告编号 | SUGT-TR-17 |
+| 测试范围 | ① 状态栏导致的初始窗口净高不足与尺寸持久化（按用户确认的方案 2 实施）② Codex 接管后「请求通过但浏览器无动作」的日志与代码核查（只读，未改产品代码） |
+| 被测版本 | 工作区 HEAD `2254b4b` + 本轮未提交改动；版本号仍 `1.1.7` |
+| 环境 | macOS aarch64；本机真实日志 `~/Library/Application Support/sugt/sugt.log`（22:25–22:27 会话）、本机 `~/.codex/config.toml`（22:24 重新接管） |
+| 结论 | 窗口修复通过；Codex 现象**不是网关失败，也不是新增功能 bug**，是接管能力边界 + 弱上游共同造成的能力降级，但「请求通过」的表述具备误导性，建议产品侧明示 |
+
+### 17.2 DEF-010：状态栏加入后初始窗口净高被吃掉 34px
+
+| 字段 | 内容 |
+| --- | --- |
+| 问题 / 现象 | `tauri.conf.json` 的 `height:680` 从最早版本 `4acd85c` 未变；状态栏提交 `daf094b` 把 `.app-shell` 改成「内容 1fr + 状态栏 auto」两行（22 个改动文件**不含** `tauri.conf.json`），状态栏 `min-height:34px` + 全局 `border-box` → 内容区 `680→646`。用户打开后控制台底部首屏看不到，手动拉大后重启又回 680 |
+| 复现 | 默认状态栏开启 → 启动 → 停在 1040×680 控制台 → 观察底部卡片 |
+| 预期 / 实际 | 净高应与状态栏加入前一致且尺寸可保留 / 净高少 34px，`maxHeight:820` 还封顶，全仓无窗口尺寸持久化 |
+| 根因 | 布局改成两行后静态窗口配置未同步；`minHeight:640` 时净高仅约 606；`.dashboard-layout{min-height:100%}` 与设置 sticky 子 Tab 行进一步压缩首屏 |
+| 修复 | `tauri.conf.json`：`height 680→714`、`minHeight 640→674`、`maxHeight 820→960`；新增 `src-tauri/src/window_state.rs`（启动恢复 + Resized 防抖落盘 + min/max 与当前显示器可用区 clamp + 忽略 restore 回声避免小屏覆盖大屏记录 + 全路径失败降级）；`app.rs` 在 `show()` 前恢复、在 `Resized` 里换算逻辑像素后保存；`styles.css` 提 `--status-bar-h:34px`；顺带修 `i18n.ts` zh/en 两处 `set.statusBarHint` 过期文案（日志已在设置-日志） |
+| 修复后结果 / 验收 | 初始净高恢复 680，用户手动调整的尺寸写入 `config_dir/window-state.json` 并在下次启动恢复。单测覆盖 clamp / NaN / 越界、往返读写、损坏文件降级、恢复回声识别、状态栏补偿常量；真机仍需验 1040×714 首屏截图与「拉大→重启→保持」 |
+| 优先级 / 严重级别 / 状态 | P2 / 一般 Major / **已修复** |
+
+### 17.3 DEF-011：Codex「请求通过」但浏览器未被操作（只读核查，未改代码）
+
+| 字段 | 内容 |
+| --- | --- |
+| 问题 | 接管后让 Codex 打开浏览器/网址，客户端回「请求通过」，肉眼看不到浏览器动作 |
+| 复现 | 22:24 重新接管 Codex → 上游为「实验·免费通道」`kilo-auto/free` → 22:25–22:27 让 Codex 操作浏览器 |
+| 预期 | 要么真正驱动浏览器，要么明确告知该能力不可用 |
+| 实际（已确认证据） | 日志全为 `inbound request ok`，`response.failed` 0 次，latency 2–11s；`proxying codex responses via chat completions` 显示 `model=kilo-auto/free`、`mode=chat_completions_adapter`、`custom_tools:0`；每轮 `codex responses stream completed` 的 `tool_calls:1`、`content_len` 多为 3，`input_tokens` 由 18455 递增到 28664，伴 `rewrote history tool_calls names to flattened upstream form`；本机 `~/.codex/config.toml` 有 `web_search="disabled"`、`[model_providers.sugt.capabilities] external_web_access=false / remote_compaction="unsupported"`、`[mcp_servers.node_repl]` 仍在 |
+| 根因（分层） | ① 网关层正常：请求确实转发成功并返回，「请求通过」对应的是网关请求成功，不是浏览器动作；② 浏览器操作由 ChatGPT 桌面端本地插件（Computer Use / Browser Use，经 `node_repl` MCP）执行，SUGT 不代管也不执行；③ SUGT 接管按设计注入 `web_search="disabled"` 与 `external_web_access=false`（`codex_config.rs:183-213`），且 Responses→Chat 回落跳过无 schema 的 hosted 工具（`openai_responses_adapter.rs:412-416`，日志 08:01Z / 12:57Z 可见 `web_search` 被跳过，22:25 会话已不再声明）；④ 当前上游是免费弱模型 + Chat 回落，工具调用稳定性不足 |
+| 导致的现象 | 用户把「网关请求成功」误判为「动作已执行」；实际无浏览器操作，且会话反复重试（token 持续上涨） |
+| 修复后结果 / 建议 | ① 换支持稳定 tool calling 的正规上游做 A/B 验证；② 接管影响预览补一条「接管后 hosted 联网 / 浏览器自动化能力不可用」；③ 把「跳过 hosted 工具」的 WARN 汇总到日志页，避免误判；④ 若必须保留官方浏览器能力，只能取消接管并承担 hosted 工具在自定义网关上报 unsupported 的风险。**本轮未改任何产品代码** |
+| 优先级 / 严重级别 / 状态 | P2 / 一般 Major（认知误导、体验）/ **待确认** |
+
+**排除项（已核实不成立）**：① 不是网关失败或 502——0 条 `response.failed`、0 条 ERROR，`inbound request ok`；② 不是 MCP 配置丢失——`[mcp_servers.node_repl]` 仍在，SUGT 明确不代管 MCP；③ 不是 Codex 配置被写坏——三项能力字段是 SUGT 按设计注入且有快照可还原；④ 不是 `search_content_types` 报错——日志中无该错误，`web_search=disabled` 已生效。
+
+**待验证推断（外部资料 / 未实测）**：① 公开资料称 Codex 0.162 的 `capabilities.external_web_access=false` 控制「该 provider 的 hosted web search 能否访问公网」，第三方网关文档也把 `web_search="disabled"` 列为自定义 provider 必需项（否则报 `search_content_types` 不支持）；公开资料**未覆盖**桌面端 Computer Use / Browser Use 插件是否连带受影响，需真机对照；② 「请求通过」四字的确切出处（模型文本 / 客户端审批提示 / 工具结果）需用户提供原句或截图；③ 免费模型能否稳定产出浏览器工具调用未验证；④ 反复重试是否与工具名展平/还原映射有关未定位。
+
+### 17.4 验证结果
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test`（全量，最终代码复跑） | lib **223 passed / 1 ignored**；edge 23、codex_e2e 4、dev-platform 8、protocol 12、release_1_1_8 2 → **272 passed / 0 failed / 1 ignored** |
+| `cargo check` / `git diff --check` | dev profile 6.54s 通过；无空白错误 |
+| `npm test` | 主题契约、主题包冒烟 8、`tsc --noEmit` 双配置全绿（i18n zh/en 键由 `Record<keyof typeof zh, string>` 编译期保证） |
+| `npm run build` | 1642 modules 双入口生产构建通过 |
+| `npx tauri build --no-bundle` | release 编译 2m53s，产物 `src-tauri/target/release/sugt`，退出码 0 |
+
+### 17.5 边界与待办
+
+- 窗口尺寸恢复/保存是 GUI 行为，单测只覆盖纯逻辑；真机待验：1040×714 首屏控制台完整性、拉大窗口后重启是否保持、换小显示器是否被 clamp、关闭状态栏后是否无空白。
+- Codex 侧建议按 17.3 的四条建议择一验证后再决定是否改代码；本轮保持只读。
+- 版本号四处仍 `1.1.7`，打包脚本、tag、push 未动；`--no-bundle` 未生成 `.app` / `.dmg`。
+
+### 17.6 工作区状态
+
+本轮新增 `src-tauri/src/window_state.rs`；修改 `src-tauri/tauri.conf.json`、`src-tauri/src/lib.rs`、`src-tauri/src/app.rs`、`src/styles.css`、`src/i18n.ts`、`AGENTS.md`、本报告。全部**未 commit、未 push**，未改版本号、未建 tag。
+
+---
+
+## 18. 第八轮：1.1.8 打版与发布链路验收（2026-11-06 深夜）
+
+- **报告编号**：SUGT-TR-18
+- **测试范围**：版本号一致性、GitHub Actions 自动打包（Windows / macOS 双架构）、Homebrew cask 滚动发布、应用内更新资产匹配、`lsuenweb` 下载映射、双方文档与规范同步
+- **被测版本**：`master` 工作区 HEAD `2254b4b` + 第 15–17 轮未提交改动 → 打版 **1.1.8**
+- **环境**：macOS（Homebrew 7.0.11、Node 20、Rust stable）、GitHub Actions `windows-latest` / `macos-15` / `macos-15-intel` / `ubuntu-latest`、`lsuen/sugt` 与 `lsuen/homebrew-sugt` 远端仓库
+- **执行方式**：静态核对 + 编译/测试 + 远端 API 写入 + 配置解析校验；检查阶段只报告，用户授权「打版 1.1.8 然后 commit + push」后执行
+
+### 18.1 缺陷清单（发布链路）
+
+| ID / 标题 | 复现 / 触发条件 | 预期 | 实际（证据） | 现象与影响 | 根因 | 修复后结果与验收 | 优先级 / 级别 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| DEF-011 版本号 6 处仍为 1.1.7，且旧文档只记「四处」 | 打版前全仓检索 | 6 个文件、7 个键统一 1.1.8 | `package.json`、`package-lock.json`（顶层 + `packages[""]`）、`src-tauri/Cargo.toml`、`Cargo.lock`、`tauri.conf.json`、`src/release-notes.ts` 均为 1.1.7；第 15 节写「四处」 | 应用内更新会把自身判成旧版；发布包与 tag 不一致 | 前轮统计漏 `package-lock.json` 与 `release-notes.ts` | 6 文件统一 1.1.8，`check_version_consistency.py` 报「7 个版本键一致」退出码 0；脚本同步扩展到 7 键 | P0 / Critical | 已修复 |
+| DEF-012 release 资产名携带版本号 | 查看 `v1.1.7` 远端资产 | 稳定资产名，发版只替换同名文件 | `SUGT-1.1.7-windows-x64.zip`、`SUTAI-1.1.7-macos-arm64.zip`、`SUTAI-1.1.7-macos-x64.zip`、`SUTAI_1.1.7_x64-setup.exe` | 每次发版必须同步改下载站、cask、文档，任一遗漏即下载 404 | 打包脚本按 tag 拼接文件名 | 固定为 `SUTAI-windows-x64-setup.exe` / `SUTAI-windows-x64.zip` / `SUTAI-macos-arm64.zip` / `SUTAI-macos-x64.zip` / `SUTAI-checksums.txt`；`/releases/latest/download/<name>` 永久有效 | P0 / Critical | 已修复 |
+| DEF-013 macOS 与 brew 无自动打包流程 | 读 `.github/workflows/release-feature.yml` | push `v*` tag 自动产出 win + 双架构 mac | 旧 workflow 仅 `workflow_dispatch` + `windows-latest`，只传 zip 和 NSIS；mac 两个 zip 是 10-26 手工产物 | mac 用户拿不到与新 tag 对应的包；无法复现 | CI 从未覆盖 macOS | 新增 `release.yml`：tag push 触发，windows / macos(matrix 双架构) / publish 三腿，产出 5 个固定名资产 | P0 / Critical | 已修复 |
+| DEF-014 Homebrew cask 需每版手改且 trust 命令写错 | 读远端 `Casks/sugt.rb` 与两份 README | cask 一次配置长期有效 | `url` 含 `v#{version}` + 双 `sha256`，每版必改；文档写 `brew trust lsuen/sugt`（既非 tap 名也缺 `--cask`） | `brew install` 装到旧版或报错；用户照文档执行失败 | cask 绑定语义版本；trust 参数写错 | cask 改 `version :latest` + `sha256 :no_check` + `releases/latest/download/SUTAI-macos-#{arch}.zip`；本机 `brew trust --help`（7.0.11）确认 `--cask <全名>` 语法；文档、tap README、`lsuenweb` 三处命令修正 | P1 / Major | 已修复 |
+| DEF-015 下载站 Intel Mac 拿到 arm64 包，且无法列多包 | 读 `src/main.rs::pick_asset` 与下载模板 | 按架构分别给链接 | 旧逻辑每种 kind 只取一个资产，macOS 双架构 zip 只会命中第一个；`apk` 偏好规则写死 | Intel Mac 下载错误架构；Windows 便携包/安装包无法共存 | 单资产选择 + 硬编码关键词 | 新增 `Project.assets` 配置化精确名 + `asset_specs` / `resolve_assets` 多资产去重 + 关键词回退；模板说明按系统选择 | P1 / Major | 已修复 |
+| DEF-016 `lsuenweb` 中与 SUGT 相关文案过期 | 读 `assets/projects.toml` | 与 1.1.8 一致 | `sutai-cli`（实际 `sugt-cli`）、「Windows 公开版 180 天试用」（已无该限制）、旧 Tab 名称、旧接管/技能描述 | 用户按错误命令操作失败，误解授权 | 文案未随产品迭代 | 全部改为 `sugt-cli`、移除试用限制、同步 22 客户端 / GitHub 安装 / 触发词 / SOUL 只读 / 设置→关于路径 | P2 / Minor | 已修复 |
+| DEF-017 新增下载映射代码编译失败 | `cargo check --all-targets` | 0 error | `E0106` 缺生命周期 + 4×`E0716` 临时值被借用，共 5 处（`src/main.rs:150/500/514/540/550`） | 下载站无法构建，push 后自动部署会失败 | `asset_specs` 返回借用未标 `'a`；测试把 `&gh_assets(...)` 临时量直接传入 | 显式 `fn asset_specs<'a>(project: &'a Project, ...)`；4 处测试改 `let assets = gh_assets(...)` 绑定；`cargo check --all-targets` 退出码 0 | P0 / Blocker | 已修复 |
+
+### 18.2 关键设计判定（含排除项，均为「已确认」）
+
+| 判定 | 依据 |
+| --- | --- |
+| **改固定资产名不会断应用内更新** | 逐条核对 `src-tauri/src/update/mod.rs:140-170` 四个 cfg 分支：Windows `setup`+`.exe`、Windows `windows`+`.zip`、mac arm64 `macos`+`arm64`+`.zip`、mac x64 `macos`+(`x64`\|`x86_64`)+`.zip`，5 个新资产名全部命中；`asset_sha256` 取 GitHub asset `digest`，publish job 仍会上传资产 |
+| **tag 必须保留语义化 `v1.1.8`** | `check_for_update` 用 `cmp_version(release.tag_name, CARGO_PKG_VERSION)`；固定 `latest` tag 会解析成 `0.0.0`，导致更新检查永久静默失效。Release **标题**带版本不违反「打包文件不挂版本号」的要求 |
+| **Homebrew 不需要额外打「brew 包」** | cask 本质是指向 release 资产的 Ruby 定义；固定资产名后，CI 产出 mac zip 即等价于 brew 可安装。`:latest` cask 被普通 `brew upgrade` 跳过，故文档统一给 `--greedy` |
+| **排除：改名不会让下载站 404** | `lsuenweb` 精确名配在 `assets/projects.toml`，同时保留关键词回退；旧版资产名仍能被回退规则命中 |
+| **排除：首次 `cargo build` 失败是磁盘权限** | 首轮 `L6deEu` 报 target 产物不可写（沙箱拦截旧产物）；改用 `CARGO_TARGET_DIR=/tmp/lsuenweb-verify-target` 后暴露出的是 DEF-017 的真实代码错误，已单独修复并复跑通过 |
+| **排除：`macos-15-intel` runner 不存在** | 已联网核对 GitHub runner label 可用；`aarch64-apple-darwin` 与 `x86_64-apple-darwin` 分别用各自原生 runner，避免交叉编译 |
+| **排除：CI 依赖作者本地脚本** | 旧 `/scripts`（gitignore）不在 workflow 引用链中；`package.json` 的 `package:release*` 仅本地便利命令 |
+
+### 18.3 验证结果
+
+| 检查项 | 命令 / 手段 | 结果 |
+| --- | --- | --- |
+| 版本号一致性 | `python3 docs/孙测测/scripts/check_version_consistency.py --root . --expect 1.1.8` | **通过**，7 键均为 1.1.8，退出码 0；留痕 `traces/版本一致性检查-20261106-233857.md` |
+| workflow 结构 | Ruby `YAML.safe_load` | 通过，`jobs = windows, macos, publish`；触发 `push.tags=["v*"]` + `workflow_dispatch` |
+| workflow 产物名一致性 | 静态比对 `env.ASSET_*`、`publish.files`、cask `url`、`lsuenweb [projects.assets]`、`update::pick_asset` | 5 个资产名五处一致 |
+| 项目配置 | Python `tomllib` 解析 `assets/projects.toml` | 通过，`sugt.assets` 4 键齐全，项目数不变 |
+| sugt Rust | `cargo test --manifest-path src-tauri/Cargo.toml` | lib **223 passed / 1 ignored**；edge 23、codex_e2e 4、dev-platform 8、protocol 12、release_1_1_8 2 → **272 passed / 0 failed / 1 ignored** |
+| sugt 前端 | `npm test` / `npm run build` | 主题契约 + 主题包冒烟 + `tsc --noEmit` 双配置全绿；1642 modules 双入口构建通过 |
+| sugt 打包 | `npx tauri build --no-bundle`（第 17 节最终代码） | 通过，release 产物 `src-tauri/target/release/sugt` |
+| lsuenweb | `cargo check --all-targets` / `cargo test` / `cargo build --release`（独立 target 目录） | 0 error；**5 passed / 0 failed**；release 构建通过 |
+| 静态卫生 | `git diff --check` | 无空白错误 |
+| 远端写入 | `gh api` 更新 `Casks/sugt.rb`、tap `README.md` | 写入后回读确认，cask `ruby -c` 语法通过 |
+
+**通过率：272/272（1 ignored）+ lsuenweb 5/5，0 失败；缺陷 7 项全部已修复。**
+
+### 18.4 遗留风险与放行结论
+
+- **放行结论：可打版 1.1.8 并 push。** 无 P0 / Blocker 遗留，核心链路（版本号、资产命名、CI 触发条件、应用内更新匹配、下载站映射）均已验证。
+- **待验证推断（不阻断放行，push 后观察）**：GitHub Actions 首次实跑 `windows` / `macos` 三腿与 `publish` 合并上传是否成功（含 NSIS bootstrapper、macOS 双架构 `.app` 产物路径、`sha256sum` 清单）；Runner 实际排队时长。
+- **已知留白**：macOS 应用未签名/未公证（沿用历史策略，README 已给 `xattr -cr`）；`:latest` cask 需 `--greedy`；1.1.7 无应用内更新模块，存量用户需公告手动下载；设置 sticky、GitHub 安装国内网络、SOUL 弱模型命中率、1.1.7 legacy 升级路径与 Codex 客户端工具层仍待真机验收。
+- **CI 之外的验证边界**：本地 `--no-bundle` 不生成 `.app` / `.dmg` / NSIS，最终安装形态以 CI 产物为准。
+
+### 18.5 本轮改动清单
+
+- **sugt 新增**：`.github/workflows/release.yml`；**删除**：`.github/workflows/release-feature.yml`
+- **版本号**：`package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`、`src/release-notes.ts`
+- **文档**：`AGENTS.md`（Release & packaging 规范）、`README.md` / `README.zh.md`（删个人情况段落、修 brew 命令、补固定资产名表）、`docs/AGENT_ADAPTER_DESIGN.md`、`docs/孙测测/scripts/check_version_consistency.py`、`docs/孙测测/MAP.md`、本报告、`.gitignore`（孙测测目录入库）
+- **远端仓库**：`lsuen/homebrew-sugt` 的 `Casks/sugt.rb` 与 `README.md`
+- **lsuenweb**：`src/projects.rs`、`src/main.rs`、`assets/projects.toml`、`assets/templates/download.html`、`AGENTS.md`、`docs/MAP.md`

@@ -187,3 +187,48 @@ pub struct TakeoverPreview {
 4. **未做**：不生成 `model_catalog_json`、不改写客户端内置模型目录、不实现服务端会话存储（`previous_response_id` 仍依赖客户端重放完整 `input`）。若真机复测仍见 `get_project_overview` / `compress_output` unsupported call，按公开方案导出真实目录并把 `use_responses_lite` 改为 `false` 是下一步，而不是继续猜测字段。
 
 协议层异常分片兜底与验证见 `docs/TEST_REPORT.md` 第 14 节。
+
+## 14. 追加：1.1.8 能力进化（2026-11-06）
+
+本轮回答三个产品问题：**日志/关于是否还占主 Tab**、**设置是否该拆横向子 Tab**、**SOUL 要不要有技能栏**。前两者照做，第三者按架构红线改为「只读编排层」，不把写操作交给模型。
+
+### 14.1 导航与设置重组（纯前端，后端零改动）
+
+主 Tab 9 → 7：日志、关于移入设置，侧栏底部保留两个小号直达入口（不占主导航）。设置拆为 6 个横向子 Tab：`overview / general / appearance / advanced / logs / about`，**概览放首位**，聚合服务状态、LAN 是否开启与 hosts/base_url/key/model、当前上游、端点、版本构建号与快捷跳转（只读，新增数据全部来自已有 `get_status` / `get_lan_share_info`）。`.settings-tabs` 用 `position: sticky; top: 0` 冻结在 `.tab-body` 首行。
+
+三个必须同步的耦合点已处理：日志高频轮询从 `tab==='logs'` 改为 `tab==='settings' && settingsTab==='logs'`（抽屉仍由 `StatusBar` 自己的定时器刷新，不重复轮询）；`StatusBar` 的「打开日志页」改为跳设置-日志子页；About 的 10 连击版本入口通过 `onVersionCardClick` 下传。子页状态提升到 `App`（`settingsTab` 受控），`SettingsPanel` 未传时退回内部 state 作为 browser-preview fallback。项目原本没有主 Tab 的 localStorage 持久化，因此无迁移兼容问题。
+
+### 14.2 国内外 Agent 目录补全（单一真相源）
+
+`agent_adapters.rs::ADAPTERS` 从 8 扩到 22：新增 CodeBuddy、通义灵码、Trae、iFlow、Kimi CLI、Qoder、Comate、CodeGeeX、Windsurf、Cline、GitHub Copilot CLI、Kiro、Goose、Factory Droid。未确认官方 skill 目录的一律走 `GENERIC_CAPABILITY`（只声明写环境变量 + note 说明），且候选目录必含跨 Agent 事实标准 `~/.agents/skills` 兜底，**不虚报配置写入能力**。
+
+`agent_discover::known_agents()` 直接从 `agent_adapters::all()` 派生完整目录，`fingerprints()` 降级为「旧客户端的探测细节」，不再维护第二份客户端清单。空查询 / 单字符不再返回空列表，而是列出全部已知客户端（本机有痕迹 → high 置信，无痕迹 → low 但 `requires_path=false`，允许用户主动接管）；带查询词时也会把能力矩阵里新增的客户端按名称/厂商/命令补入结果。**这解决了「发现不了就无从接管」的问题**：自动接管现在先有完整目录可挑。
+
+### 14.3 GitHub 地址安装 skill（确定性 + 事务回滚）
+
+新增 `store/github_install.rs` 与 `store_install_git_skills` 命令，复用既有链路、零新依赖：`parse_git_url` → host 白名单（GitHub/Gitee/GitLab/Bitbucket/GitCode + owner/repo 字符校验）→ `git clone --depth 1 --single-branch`（复用 `github_proxy_prefix`，`main` 失败回落 `master`）→ 扫 `SKILL.md`（支持根目录自身就是一个 skill）→ `replace_dir` 原子落地 → 写 `staged.json`。
+
+- 不把仓库登记进 `repos.toml`，不污染用户仓库列表；临时 clone 目录用完即删。
+- 单次上限 60 个技能；失败时还原 `staged.json` 并删除本次已落地的目录，**不留半安装状态**。
+- 幂等：同地址重复安装覆盖同一批 `git__<owner-repo>__<path>` id，不在列表堆积。
+- 装完在「技能 → 本地技能」出现（该列表本来就读 `staged.json`），前端给出引导提示：勾选并挂载到目标 Agent。
+
+### 14.4 触发词与优化建议（规则化，LLM 只做可选解释）
+
+`catalog::parse_skill_meta()` 解析 frontmatter 的 `triggers` / `trigger` / `触发词` / `when_to_use` / `keywords`（逗号、顿号或 YAML `- item` 列表），解析不到就返回空并给可操作建议，**绝不凭空编造触发词**。`LocalSkillView` 新增 `triggers` / `suggestions`：列表显示触发词 chips，点「优化建议」打开 ModalPortal 弹窗看完整建议 + 一键打开技能目录。建议是纯规则（缺 frontmatter、description 过短、无触发词、无 `##` 分节），模型不可用时功能完全可用。新建本地技能的模板也补了 frontmatter / triggers / 分节骨架。
+
+### 14.5 SOUL 只读编排层（红线不变）
+
+新增 `soul_context.rs`：`soul_brief()` 把能力矩阵、已接管客户端、已装技能、仓库目录注入 `system_prompt_with_brief()`（保留原 `system_prompt` 签名兼容单测）。模型对管理类意图只输出一行 `[[SUGT_ROUTE]]<clients|skills|preview|settings>[[/SUGT_ROUTE]]`，前端 `MePanel` 剥离标记并渲染成建议卡片按钮，点击只做页面跳转；接管 / 安装 / 挂载仍由用户点按钮走既有确定性命令 + `TakeoverPreviewModal` 后果预览 + 确认。
+
+**明确没有做**：不给 SOUL 工具调用循环、不扩大 shell 权限、不让模型吐 bash 写配置或下载仓库。理由见第 2 节非目标与 `AGENTS.md`：那样会绕过备份 → 快照 → TOML 校验 → 原子写 → 后果预览 → 确认 → 释放逐字段还原整条保护链，且弱模型/模型不可用时没有可降级路径。LLM 挂掉时所有功能仍可用，只是少了意图路由与解释。
+
+fallback：未知/半截路由标记一律剥离、绝不执行；无 `onRoute`（浏览器预览）时只剥离不渲染按钮；`soul_brief` 读目录失败降级为「暂无」，不阻断对话。
+
+### 14.6 边界与未做
+
+- 本节写成时版本号仍为 1.1.7、打包脚本与 tag 未动；1.1.8 打版时已统一 6 处版本号并改为「固定资产名 + 自动打包」发布流程，详见 `AGENTS.md` 的 Release & packaging 与 `docs/TEST_REPORT.md` 第 18 节。
+- GitHub 安装依赖本机 `git` 可用；不支持私有仓库鉴权（显式禁用 credential helper），需要私有仓库仍走「添加仓库」。
+- 新增 Agent 的专有目录是**探测候选**而非官方保证；真机若发现某客户端目录不同，只改 `ADAPTERS` 一处即可。
+- `window.confirm` 两处、硬编码白色叠加、state 无锁等 P2 未动。
+- 真机仍需验收：设置子 Tab sticky 在矮窗口的表现、LAN/Me 弹窗手感、GitHub 安装在国内网络（含代理）下的成功率、SOUL 建议卡片在弱模型下的意图命中率。

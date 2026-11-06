@@ -65,6 +65,9 @@ scripts/.notify-*.json
 !/docs/THEME_AUTHORING.zh.md
 !/docs/AGENT_ADAPTER_DESIGN.md
 !/docs/TEST_REPORT.md
+# 孙测测专属测试资产（脚本 / 留痕 / 报告 / 索引）需可追溯，整目录入库
+!/docs/孙测测/
+!/docs/孙测测/**
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)
