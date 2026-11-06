@@ -388,11 +388,201 @@ fn normal_responses_request_is_unchanged() {
 }
 
 #[test]
-fn error_shaped_upstream_body_is_still_passthrough() {
+fn error_shaped_upstream_body_becomes_responses_failed() {
     let upstream = r#"{"error":{"message":"rate limited","type":"rate_limit_error"}}"#;
     let bytes =
         chat_json_to_responses_body_with_meta(upstream, "upstream-model", &ChatToolMeta::default())
             .unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["status"], "failed");
+    assert_eq!(value["object"], "response");
     assert_eq!(value["error"]["message"], "rate limited");
+    assert_eq!(value["error"]["type"], "upstream_error");
+}
+
+#[test]
+fn empty_choices_become_responses_failed_not_fake_completed() {
+    let upstream =
+        r#"{"id":"chatcmpl-x","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":0}}"#;
+    let bytes =
+        chat_json_to_responses_body_with_meta(upstream, "upstream-model", &ChatToolMeta::default())
+            .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["status"], "failed");
+    assert_ne!(value["status"], "completed");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("空 choices")),
+        "实际：{value}"
+    );
+}
+
+#[test]
+fn history_tool_names_are_rewritten_to_flattened_upstream_form() {
+    // 复现日志里的多轮故障：tools 声明 functions__exec_command，
+    // 历史却回灌客户端原名 exec_command，模型随后把 shell_command.command
+    // 错填到 exec_command，Codex 报 missing field `cmd`。
+    let body = Bytes::from(
+        r#"{
+          "input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"打开浏览器"}]},
+            {"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"open https://example.com\"}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"}
+          ],
+          "tools": [{
+            "type":"namespace","name":"functions",
+            "tools":[{
+              "type":"function","name":"exec_command",
+              "parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}
+            }]
+          }],
+          "tool_choice":{"type":"function","function":{"name":"exec_command"}},
+          "stream":false
+        }"#,
+    );
+    let (out, meta) = responses_to_chat_with_meta(&body, "upstream-model").unwrap();
+    let chat: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        meta.flattened_names
+            .get("functions__exec_command")
+            .map(String::as_str),
+        Some("exec_command")
+    );
+    assert_eq!(
+        chat.pointer("/tools/0/function/name")
+            .and_then(Value::as_str),
+        Some("functions__exec_command")
+    );
+    let history_name = chat
+        .pointer("/messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|m| m["role"] == "assistant")
+        .filter_map(|m| {
+            m.pointer("/tool_calls/0/function/name")
+                .and_then(Value::as_str)
+        })
+        .next();
+    assert_eq!(
+        history_name,
+        Some("functions__exec_command"),
+        "历史工具名必须与 tools 展平名一致：{chat}"
+    );
+    assert_eq!(
+        chat.pointer("/tool_choice/function/name")
+            .and_then(Value::as_str),
+        Some("functions__exec_command"),
+        "tool_choice 也必须展平：{chat}"
+    );
+}
+
+#[test]
+fn ambiguous_namespace_tool_names_are_not_rewritten_randomly() {
+    // 两个 namespace 下有同名工具时，「客户端原名 → 展平名」没有唯一答案；
+    // 不能靠 HashMap 遍历顺序随机挑一个，必须保守保留原名并告警。
+    let body = Bytes::from(
+        r#"{
+          "input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"}
+          ],
+          "tools": [
+            {"type":"namespace","name":"functions","tools":[
+              {"type":"function","name":"exec_command","parameters":{"type":"object","properties":{}}}
+            ]},
+            {"type":"namespace","name":"mcp","tools":[
+              {"type":"function","name":"exec_command","parameters":{"type":"object","properties":{}}}
+            ]}
+          ],
+          "stream": false
+        }"#,
+    );
+    let (out, _meta) = responses_to_chat_with_meta(&body, "upstream-model").unwrap();
+    let chat: Value = serde_json::from_slice(&out).unwrap();
+    let names: Vec<&str> = chat["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.pointer("/function/name").and_then(Value::as_str))
+        .collect();
+    assert!(
+        names.contains(&"functions__exec_command"),
+        "工具：{names:?}"
+    );
+    assert!(
+        names.contains(&"mcp__exec_command"),
+        "两个 namespace 工具都不能丢：{names:?}"
+    );
+    let history_name = chat["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["role"] == "assistant")
+        .filter_map(|m| {
+            m.pointer("/tool_calls/0/function/name")
+                .and_then(Value::as_str)
+        })
+        .next();
+    assert_eq!(
+        history_name,
+        Some("exec_command"),
+        "歧义时历史名必须保持确定的原名，不能随机改成某个 namespace：{chat}"
+    );
+}
+
+#[test]
+fn colliding_flattened_names_stay_unique() {
+    // ns "a" + 工具 "b__c" 与 ns "a__b" + 工具 "c" 会展平成同一个 "a__b__c"；
+    // 静默覆盖会让其中一个工具消失。
+    let body = Bytes::from(
+        r#"{
+          "input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],
+          "tools": [
+            {"type":"namespace","name":"a","tools":[
+              {"type":"function","name":"b__c","parameters":{"type":"object","properties":{}}}
+            ]},
+            {"type":"namespace","name":"a__b","tools":[
+              {"type":"function","name":"c","parameters":{"type":"object","properties":{}}}
+            ]}
+          ],
+          "stream": false
+        }"#,
+    );
+    let (out, meta) = responses_to_chat_with_meta(&body, "upstream-model").unwrap();
+    let chat: Value = serde_json::from_slice(&out).unwrap();
+    let names: Vec<&str> = chat["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.pointer("/function/name").and_then(Value::as_str))
+        .collect();
+    assert_eq!(names.len(), 2, "展平名碰撞不能吞掉工具：{names:?} / {chat}");
+    assert_ne!(names[0], names[1], "两个上游名必须唯一：{names:?}");
+    assert_eq!(
+        meta.flattened_names.len(),
+        2,
+        "两个映射都要可回程还原：{:?}",
+        meta.flattened_names
+    );
+}
+
+#[test]
+fn error_null_with_choices_is_not_a_failure() {
+    // 部分兼容层在 200 响应里附带 "error": null；这是正常回复，不是失败。
+    let upstream = r#"{"error":null,"choices":[{"message":{"role":"assistant","content":"你好"},"finish_reason":"stop"}]}"#;
+    let bytes =
+        chat_json_to_responses_body_with_meta(upstream, "upstream-model", &ChatToolMeta::default())
+            .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["status"], "completed",
+        "正常回复不能被误判为失败：{value}"
+    );
+    assert!(
+        value["output_text"].as_str().unwrap_or("").contains("你好"),
+        "正文必须保留：{value}"
+    );
 }

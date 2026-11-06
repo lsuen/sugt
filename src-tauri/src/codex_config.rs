@@ -260,7 +260,8 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
                 None => remove_file_if_exists(&config_path)?,
             }
         } else {
-            prune_sugt_fields(&config_path, config, state.web_search_injected)?;
+            // 快照里记录了接管前的原值，交给 prune 精确还原，不靠字符串猜。
+            prune_sugt_fields(&config_path, config, Some(&state))?;
         }
 
         let current_auth = if auth_path.is_file() {
@@ -279,8 +280,8 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
         return Ok(());
     }
 
-    // 兼容旧版本（没有快照）：沿用定点清理；无法确认 web_search 归属时不碰它。
-    prune_sugt_fields(&config_path, config, false)
+    // 兼容旧版本（没有快照）：沿用定点清理；无法确认归属时保守不动鉴权项。
+    prune_sugt_fields(&config_path, config, None)
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {
@@ -292,10 +293,15 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 /// 只移除 SUGT 写入的字段，保留用户其它配置；用 toml_edit 保留注释与原格式。
+///
+/// `apply_codex_config` 会无条件覆盖 `model` / `preferred_auth_method` /
+/// `cli_auth_credentials_store`，原值只存在于快照里。有快照时按
+/// `config_after`（SUGT 写入的值）判断字段是否被用户改过，再按
+/// `config_before` 精确还原；无快照的旧版本路径宁可残留，也绝不误删用户配置。
 fn prune_sugt_fields(
     config_path: &Path,
     config: &AppConfig,
-    web_search_injected: bool,
+    state: Option<&TakeoverState>,
 ) -> Result<()> {
     if !config_path.is_file() {
         return Ok(());
@@ -308,6 +314,11 @@ fn prune_sugt_fields(
         )
     })?;
     let expected = format!("{}/v1", config.listen_url());
+    let web_search_injected = state.is_some_and(|s| s.web_search_injected);
+    let before_doc = state
+        .and_then(|s| s.config_before.as_deref())
+        .and_then(|text| text.parse::<toml_edit::Document>().ok());
+    let after_doc = state.and_then(|s| s.config_after.parse::<toml_edit::Document>().ok());
     let mut changed = false;
 
     if doc
@@ -345,6 +356,47 @@ fn prune_sugt_fields(
         && doc.get("web_search").and_then(|v| v.as_str()) == Some("disabled")
     {
         doc.remove("web_search");
+        changed = true;
+    }
+    // 三个被无条件覆盖的标量字段：按快照精确还原，而不是按值猜测后删除。
+    // 用户接管前就常有这三项（例如 preferred_auth_method = "apikey"），
+    // 直接删除会造成用户配置丢失。
+    for key in [
+        "model",
+        "preferred_auth_method",
+        "cli_auth_credentials_store",
+    ] {
+        let current = doc
+            .get(key)
+            .and_then(|item| item.as_str())
+            .map(str::to_string);
+        let ours = after_doc
+            .as_ref()
+            .and_then(|snapshot| snapshot.get(key))
+            .and_then(|item| item.as_str())
+            .map(str::to_string);
+        let Some(ours) = ours else {
+            // 没有快照（旧版本）或快照不可解析：只清理确定由 SUGT 生成的模型别名，
+            // 鉴权两项归属不明，宁可残留也不能误删用户自己的配置。
+            if key == "model" && current.is_some_and(|value| value.starts_with("sugt-")) {
+                doc.remove(key);
+                changed = true;
+            }
+            continue;
+        };
+        if current.as_deref() != Some(ours.as_str()) {
+            // 用户在接管期间改过这个字段，尊重用户改动，既不删除也不回写快照。
+            continue;
+        }
+        match before_doc.as_ref().and_then(|snapshot| snapshot.get(key)) {
+            Some(original) => {
+                doc.insert(key, original.clone());
+            }
+            None => {
+                // 接管前原本没有这个字段，才真正删除。
+                doc.remove(key);
+            }
+        }
         changed = true;
     }
     if changed {
@@ -468,12 +520,13 @@ pub fn codex_config_status(config: &AppConfig) -> CodexConfigStatus {
 /// 生成 auth.json 内容：只覆盖认证方式与本地网关 Key，保留原有登录态字段。
 fn codex_auth_content(api_key: &str, existing: Option<&str>) -> Result<String> {
     let mut value = match existing {
-        Some(raw) => serde_json::from_str::<serde_json::Value>(raw)
-            .unwrap_or_else(|_| serde_json::json!({})),
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw).with_context(|| {
+            "auth.json 不是合法 JSON，已中止写入以免清空 ChatGPT 登录态"
+        })?,
         None => serde_json::json!({}),
     };
     if !value.is_object() {
-        value = serde_json::json!({});
+        anyhow::bail!("auth.json 顶层必须是 JSON object，已中止写入以免清空登录态");
     }
     let object = value
         .as_object_mut()
@@ -651,6 +704,151 @@ mod tests {
             assert!(after.contains("# 用户手动新增"), "用户改动必须保留");
             assert!(!after.contains("model_provider = "), "SUGT 字段仍应清理");
             assert!(!after.contains("[model_providers.sugt]"));
+            assert!(
+                !after.contains("sugt-"),
+                "改过文件的释放路径也要清掉 sugt- 模型别名：{after}"
+            );
+            assert!(
+                !after.contains("preferred_auth_method"),
+                "改过文件的释放路径也要清掉 SUGT 写入的鉴权偏好：{after}"
+            );
+        });
+    }
+
+    #[test]
+    fn release_restores_original_fields_when_user_edited_config() {
+        with_codex_home(|home| {
+            let config = sample_config(18795);
+            let path = home.join("config.toml");
+            // 取自真机 ~/.codex/sugt-takeover-state.json 的 config_before 形态：
+            // 接管前用户就已经有 model 与两项鉴权配置。
+            let original = concat!(
+                "# 用户自己的注释\n",
+                "model = \"openrouter/free\"\n",
+                "preferred_auth_method = \"apikey\"\n",
+                "cli_auth_credentials_store = \"file\"\n",
+                "\n[mcp_servers.node_repl]\n",
+                "command = \"node\"\n",
+            );
+            std::fs::write(&path, original).unwrap();
+            apply_codex_config(&config).unwrap();
+
+            let mut edited = std::fs::read_to_string(&path).unwrap();
+            edited.push_str("\n# 接管期间用户手动新增\n");
+            std::fs::write(&path, &edited).unwrap();
+
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("# 接管期间用户手动新增"),
+                "用户改动必须保留：{after}"
+            );
+            assert!(
+                !after.contains("model_provider = "),
+                "SUGT 字段应清理：{after}"
+            );
+            assert!(
+                !after.contains("[model_providers.sugt]"),
+                "SUGT provider 应清理：{after}"
+            );
+            assert!(
+                !after.contains("openai_base_url"),
+                "SUGT base_url 应清理：{after}"
+            );
+            assert!(
+                !after.contains("web_search"),
+                "SUGT 注入的 web_search 应清理：{after}"
+            );
+            assert!(
+                after.contains("model = \"openrouter/free\""),
+                "用户接管前原有的 model 必须按快照还原，不能删掉：{after}"
+            );
+            assert!(
+                after.contains("preferred_auth_method = \"apikey\""),
+                "用户接管前原有的鉴权偏好必须按快照还原：{after}"
+            );
+            assert!(
+                after.contains("cli_auth_credentials_store = \"file\""),
+                "用户接管前原有的凭据存储必须按快照还原：{after}"
+            );
+            assert!(
+                after.contains("[mcp_servers.node_repl]"),
+                "MCP 配置必须保留：{after}"
+            );
+        });
+    }
+
+    #[test]
+    fn release_keeps_model_edited_by_user_after_takeover() {
+        with_codex_home(|home| {
+            let config = sample_config(18796);
+            let path = home.join("config.toml");
+            std::fs::write(&path, "model = \"o3\"\n").unwrap();
+            apply_codex_config(&config).unwrap();
+
+            // 用户在接管期间自己改了 model：释放时不能回写快照的 o3，要尊重用户改动。
+            let mut edited = std::fs::read_to_string(&path).unwrap();
+            edited.push_str("\n# 用户改动\n");
+            let edited = edited.replacen("sugt-", "my-", 1);
+            std::fs::write(&path, &edited).unwrap();
+
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("my-"),
+                "用户在接管期间改的 model 必须保留：{after}"
+            );
+            assert!(
+                !after.contains("model = \"o3\""),
+                "不能把用户改动回退成快照值：{after}"
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_release_without_snapshot_keeps_user_auth_preferences() {
+        with_codex_home(|home| {
+            let config = sample_config(18797);
+            let path = home.join("config.toml");
+            std::fs::write(
+                &path,
+                "model = \"o3\"\npreferred_auth_method = \"apikey\"\ncli_auth_credentials_store = \"file\"\n",
+            )
+            .unwrap();
+            apply_codex_config(&config).unwrap();
+            // 模拟旧版本：没有快照文件时无法确定字段归属，只能保守不动鉴权项。
+            std::fs::remove_file(home.join(STATE_FILE)).unwrap();
+
+            clear_sugt_codex_overrides(&config).unwrap();
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("preferred_auth_method = \"apikey\""),
+                "无快照时宁可残留也不能误删用户配置：{after}"
+            );
+            assert!(
+                after.contains("cli_auth_credentials_store = \"file\""),
+                "无快照时宁可残留也不能误删用户配置：{after}"
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_auth_json_aborts_without_wiping_login() {
+        with_codex_home(|home| {
+            let config = sample_config(18794);
+            let auth_path = home.join("auth.json");
+            let broken = "{\"auth_mode\":\"chatgpt\",";
+            std::fs::write(&auth_path, broken).unwrap();
+            let err = apply_codex_config(&config).unwrap_err();
+            assert!(
+                err.to_string().contains("不是合法 JSON"),
+                "实际错误：{err}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&auth_path).unwrap(),
+                broken,
+                "非法 auth.json 绝不能被清空重写"
+            );
         });
     }
 

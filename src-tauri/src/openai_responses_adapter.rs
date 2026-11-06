@@ -41,6 +41,8 @@ pub struct ChatToolMeta {
     pub has_tool_declarations: bool,
     /// 本次请求里被显式降级的 Responses 顶层字段名（可观测，便于真机诊断）。
     pub dropped_request_fields: Vec<String>,
+    /// 同名工具出现在多个 namespace：去程无法唯一确定展平名，历史改写必须保守跳过。
+    pub ambiguous_tool_names: HashSet<String>,
 }
 
 /// 将 OpenAI Responses 请求转为 Chat Completions（Codex → 仅 Chat 的上游）。
@@ -77,6 +79,10 @@ pub fn responses_to_chat_with_meta(
     if messages.is_empty() {
         messages.push(json!({ "role": "user", "content": "ping" }));
     }
+    // tools 已展平为 namespace__name，历史里的客户端原名必须同步改写，
+    // 否则多轮闭环会出现「声明 functions__exec_command、历史却叫 exec_command」，
+    // 上游拒收或模型混用 shell_command.command / exec_command.cmd 参数。
+    rewrite_history_tool_names(&mut messages, &meta);
     // 上游（OpenRouter/Kilo 等）会拒空 function.name；Codex 会话/插件偶发带入
     sanitize_chat_messages_tool_calls(&mut messages);
     // 历史回放里缺 function_call_output 时，Chat 上游会因孤儿 tool_calls 直接 400。
@@ -133,7 +139,7 @@ pub fn responses_to_chat_with_meta(
                 );
             }
 
-            sanitize_tool_choice(out_obj);
+            sanitize_tool_choice(out_obj, &meta);
 
             if chat_tools.is_empty() {
                 // 严格上游：有 tool_choice 无 tools 会 400；空 tools 也不要发
@@ -253,13 +259,43 @@ fn qualified_tool_name(prefix: Option<&str>, name: &str) -> String {
 }
 
 /// 把展平后的名字写回 Chat function，并登记「上游名 → 客户端原名」映射。
+///
+/// 两种情况不能静默覆盖：不同 namespace 下有同名工具（去程反查没有唯一答案），
+/// 以及展平名本身碰撞（`a` + `b__c` 与 `a__b` + `c` 都会得到 `a__b__c`）。
+/// 前者标记歧义让历史改写保守跳过，后者生成带序号的唯一名，保证两个工具都不丢。
 fn register_tool_name(
     chat: &mut Value,
     original: &str,
     prefix: Option<&str>,
     meta: &mut ChatToolMeta,
 ) -> String {
-    let upstream = qualified_tool_name(prefix, original);
+    let base = qualified_tool_name(prefix, original);
+    let mut upstream = base.clone();
+    let mut suffix = 2u32;
+    while meta
+        .flattened_names
+        .get(&upstream)
+        .is_some_and(|existing| existing != original)
+    {
+        warn!(
+            tool = %original,
+            collided = %upstream,
+            "展平名碰撞，改用带序号的唯一上游名"
+        );
+        upstream = format!("{base}__{suffix}");
+        suffix += 1;
+    }
+    if meta
+        .flattened_names
+        .iter()
+        .any(|(registered, existing)| existing == original && registered != &upstream)
+    {
+        warn!(
+            tool = %original,
+            "同名工具出现在多个 namespace，历史工具名改写将保守跳过"
+        );
+        meta.ambiguous_tool_names.insert(original.to_string());
+    }
     if upstream != original {
         if let Some(function) = chat.pointer_mut("/function") {
             if let Some(obj) = function.as_object_mut() {
@@ -492,6 +528,78 @@ fn restore_tool_name(name: &str, meta: &ChatToolMeta) -> String {
         .get(name)
         .cloned()
         .unwrap_or_else(|| name.to_string())
+}
+
+/// 去程：客户端原名 → 上游展平名。已是展平名则原样保留。
+fn upstream_tool_name(name: &str, meta: &ChatToolMeta) -> String {
+    if name.is_empty() || meta.flattened_names.is_empty() {
+        return name.to_string();
+    }
+    // 多个 namespace 有同名工具时反查结果取决于 HashMap 遍历顺序；
+    // 保持原名是唯一确定的行为，绝不随机挑一个。
+    if meta.ambiguous_tool_names.contains(name) {
+        return name.to_string();
+    }
+    if meta.flattened_names.contains_key(name) {
+        return name.to_string();
+    }
+    for (upstream, original) in &meta.flattened_names {
+        if original == name {
+            return upstream.clone();
+        }
+    }
+    name.to_string()
+}
+
+/// 把历史 tool_calls 里的客户端原名改写成与 tools[] 一致的展平名。
+fn rewrite_history_tool_names(messages: &mut [Value], meta: &ChatToolMeta) {
+    if meta.flattened_names.is_empty() {
+        return;
+    }
+    let mut rewritten = 0u32;
+    let mut skipped = 0u32;
+    for msg in messages.iter_mut() {
+        let Some(calls) = msg
+            .as_object_mut()
+            .and_then(|obj| obj.get_mut("tool_calls"))
+            .and_then(|v| v.as_array_mut())
+        else {
+            continue;
+        };
+        for call in calls.iter_mut() {
+            let Some(function) = call
+                .as_object_mut()
+                .and_then(|obj| obj.get_mut("function"))
+                .and_then(|v| v.as_object_mut())
+            else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            if meta.ambiguous_tool_names.contains(&name) {
+                skipped += 1;
+                continue;
+            }
+            let upstream = upstream_tool_name(&name, meta);
+            if upstream != name {
+                function.insert("name".to_string(), json!(upstream));
+                rewritten += 1;
+            }
+        }
+    }
+    if rewritten > 0 {
+        warn!(
+            rewritten,
+            "rewrote history tool_calls names to flattened upstream form"
+        );
+    }
+    if skipped > 0 {
+        warn!(
+            skipped,
+            "ambiguous namespace tool names kept as-is in history replay"
+        );
+    }
 }
 
 pub use crate::responses_upstream::{
@@ -828,7 +936,7 @@ fn repair_orphan_tool_calls(messages: &mut Vec<Value>) {
     }
 }
 
-fn sanitize_tool_choice(out_obj: &mut serde_json::Map<String, Value>) {
+fn sanitize_tool_choice(out_obj: &mut serde_json::Map<String, Value>, meta: &ChatToolMeta) {
     let Some(choice) = out_obj.get("tool_choice") else {
         return;
     };
@@ -840,10 +948,27 @@ fn sanitize_tool_choice(out_obj: &mut serde_json::Map<String, Value>) {
         .pointer("/function/name")
         .and_then(|n| n.as_str())
         .map(str::trim)
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
     if name.is_empty() && choice.get("type").and_then(|t| t.as_str()) == Some("function") {
         warn!("dropping tool_choice with empty function.name");
         out_obj.insert("tool_choice".to_string(), json!("auto"));
+        return;
+    }
+    if name.is_empty() {
+        return;
+    }
+    let upstream = upstream_tool_name(&name, meta);
+    if upstream == name {
+        return;
+    }
+    if let Some(function) = out_obj
+        .get_mut("tool_choice")
+        .and_then(|v| v.as_object_mut())
+        .and_then(|obj| obj.get_mut("function"))
+        .and_then(|v| v.as_object_mut())
+    {
+        function.insert("name".to_string(), json!(upstream));
     }
 }
 
@@ -857,11 +982,21 @@ pub async fn chat_to_responses(response: Response, model: &str) -> Result<Bytes>
     Ok(chat_json_to_responses_body(&body, model)?)
 }
 
-/// ?? HTTP 200 ? body ??? JSON????????
+/// 判断上游 body 是否为错误体（含 HTTP 200 里夹带 error 对象的兼容层响应）。
 pub fn is_openai_compat_error_body(body: &str) -> bool {
     let value: Value = serde_json::from_str(body).unwrap_or(json!({}));
-    if value.get("error").is_some() {
-        return true;
+    if let Some(err) = value.get("error") {
+        // 部分兼容层会在 HTTP 200 的正常响应里附带 `"error": null` 或空对象，
+        // 只有真正带内容的 error 才算错误体，否则整轮对话会被误判成失败。
+        let is_real_error = match err {
+            Value::Null => false,
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Object(fields) => !fields.is_empty(),
+            _ => true,
+        };
+        if is_real_error {
+            return true;
+        }
     }
     if value.get("code").is_some()
         && value.get("choices").is_none()
@@ -912,13 +1047,27 @@ pub fn chat_json_to_responses_body_with_meta(
     model: &str,
     meta: &ChatToolMeta,
 ) -> Result<Bytes> {
-    if is_openai_compat_error_body(body) {
-        return Ok(Bytes::from(body.to_string()));
-    }
-
     if body.trim().is_empty() {
         warn!("上游返回空响应体，降级为 Responses failed 而非伪装成功");
         return responses_upstream_failure(model, "上游返回空响应体");
+    }
+
+    if is_openai_compat_error_body(body) {
+        let message = serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        v.get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+            })
+            .unwrap_or_else(|| "上游返回错误响应".to_string());
+        warn!(%message, "上游 Chat 错误体转为 Responses failed，避免客户端按成功解析");
+        return responses_upstream_failure(model, &message);
     }
 
     let chat: Value = match serde_json::from_str(body) {
@@ -928,9 +1077,15 @@ pub fn chat_json_to_responses_body_with_meta(
             return responses_upstream_failure(model, &format!("上游返回非法 JSON：{err}"));
         }
     };
-    let message = chat
-        .get("choices")
-        .and_then(|c| c.get(0))
+
+    let choices = chat.get("choices").and_then(Value::as_array);
+    if choices.map(|c| c.is_empty()).unwrap_or(true) {
+        warn!("上游返回空 choices，降级为 Responses failed 而非伪装 completed");
+        return responses_upstream_failure(model, "上游返回空 choices / 无有效内容");
+    }
+
+    let message = choices
+        .and_then(|c| c.first())
         .and_then(|c| c.get("message"))
         .cloned()
         .unwrap_or(json!({}));
@@ -1675,9 +1830,10 @@ fn repair_anonymous_tool_calls(state: &mut SseMapState, out: &mut String) {
     if keys.is_empty() {
         return;
     }
-    // 请求里恰好只声明了一个工具时，用它的原名兜底比中性占位名更可能被执行。
+    // 兜底名必须用「发给上游的名字」（custom_names / flattened keys），
+    // 不能混入 flattened values（客户端原名），否则单工具 namespace 会变成 2 个候选而失效。
     let mut declared: Vec<String> = state.tool_meta.custom_names.iter().cloned().collect();
-    declared.extend(state.tool_meta.flattened_names.values().cloned());
+    declared.extend(state.tool_meta.flattened_names.keys().cloned());
     declared.sort();
     declared.dedup();
     let fallback = if declared.len() == 1 {

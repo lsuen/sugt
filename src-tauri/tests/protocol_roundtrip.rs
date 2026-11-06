@@ -220,7 +220,7 @@ fn anthropic_to_openai_and_back_keeps_tool_calls_and_stop_reason() {
 }
 
 #[test]
-fn upstream_error_body_is_passthrough_not_reshaped() {
+fn upstream_error_body_becomes_responses_failed() {
     let error_body = r#"{"error":{"message":"rate limited","type":"rate_limit_error"}}"#;
     let out = chat_json_to_responses_body_with_meta(
         error_body,
@@ -228,10 +228,13 @@ fn upstream_error_body_is_passthrough_not_reshaped() {
         &ChatToolMeta::default(),
     )
     .unwrap();
-    assert_eq!(
-        String::from_utf8(out.to_vec()).unwrap(),
-        error_body,
-        "上游错误体应原样返回，不能被伪装成成功的 Responses 对象"
+    let value: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(value["status"], "failed");
+    assert_eq!(value["object"], "response");
+    assert_eq!(value["error"]["message"], "rate limited");
+    assert_ne!(
+        value["status"], "completed",
+        "上游错误体绝不能伪装成成功的 Responses 对象"
     );
 }
 

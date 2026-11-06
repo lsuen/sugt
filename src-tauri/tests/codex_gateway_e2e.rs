@@ -282,6 +282,23 @@ async fn codex_tool_loop_survives_a_real_http_roundtrip() {
             .any(|m| m["role"] == "assistant" && m["tool_calls"].is_array()),
         "历史工具调用必须保留：{second_messages:?}"
     );
+    // 客户端回灌的是还原后的原名 exec_command；发给上游时必须再展平，
+    // 否则多轮后 tools 与历史名不一致，模型易混用 command/cmd 参数。
+    let history_names: Vec<&str> = second_messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .filter_map(|m| m["tool_calls"].as_array())
+        .flatten()
+        .filter_map(|c| c.pointer("/function/name").and_then(Value::as_str))
+        .collect();
+    assert!(
+        history_names.contains(&"functions__exec_command"),
+        "第二轮历史里的 namespace 工具必须展平：{history_names:?} / {second_messages:?}"
+    );
+    assert!(
+        history_names.contains(&"shell_command"),
+        "非 namespace 工具名应保持原样：{history_names:?}"
+    );
 }
 
 #[tokio::test]
@@ -442,5 +459,82 @@ async fn malformed_upstream_body_is_reported_as_responses_failure() {
             .and_then(Value::as_str)
             .is_some_and(|message| message.contains("非法 JSON")),
         "失败原因必须可诊断：{value}"
+    );
+}
+
+/// 部分兼容层会在 HTTP 200 的正常响应里附带 `"error": null`；
+/// 过去 `is_openai_compat_error_body` 只要看到 error 键就判失败，整轮对话被吞掉。
+async fn error_null_upstream_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        concat!(
+            r#"{"error":null,"choices":[{"index":0,"finish_reason":"stop","#,
+            r#""message":{"role":"assistant","content":"正常回复"}}],"#,
+            r#""usage":{"prompt_tokens":1,"completion_tokens":2}}"#
+        ),
+    )
+}
+
+#[tokio::test]
+async fn error_null_upstream_body_is_not_reported_as_failure() {
+    let upstream = Router::new().route("/*path", any(error_null_upstream_handler));
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("error-null mock 上游可绑定");
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream)
+            .await
+            .expect("error-null mock 上游运行失败");
+    });
+
+    let mut provider = ProviderConfig::new(
+        "mock",
+        "openai",
+        format!("http://{upstream_addr}/v1"),
+        "test-key",
+        "mock-model",
+    );
+    provider.id = "e2e-error-null".into();
+    provider.protocol = ProviderProtocol::OpenAi;
+    let config = AppConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        providers: vec![provider],
+        active_provider_id: Some("e2e-error-null".into()),
+        ..Default::default()
+    };
+    let gateway = build_router(GatewayState::new(config, None).expect("网关状态可构造"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("网关可绑定");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, gateway).await.expect("网关运行失败");
+    });
+
+    let request = json!({
+        "model": "gpt-5-codex",
+        "input": [{ "type": "message", "role": "user", "content": "hi" }],
+        "stream": false
+    });
+    let value = post_responses(
+        &reqwest::Client::new(),
+        &format!("http://{addr}/v1/responses"),
+        &request,
+    )
+    .await;
+    assert_eq!(
+        value["status"], "completed",
+        "error: null 是正常回复，不能被误判为失败：{value}"
+    );
+    assert_eq!(value["error"], Value::Null, "不应带 error 对象：{value}");
+    assert!(
+        value["output_text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("正常回复"),
+        "正文必须透传：{value}"
     );
 }
