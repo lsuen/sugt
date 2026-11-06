@@ -1,5 +1,7 @@
 :root {
   color-scheme: dark;
+  /* 状态栏占用的内容区净高；窗口初始高度 680 → 714 即补偿这个值（见 window_state.rs）。 */
+  --status-bar-h: 34px;
   font-family: var(--font-ui, Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif);
   font-size: 14px;
   background: var(--bg, #070b14);
@@ -124,6 +126,9 @@ code { color: var(--code, #8ee8ff); word-break: break-all; }
 }
 .nav { width: 100%; padding: 11px 12px; justify-content: flex-start; background: transparent; font-size: 13px; }
 .sidebar-footer { margin-top: auto; display: flex; gap: 8px; align-items: center; color: var(--success, #80f7c4); font-size: 12px; }
+/* 日志 / 关于不再占主导航，保留小号直达入口 */
+.sidebar-footer-links { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+.sidebar-footer-links .tiny-btn { padding: 2px 6px; font-size: 11px; }
 
 .content {
   padding: 18px 20px;
@@ -194,30 +199,11 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .switch-line input[type="checkbox"] { width: 40px; height: 20px; accent-color: var(--accent, #16f1ff); }
 .lan-share-wrap { position: relative; display: inline-flex; }
 .lan-share-btn { color: var(--warn, #f5c542); }
-.lan-share-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 50;
-  min-width: 280px;
-  max-width: min(360px, 80vw);
-  padding: 12px 14px;
-  border-radius: var(--radius-sm, 12px);
-  background: var(--surface-2, rgba(10, 16, 28, 0.96));
-  border: 1px solid var(--border, rgba(142, 232, 255, 0.2));
-  box-shadow: var(--shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-  color: var(--text, #edf7ff);
-  text-align: left;
-  pointer-events: auto;
+/* LAN 共享信息改走 ModalPortal 弹窗，避免被 .tab-body 裁切 */
+.lan-share-modal {
+  width: min(480px, calc(100vw - 32px));
+  max-width: min(480px, calc(100vw - 32px));
 }
-.lan-share-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.lan-share-head strong { font-size: 13px; }
 .lan-share-list {
   margin: 0;
   padding: 0;
@@ -236,7 +222,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   font-size: 12px;
 }
 .notice.compact-notice { margin-top: 8px; margin-bottom: 0; font-size: 12px; }
-.hint { color: var(--muted, #a8bbcd); font-size: 12px; line-height: 1.55; }
+.hint { color: var(--muted, #a8bbcd); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .hint.compact { margin: 0; }
 
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -298,15 +284,21 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .provider-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
-  flex-shrink: 0;
-  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
 }
 .provider-actions .tiny { flex-shrink: 0; white-space: nowrap; padding: 4px 8px; }
 .ok-text { color: #80f7c4; }
 .bad-text, .error-text { color: #ff95a7; font-size: 11px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: #94a9bd; }
-.danger-link { color: #ff95a7; background: transparent; border: none; }
+.danger-link {
+  color: var(--danger, #ff95a7);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--danger, #ff95a7) 55%, transparent);
+  margin-left: 4px;
+}
 
 .client-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .client-card { padding: 12px; border-radius: 12px; background: rgba(255,255,255,.04); }
@@ -925,15 +917,14 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 64px 1fr; }
-  .brand h1, .brand span, .nav span, .sidebar-footer span { display: none; }
+  .brand h1, .brand span, .nav span, .sidebar-footer span, .sidebar-footer-links { display: none; }
   .brand { justify-content: center; }
   .nav { justify-content: center; padding: 10px; }
   .page-grid { grid-template-columns: 1fr; }
   .client-grid, .about-grid { grid-template-columns: 1fr; }
-  .settings-layout { grid-template-columns: 1fr; }
+  .settings-layout, .overview-grid { grid-template-columns: 1fr; }
   .action-group { flex: 1 1 100%; }
-  .dashboard-layout { grid-template-columns: 1fr; height: auto; }
-  .dashboard-body { overflow-y: auto; }
+  .dashboard-layout { grid-template-columns: 1fr; height: auto; min-height: 0; }
 }
 
 .browser-only {
@@ -1194,7 +1185,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .store-repo-actions {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
@@ -1248,14 +1239,11 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .dashboard-grid .traffic-card { grid-column: 1 / -1; }
 
 /* 控制台：左侧状态+统计，右侧接入点 */
-.dashboard-body {
-  overflow: hidden;
-}
+/* Dashboard 沿用 .tab-body 的 overflow-y:auto；高度用 min-height，内容超高时可滚动到底 */
 .dashboard-layout {
   grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
   align-items: stretch;
-  min-height: 0;
-  height: 100%;
+  min-height: 100%;
 }
 .dashboard-main {
   display: flex;
@@ -1270,7 +1258,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .dashboard-access-card {
   padding: 14px 16px;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .dashboard-layout .traffic-card {
   flex: 1;
@@ -1746,7 +1734,9 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .skills-row-actions {
   display: flex;
   gap: 6px;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
 }
 .skills-pill { font-size: 11px; }
@@ -1887,11 +1877,39 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   gap: 14px;
   max-width: 960px;
 }
+/* 子 Tab 行冻结在滚动容器首行：子页再长也不会被滚出视野。
+   背景必须不透明，否则滚动内容会透过 Tab 行；z-index 低于 Modal(1000)。 */
 .settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 10px 0;
+  background: var(--surface, #0b1220);
+  border-bottom: 1px solid var(--border, rgba(142, 232, 255, .14));
 }
+
+/* 设置-概览：只读信息网格，长路径与密钥不撑破容器 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+  margin-top: 12px;
+}
+.overview-grid > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.overview-grid > div > strong { font-size: 12px; font-weight: 500; color: var(--muted, #a8bbcd); }
+.overview-grid > div > span { min-width: 0; font-size: 13px; }
+.overview-grid code { word-break: break-all; overflow-wrap: anywhere; }
+.overview-value-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.overview-value-row code { flex: 1; min-width: 0; }
+.overview-lan-list { margin-top: 10px; }
+.overview-lan-list > strong { font-size: 12px; font-weight: 500; color: var(--muted, #a8bbcd); }
+.overview-lan-list .lan-share-list { margin-top: 6px; }
+.overview-lan-list .lan-share-list li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.overview-lan-list .lan-share-list code { min-width: 0; word-break: break-all; }
 .settings-tabs .tiny-btn.active,
 .overlay-layout-switch .tiny-btn.active {
   color: var(--success, #7dffc8);
@@ -2394,20 +2412,18 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   white-space: nowrap;
   min-width: 0;
 }
+/* 工作目录选择器改走 ModalPortal，避免被 .tab-body.me-tab 的 overflow 裁切 */
+.me-place-modal {
+  width: min(480px, calc(100vw - 32px));
+  max-width: min(480px, calc(100vw - 32px));
+}
 .me-place-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
-  min-width: min(320px, 72vw);
-  max-width: min(420px, 86vw);
-  max-height: min(320px, 50vh);
+  max-height: min(420px, 60vh);
   overflow: auto;
   padding: 6px;
   border: 1px solid var(--border, rgba(142, 232, 255, .22));
   border-radius: var(--radius-sm, 12px);
   background: var(--surface-2, #0d1522);
-  box-shadow: var(--shadow, 0 12px 28px rgba(0, 0, 0, .45));
   color: var(--text, #e8f0f8);
 }
 .me-place-label {
@@ -2931,7 +2947,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 34px;
+  min-height: var(--status-bar-h, 34px);
   padding: 4px 12px 4px 14px;
   border-top: 1px solid var(--border, rgba(142, 232, 255, .16));
   background: color-mix(in srgb, var(--surface-2, #0c1422) 92%, var(--bg, #070b14));
@@ -3036,15 +3052,125 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   accent-color: var(--accent);
 }
 
-.takeover-preview {
+/* 接入影响预览弹窗：信息量大，独立承载，不塞进列表行 */
+.takeover-preview-modal {
+  width: min(640px, calc(100vw - 32px));
+  max-width: min(640px, calc(100vw - 32px));
+}
+.takeover-preview-modal .modal-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.takeover-preview-intro {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.takeover-preview-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.takeover-preview-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.takeover-preview-section {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.takeover-preview-section h5 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.takeover-preview-values {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
+  min-width: 0;
+}
+.takeover-preview-values code {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.takeover-preview-warnings {
+  border-color: var(--danger, #ff95a7);
+}
+.takeover-preview-note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.takeover-preview-actions {
+  flex-wrap: wrap;
 }
 .agent-discover-capability {
   display: block;
   margin-top: 2px;
+  overflow-wrap: anywhere;
 }
+
+/* 技能-本地技能：GitHub 地址安装、触发词与优化建议 */
+.skills-git-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.skills-git-head { display: flex; flex-direction: column; gap: 2px; }
+.skills-git-head strong { font-size: 13px; }
+.skills-git-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.skills-git-form input:first-child { flex: 1 1 260px; min-width: 0; }
+.skills-git-branch { flex: 0 1 190px; min-width: 0; }
+.skill-git-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border, rgba(142, 232, 255, .2));
+  border-radius: var(--radius-sm, 12px);
+  background: var(--surface-2, rgba(10, 16, 28, .6));
+}
+.skill-git-notice > span {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.skills-trigger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.skills-trigger-row .tiny { flex-shrink: 0; }
+.skill-advice-list { margin: 8px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7; }
+.skill-advice-list li + li { margin-top: 6px; }
+.skill-advice-list li { overflow-wrap: anywhere; }
+
+/* SOUL 只读编排层：模型只给意图，按钮走既有确定性命令 + 后果预览 */
+.me-route-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(142, 232, 255, .2));
+  border-radius: var(--radius-sm, 12px);
+  background: var(--surface-2, rgba(10, 16, 28, .6));
+}
+.me-route-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

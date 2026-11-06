@@ -31,6 +31,7 @@ pub mod store;
 pub mod codex_config;
 pub mod openai_responses_adapter;
 pub mod responses_upstream;
+pub mod soul_context;
 pub mod overlay;
 pub mod process_util;
 pub mod sugt_skill;
@@ -38,5 +39,6 @@ pub mod takeover_profiles;
 pub mod takeover_preview;
 pub mod trial;
 pub mod workspace_rules;
+pub mod window_state;
 
 pub use app::run;

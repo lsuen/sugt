@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { FileSearch, FolderOpen, Pencil, Plus, PlugZap, Search, Settings2, ShieldCheck, Trash2, Unplug, Wrench } from 'lucide-react';
 import { TakeoverProfileModal } from './TakeoverProfileModal';
+import { TakeoverPreviewModal } from './TakeoverPreviewModal';
 import { AgentDiscoverModal } from './AgentDiscoverModal';
 import { AgentAdvancedPanel } from './AgentAdvancedPanel';
 import { t } from './i18n';
@@ -29,19 +30,6 @@ export type TakeoverProfileView = {
   can_delete?: boolean;
   skills_count?: number;
   plugins_count?: number;
-};
-
-type TakeoverPreview = {
-  profile_id: string;
-  profile_name: string;
-  config_kind: string;
-  env_names: string[];
-  env_cleared: string[];
-  config_writes: { path: string; field: string }[];
-  skill_dirs: string[];
-  warnings: string[];
-  note: string;
-  revertable: boolean;
 };
 
 type ClientsEnvStatus = {
@@ -73,6 +61,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
   const [discoverOpen, setDiscoverOpen] = useState(false);
   const [advancedId, setAdvancedId] = useState<string | null>(null);
   const [envTarget, setEnvTarget] = useState<TakeoverProfileView | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<TakeoverProfileView | null>(null);
   const [envPathDraft, setEnvPathDraft] = useState('');
   const [envSaving, setEnvSaving] = useState(false);
 
@@ -222,6 +211,7 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
             onDelete={() => remove(p)}
             onEnv={() => openEnv(p)}
             onAdvanced={() => setAdvancedId(p.id)}
+            onPreview={() => setPreviewTarget(p)}
           />
         ))}
         {profiles.length === 0 && <p className="hint compact">{t('client.noAgents')}</p>}
@@ -330,6 +320,27 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
         </div>
         </ModalPortal>
       )}
+
+      {previewTarget && (
+        <TakeoverPreviewModal
+          profileId={previewTarget.id}
+          profileName={previewTarget.name}
+          configured={previewTarget.configured}
+          busy={busy}
+          onClose={() => setPreviewTarget(null)}
+          onApply={() => {
+            const target = previewTarget;
+            setPreviewTarget(null);
+            apply(target.id, target.name);
+          }}
+          onRelease={() => {
+            const target = previewTarget;
+            setPreviewTarget(null);
+            release(target.id, target.name);
+          }}
+          pushToast={pushToast}
+        />
+      )}
     </div>
   );
 }
@@ -343,6 +354,7 @@ function TakeoverProfileRow({
   onDelete,
   onEnv,
   onAdvanced,
+  onPreview,
 }: {
   profile: TakeoverProfileView;
   busy: boolean;
@@ -352,31 +364,9 @@ function TakeoverProfileRow({
   onDelete: () => void;
   onEnv: () => void;
   onAdvanced: () => void;
+  onPreview: () => void;
 }) {
   const discovered = isDiscovered(p);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [preview, setPreview] = useState<TakeoverPreview | null>(null);
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [previewError, setPreviewError] = useState('');
-
-  const togglePreview = async () => {
-    if (previewOpen) {
-      setPreviewOpen(false);
-      return;
-    }
-    setPreviewOpen(true);
-    setPreviewBusy(true);
-    setPreviewError('');
-    try {
-      const next = await invoke<TakeoverPreview>('preview_takeover', { profileId: p.id });
-      setPreview(next);
-    } catch (err) {
-      setPreviewError(String(err));
-      setPreview(null);
-    } finally {
-      setPreviewBusy(false);
-    }
-  };
 
   const metaParts = [
     p.vendor,
@@ -396,7 +386,14 @@ function TakeoverProfileRow({
         <span className="hint compact takeover-profile-row-meta">{metaParts.join(' · ')}</span>
       </div>
       <div className="takeover-profile-row-actions">
-        <button type="button" className="tiny ghost" disabled={busy} title={t('client.previewTitle')} onClick={() => void togglePreview()}>
+        <button
+          type="button"
+          className="tiny ghost"
+          disabled={busy}
+          title={t('client.previewTitle')}
+          aria-haspopup="dialog"
+          onClick={onPreview}
+        >
           <ShieldCheck size={14} />{t('client.previewBtn')}
         </button>
         <button
@@ -427,40 +424,6 @@ function TakeoverProfileRow({
           </button>
         )}
       </div>
-      {previewOpen && (
-        <div className="takeover-preview">
-          <strong className="hint compact">{t('client.previewTitle')}</strong>
-          {previewBusy && <span className="hint compact">{t('client.previewLoading')}</span>}
-          {previewError && <p className="agent-discover-warn">{previewError}</p>}
-          {preview && (
-            <>
-              <span className="hint compact">
-                {t('client.previewEnv')}：{preview.env_names.length ? preview.env_names.join(', ') : t('client.previewNone')}
-              </span>
-              {preview.env_cleared.length > 0 && (
-                <span className="hint compact">{t('client.previewCleared')}：{preview.env_cleared.join(', ')}</span>
-              )}
-              {preview.config_writes.length > 0 && (
-                <span className="hint compact">
-                  {t('client.previewConfigWrites')}：{preview.config_writes.map((w) => `${w.path} · ${w.field}`).join('；')}
-                </span>
-              )}
-              <span className="hint compact">
-                {t('client.previewSkillDirs')}：{preview.skill_dirs.length ? preview.skill_dirs.join('、') : t('client.previewNone')}
-              </span>
-              <span className="hint compact">
-                {t('client.previewRevert')}：{preview.revertable ? t('client.previewRevertYes') : t('client.previewRevertNo')}
-              </span>
-              {preview.warnings.length > 0 && (
-                <span className="hint compact">
-                  {t('client.previewWarnings')}：{preview.warnings.join('；')}
-                </span>
-              )}
-              <span className="hint compact">{preview.note}</span>
-            </>
-          )}
-        </div>
-      )}
     </div>
   );
 }

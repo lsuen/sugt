@@ -170,10 +170,140 @@ fn fingerprints() -> Vec<Fingerprint> {
     ]
 }
 
+/// 能力矩阵里登记的全部已知客户端（空查询时的目录视图）。
+/// 完全从 `agent_adapters::all()` 派生，不再维护第二份客户端清单。
+pub fn known_agents(config_dir: &Path) -> Vec<DiscoveredAgent> {
+    let existing: HashSet<String> = takeover_profiles::all_profiles(config_dir)
+        .into_iter()
+        .map(|p| p.id.to_ascii_lowercase())
+        .collect();
+    let path_bins = list_path_binaries(None);
+    let mut results: Vec<DiscoveredAgent> = crate::agent_adapters::all()
+        .iter()
+        .map(|adapter| catalog_item(adapter, &existing, &path_bins))
+        .collect();
+    results.sort_by(|a, b| {
+        confidence_rank(&a.confidence)
+            .cmp(&confidence_rank(&b.confidence))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    results
+}
+
+fn adapter_matches_query(adapter: &crate::agent_adapters::AgentAdapter, q: &str) -> bool {
+    adapter.name.to_ascii_lowercase().contains(q)
+        || adapter.vendor.to_ascii_lowercase().contains(q)
+        || adapter.id.to_ascii_lowercase().contains(q)
+        || adapter.commands.iter().any(|c| c.contains(q))
+}
+
+/// 从单一真相源构造一条候选：本机痕迹决定置信度，但目录条目始终可选、可主动接管。
+fn catalog_item(
+    adapter: &crate::agent_adapters::AgentAdapter,
+    existing: &HashSet<String>,
+    path_bins: &[PathBuf],
+) -> DiscoveredAgent {
+    let mut reasons = Vec::new();
+    let mut cli_path = None;
+    for cmd in adapter.commands {
+        if let Some(path) = find_bin(cmd, path_bins) {
+            reasons.push(format!("CLI: {}", path.display()));
+            cli_path = Some(path.display().to_string());
+            break;
+        }
+    }
+
+    let mut settings_path = None;
+    for dir in adapter.settings_dirs {
+        if let Some(path) = expand_home(dir).filter(|p| p.is_dir()) {
+            reasons.push(format!("配置目录: {}", path.display()));
+            settings_path = Some(path.display().to_string());
+            break;
+        }
+    }
+
+    let mut skill_dirs = Vec::new();
+    for dir in adapter.skill_dirs {
+        if let Some(path) = expand_home(dir) {
+            if path.is_dir() {
+                reasons.push(format!("技能目录: {}", path.display()));
+            }
+            skill_dirs.push(path.display().to_string());
+        }
+    }
+
+    let detected = cli_path.is_some()
+        || settings_path.is_some()
+        || adapter
+            .skill_dirs
+            .iter()
+            .any(|dir| expand_home(dir).is_some_and(|p| p.is_dir()));
+    reasons.push(if detected {
+        "已知客户端目录".into()
+    } else {
+        "已知客户端目录（本机未检出，可主动接管）".into()
+    });
+
+    // 旧指纹表里的环境变量模板优先；新客户端按协议给通用模板，绝不虚报官方配置格式。
+    let env_vars = fingerprints()
+        .into_iter()
+        .find(|fp| fp.id.eq_ignore_ascii_case(adapter.id))
+        .map(|fp| btreemap(fp.env_vars))
+        .unwrap_or_else(|| {
+            if adapter.protocol == "anthropic" {
+                btreemap(&[
+                    ("ANTHROPIC_BASE_URL", "{anthropic_base}"),
+                    ("ANTHROPIC_AUTH_TOKEN", "{client_key}"),
+                ])
+            } else {
+                btreemap(&[
+                    ("OPENAI_API_KEY", "{client_key}"),
+                    ("OPENAI_BASE_URL", "{openai_base}"),
+                ])
+            }
+        });
+
+    DiscoveredAgent {
+        id: adapter.id.to_string(),
+        name: adapter.name.to_string(),
+        vendor: adapter.vendor.to_string(),
+        protocol: adapter.protocol.to_string(),
+        confidence: if detected { "high" } else { "low" }.into(),
+        already_added: existing.contains(&adapter.id.to_ascii_lowercase()),
+        cli_path,
+        settings_path,
+        skill_dirs,
+        launch_command: adapter.commands.first().map(|s| s.to_string()),
+        hit_reasons: reasons,
+        env_vars,
+        clear_vars: adapter
+            .config
+            .clear_vars
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        warning: if detected {
+            None
+        } else {
+            Some("本机未检出该客户端，接管前请核对技能目录".into())
+        },
+        // 目录条目由用户主动选择，不强制补路径；接管前仍会走影响预览。
+        requires_path: false,
+        writable_fields: adapter
+            .config
+            .writable_fields
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        config_note: adapter.config.note.to_string(),
+    }
+}
+
 pub fn discover_agents(config_dir: &Path, query: &str) -> Vec<DiscoveredAgent> {
     let q = query.trim().to_ascii_lowercase();
+    // 空查询 / 单字符不再返回空列表，而是列出全部已知客户端，避免「发现不了就没法接管」。
     if q.len() < 2 {
-        return Vec::new();
+        return known_agents(config_dir);
     }
 
     let existing: HashSet<String> = takeover_profiles::all_profiles(config_dir)
@@ -242,6 +372,22 @@ pub fn discover_agents(config_dir: &Path, query: &str) -> Vec<DiscoveredAgent> {
             writable_fields: vec![],
             config_note: "未识别客户端：能力未声明，请补充目录后核对".into(),
         });
+    }
+
+    // 能力矩阵新增的客户端不在旧指纹表里：按名称 / 厂商 / 命令补入，保证搜得到国内外知名 Agent。
+    let extra: Vec<&crate::agent_adapters::AgentAdapter> = crate::agent_adapters::all()
+        .iter()
+        .filter(|adapter| {
+            !seen_ids.contains(&adapter.id.to_ascii_lowercase())
+                && adapter_matches_query(adapter, &q)
+        })
+        .collect();
+    if !extra.is_empty() {
+        let all_bins = list_path_binaries(None);
+        for adapter in extra {
+            seen_ids.insert(adapter.id.to_ascii_lowercase());
+            results.push(catalog_item(adapter, &existing, &all_bins));
+        }
     }
 
     results.sort_by(|a, b| {
@@ -529,5 +675,53 @@ mod tests {
             .find(|f| f.id == "vscode")
             .unwrap();
         assert!(fingerprint_matches_query(&vscode, "code"));
+    }
+
+    #[test]
+    fn empty_query_lists_every_known_agent() {
+        let dir = std::env::temp_dir().join(format!("sugt-discover-catalog-{}", std::process::id()));
+        let list = discover_agents(&dir, "");
+        assert_eq!(list.len(), crate::agent_adapters::all().len());
+        for id in ["codex", "claude-code", "codebuddy", "kimi", "windsurf"] {
+            assert!(list.iter().any(|a| a.id == id), "目录缺少 {id}");
+        }
+        assert!(
+            list.iter().all(|a| !a.requires_path),
+            "目录条目应允许直接选择接管"
+        );
+        assert!(
+            list.iter().all(|a| !a.config_note.is_empty()),
+            "目录条目必须带能力说明"
+        );
+    }
+
+    #[test]
+    fn newly_added_domestic_and_global_clients_are_searchable() {
+        let dir = std::env::temp_dir().join(format!("sugt-discover-search-{}", std::process::id()));
+        for (query, id) in [
+            ("codebuddy", "codebuddy"),
+            ("kimi", "kimi"),
+            ("trae", "trae"),
+            ("windsurf", "windsurf"),
+            ("灵码", "lingma"),
+        ] {
+            let list = discover_agents(&dir, query);
+            assert!(
+                list.iter().any(|a| a.id == id),
+                "查询「{query}」未找到 {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_item_uses_a_safe_env_template_for_new_clients() {
+        let dir = std::env::temp_dir().join(format!("sugt-discover-env-{}", std::process::id()));
+        let list = discover_agents(&dir, "");
+        let kimi = list.iter().find(|a| a.id == "kimi").unwrap();
+        assert_eq!(
+            kimi.env_vars.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("{openai_base}")
+        );
+        assert!(!kimi.env_vars.contains_key("ANTHROPIC_BASE_URL"));
     }
 }

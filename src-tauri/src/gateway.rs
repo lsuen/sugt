@@ -945,15 +945,18 @@ async fn proxy_request(
     if path == "v1/responses" || path.starts_with("v1/responses/") {
         let (body_bytes, rules_injected) =
             apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses, &headers);
-        return proxy_responses_via_chat(
-            state,
-            headers,
-            method,
-            body_bytes,
-            &query,
-            rules_injected,
-        )
-        .await;
+        // 失败出口必须就地包装成 Responses 形状：上抛到 proxy_openai 只会得到
+        // 通用 502 JSON，客户端按 Responses 反序列化失败且看不到上游归因。
+        let failure_body = body_bytes.clone();
+        match proxy_responses_via_chat(state, headers, method, body_bytes, &query, rules_injected)
+            .await
+        {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                warn!(error = %err, "codex responses 上游全部失败，返回 Responses 形状失败响应");
+                return responses_failure_response(&failure_body, &err.to_string());
+            }
+        }
     }
 
     let (body_bytes, rules_injected) =
@@ -1700,6 +1703,38 @@ fn extract_usage_from_json(value: &Value) -> Option<(u64, u64)> {
         None
     } else {
         Some((input, output))
+    }
+}
+
+/// 把 /v1/responses 的上游失败包装成 Responses 形状：
+/// 非流式给 `status: failed` 的 JSON，流式给 `response.failed` 事件流。
+/// attempt 耗尽、5xx、熔断等所有出口都走这里，不再退化成通用 502 错误体。
+fn responses_failure_response(body_bytes: &[u8], message: &str) -> anyhow::Result<Response<Body>> {
+    let request: Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| json!({}));
+    let model = request
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("sugt-gateway");
+    let is_stream = request
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if is_stream {
+        let events = crate::openai_responses_adapter::upstream_failure_sse(model, message);
+        Ok(Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header(
+                http::header::CONTENT_TYPE,
+                "text/event-stream; charset=utf-8",
+            )
+            .header(http::header::CACHE_CONTROL, "no-cache")
+            .body(Body::from(events))?)
+    } else {
+        let bytes = crate::openai_responses_adapter::responses_upstream_failure(model, message)?;
+        Ok(Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(bytes))?)
     }
 }
 

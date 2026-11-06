@@ -982,19 +982,22 @@ pub async fn chat_to_responses(response: Response, model: &str) -> Result<Bytes>
     Ok(chat_json_to_responses_body(&body, model)?)
 }
 
+/// 兼容层常在 HTTP 200 的正常响应里附带 `"error": null`、空串或空对象。
+/// 流式与非流式必须共用这一个判定，否则一边修好另一边仍会把整轮对话判成失败。
+fn is_real_error_value(err: &Value) -> bool {
+    match err {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Object(fields) => !fields.is_empty(),
+        _ => true,
+    }
+}
+
 /// 判断上游 body 是否为错误体（含 HTTP 200 里夹带 error 对象的兼容层响应）。
 pub fn is_openai_compat_error_body(body: &str) -> bool {
     let value: Value = serde_json::from_str(body).unwrap_or(json!({}));
     if let Some(err) = value.get("error") {
-        // 部分兼容层会在 HTTP 200 的正常响应里附带 `"error": null` 或空对象，
-        // 只有真正带内容的 error 才算错误体，否则整轮对话会被误判成失败。
-        let is_real_error = match err {
-            Value::Null => false,
-            Value::String(text) => !text.trim().is_empty(),
-            Value::Object(fields) => !fields.is_empty(),
-            _ => true,
-        };
-        if is_real_error {
+        if is_real_error_value(err) {
             return true;
         }
     }
@@ -1014,7 +1017,7 @@ pub fn chat_json_to_responses_body(body: &str, model: &str) -> Result<Bytes> {
 /// 上游返回空 body / 非法 JSON 时构造 Responses 形状的失败响应。
 /// 之前会伪装成 `status: completed` 的空回复，客户端以为模型「正常地什么都没说」，
 /// 工具闭环就此静默断掉；现在明确失败并带上可诊断的 error 对象。
-fn responses_upstream_failure(model: &str, message: &str) -> Result<Bytes> {
+pub(crate) fn responses_upstream_failure(model: &str, message: &str) -> Result<Bytes> {
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1770,6 +1773,11 @@ fn extract_reasoning_delta(parsed: &Value) -> Option<String> {
 
 fn upstream_error_message(parsed: &Value) -> Option<String> {
     if let Some(err) = parsed.get("error") {
+        // 与非流式共用判定：`error: null` / "" / {} 是兼容层的正常分片，
+        // 不能触发 response.failed 并打断后续 SSE 事件序列。
+        if !is_real_error_value(err) {
+            return None;
+        }
         if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
             return Some(msg.to_string());
         }

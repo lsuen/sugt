@@ -63,6 +63,13 @@ const ENV_CAPABILITY: ConfigCapability = ConfigCapability {
     note: "仅写用户环境变量，不改客户端配置文件；释放时清除变量即可还原",
 };
 
+/// 尚未确认官方 skill 目录的客户端：统一声明为「仅写环境变量 + 通用目录兜底」。
+/// 候选目录里始终包含跨 Agent 事实标准 `~/.agents/skills`，专有目录探测不到时不会无处挂载。
+const GENERIC_CAPABILITY: ConfigCapability = ConfigCapability {
+    note: "未确认官方 skill 目录，按候选探测并回落到跨 Agent 通用目录；仅写用户环境变量",
+    ..ENV_CAPABILITY
+};
+
 /// 未在表内的自定义客户端：声明为「能力未知」，绝不虚报可写配置。
 const UNKNOWN_CAPABILITY: ConfigCapability = ConfigCapability {
     kind: ConfigKind::UserEnv,
@@ -211,6 +218,163 @@ static ADAPTERS: &[AgentAdapter] = &[
             ..ENV_CAPABILITY
         },
     },
+    // 国内常见 Agent / IDE 客户端（2025-2026）。
+    // 未确认官方 skill 目录的一律走 GENERIC_CAPABILITY，专有目录只是探测候选。
+    AgentAdapter {
+        id: "codebuddy",
+        name: "CodeBuddy",
+        vendor: "Tencent",
+        protocol: "openai",
+        commands: &["codebuddy"],
+        settings_dirs: &["~/.codebuddy", "~/.config/CodeBuddy"],
+        skill_dirs: &["~/.codebuddy/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".codebuddy/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "trae",
+        name: "Trae",
+        vendor: "ByteDance",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.trae", "~/.config/Trae"],
+        skill_dirs: &["~/.trae/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".trae/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "lingma",
+        name: "通义灵码 Lingma",
+        vendor: "Alibaba",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.lingma", "~/.config/Lingma"],
+        skill_dirs: &["~/.lingma/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".lingma/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "iflow",
+        name: "iFlow CLI",
+        vendor: "iFlow",
+        protocol: "openai",
+        commands: &["iflow"],
+        settings_dirs: &["~/.iflow"],
+        skill_dirs: &["~/.iflow/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".iflow/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "kimi",
+        name: "Kimi CLI",
+        vendor: "Moonshot AI",
+        protocol: "openai",
+        commands: &["kimi"],
+        settings_dirs: &["~/.kimi"],
+        skill_dirs: &["~/.kimi/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".kimi/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "qoder",
+        name: "Qoder",
+        vendor: "Alibaba",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.qoder", "~/.config/Qoder"],
+        skill_dirs: &["~/.qoder/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".qoder/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "comate",
+        name: "百度 Comate",
+        vendor: "Baidu",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.comate"],
+        skill_dirs: &["~/.comate/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".comate/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "codegeex",
+        name: "CodeGeeX",
+        vendor: "Zhipu AI",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.codegeex"],
+        skill_dirs: &["~/.codegeex/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".codegeex/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    // 国外常见 Agent / IDE 客户端。
+    AgentAdapter {
+        id: "windsurf",
+        name: "Windsurf",
+        vendor: "Codeium",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.windsurf", "~/.codeium"],
+        skill_dirs: &["~/.windsurf/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".windsurf/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "cline",
+        name: "Cline",
+        vendor: "Cline",
+        protocol: "openai",
+        commands: &["cline"],
+        settings_dirs: &["~/.cline"],
+        skill_dirs: &["~/.cline/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".cline/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "copilot-cli",
+        name: "GitHub Copilot CLI",
+        vendor: "GitHub",
+        protocol: "openai",
+        commands: &["copilot"],
+        settings_dirs: &["~/.copilot"],
+        skill_dirs: &["~/.copilot/skills", "~/.github/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".github/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "kiro",
+        name: "Kiro",
+        vendor: "AWS",
+        protocol: "openai",
+        commands: &["kiro"],
+        settings_dirs: &["~/.kiro"],
+        skill_dirs: &["~/.kiro/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".kiro/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "goose",
+        name: "Goose",
+        vendor: "Block",
+        protocol: "openai",
+        commands: &["goose"],
+        settings_dirs: &["~/.config/goose"],
+        skill_dirs: &["~/.config/goose/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".goose/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
+    AgentAdapter {
+        id: "droid",
+        name: "Factory Droid",
+        vendor: "Factory",
+        protocol: "openai",
+        commands: &["droid"],
+        settings_dirs: &["~/.factory"],
+        skill_dirs: &["~/.factory/skills", "~/.agents/skills"],
+        project_skill_dirs: &[".factory/skills", ".agents/skills"],
+        config: ConfigCapability { ..GENERIC_CAPABILITY },
+    },
 ];
 
 pub fn all() -> &'static [AgentAdapter] {
@@ -357,6 +521,40 @@ mod tests {
             canonical_skill_dir("unknown").unwrap(),
             home.join(".agents").join("skills")
         );
+    }
+
+    #[test]
+    fn catalog_covers_domestic_and_global_clients() {
+        let ids: Vec<&str> = all().iter().map(|a| a.id).collect();
+        for id in [
+            "codebuddy", "trae", "lingma", "iflow", "kimi", "qoder", "comate", "codegeex",
+            "windsurf", "cline", "copilot-cli", "kiro", "goose", "droid",
+        ] {
+            assert!(ids.contains(&id), "能力矩阵缺少 {id}");
+        }
+    }
+
+    #[test]
+    fn unconfirmed_skill_dirs_always_have_a_shared_fallback() {
+        for adapter in all()
+            .iter()
+            .filter(|a| a.config.note.contains("未确认官方 skill 目录"))
+        {
+            assert!(
+                adapter
+                    .skill_dirs
+                    .iter()
+                    .any(|dir| *dir == "~/.agents/skills"),
+                "{} 缺少跨 Agent 通用兜底目录",
+                adapter.id
+            );
+            assert_eq!(
+                adapter.config.kind,
+                ConfigKind::UserEnv,
+                "{} 未确认能力，不能声称写配置文件",
+                adapter.id
+            );
+        }
     }
 
     #[test]

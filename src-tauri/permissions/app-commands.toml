@@ -216,6 +216,7 @@ commands.allow = [
   "store_ensure_preferred_repo",
   "store_list_catalog",
   "store_install_skill",
+  "store_install_git_skills",
   "store_uninstall_skill",
   "store_mount_skill",
   "store_unmount_skill",

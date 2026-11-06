@@ -341,7 +341,9 @@ fn prompt_names_both_directories_and_a_fresh_shell() {
 fn shell_runs_in_the_given_directory() {
     let dir = temp_dir("echo");
     fs::write(dir.join("marker.txt"), "here").unwrap();
-    let outcome = run_shell(&dir, "pwd && cat marker.txt", Duration::from_secs(5), 1000);
+    // 本用例只验证工作目录与输出，不验证超时；并发跑全量套件时 shell 启动可能被拖慢，
+    // 放宽到 15s 避免偶发假红。超时行为由 `shell_times_out_and_stops` 单独覆盖。
+    let outcome = run_shell(&dir, "pwd && cat marker.txt", Duration::from_secs(15), 1000);
     assert_eq!(outcome.exit_code, Some(0), "{}", outcome.output);
     assert!(outcome.output.contains("here"), "{}", outcome.output);
     let shown = outcome.output.lines().next().unwrap().trim();

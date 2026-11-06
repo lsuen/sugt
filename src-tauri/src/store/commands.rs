@@ -231,6 +231,23 @@ pub async fn store_install_skill(
     install_skill(&store_paths, &skill_id).map_err(|e| e.to_string())
 }
 
+/// 输入 GitHub / Gitee 地址一步装进「本地技能」。下载解压与回滚都在后端确定性完成，
+/// 模型只负责解释与建议，绝不参与写文件。
+#[tauri::command]
+pub async fn store_install_git_skills(
+    runtime: State<'_, AppRuntime>,
+    url: String,
+    branch: Option<String>,
+) -> Result<crate::store::github_install::GitSkillInstallResult, String> {
+    let store_paths = store_paths(&runtime);
+    crate::store::github_install::install_from_git_url(
+        &store_paths,
+        &url,
+        branch.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn store_uninstall_skill(
     runtime: State<'_, AppRuntime>,

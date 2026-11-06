@@ -43,22 +43,48 @@ fn parse_table(raw: &str, path: &Path) -> Result<toml::Table> {
     })
 }
 
-/// 原子写：先写临时文件再 rename，避免半截文件。
+/// 原子写：先写临时文件，再用「备份 → 替换 → 失败回滚」落地。
+///
+/// Windows 的 `rename` 不能覆盖已存在的目标，旧实现先删原文件再搬，
+/// 一旦 rename 失败（文件被占用 / 权限）原文件就永久丢失。这里所有平台
+/// 统一先把原文件搬到带 pid 的备份位，替换失败就从备份位还原。
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("config");
     let tmp = path.with_file_name(format!("{name}.sugt-tmp"));
-    std::fs::write(&tmp, content)
-        .with_context(|| format!("无法写入临时文件 {}", tmp.display()))?;
-    #[cfg(windows)]
-    if path.exists() {
-        std::fs::remove_file(path)
-            .with_context(|| format!("无法替换 {}", path.display()))?;
+    std::fs::write(&tmp, content).with_context(|| format!("无法写入临时文件 {}", tmp.display()))?;
+    match replace_with_backup(path, &tmp) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            // 失败绝不留下半成品临时文件。
+            let _ = std::fs::remove_file(&tmp);
+            Err(err)
+        }
     }
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("无法替换 {}", path.display()))?;
+}
+
+/// 把 tmp 替换成目标文件；失败时把原文件从备份位还原。
+fn replace_with_backup(path: &Path, tmp: &Path) -> Result<()> {
+    if path.is_dir() {
+        anyhow::bail!("目标路径是目录，拒绝替换 {}", path.display());
+    }
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config");
+    let backup = path.with_file_name(format!("{name}.sugt-{}.backup", std::process::id()));
+    if path.exists() {
+        std::fs::rename(path, &backup).with_context(|| format!("无法备份 {}", path.display()))?;
+    }
+    if let Err(err) = std::fs::rename(tmp, path) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, path);
+        }
+        return Err(err).with_context(|| format!("无法替换 {}", path.display()));
+    }
+    let _ = std::fs::remove_file(&backup);
     Ok(())
 }
 
@@ -261,7 +287,7 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
             }
         } else {
             // 快照里记录了接管前的原值，交给 prune 精确还原，不靠字符串猜。
-            prune_sugt_fields(&config_path, config, Some(&state))?;
+            prune_sugt_fields(&config_path, config, Some(&state), None)?;
         }
 
         let current_auth = if auth_path.is_file() {
@@ -274,14 +300,24 @@ pub fn clear_sugt_codex_overrides(config: &AppConfig) -> Result<()> {
                 Some(raw) => atomic_write(&auth_path, raw)?,
                 None => remove_file_if_exists(&auth_path)?,
             }
+        } else {
+            // 用户自行改过 auth.json：只清确定由 SUGT 注入的两个键，
+            // tokens / account_id 等登录态字段一律保留。
+            prune_sugt_auth_fields(&auth_path, config)?;
         }
-        // 用户自行改过 auth.json 时保留其改动，不猜测、不覆盖。
         remove_file_if_exists(&state_path(&codex_dir))?;
         return Ok(());
     }
 
-    // 兼容旧版本（没有快照）：沿用定点清理；无法确认归属时保守不动鉴权项。
-    prune_sugt_fields(&config_path, config, None)
+    // 兼容旧版本（没有快照）：1.1.7 根本不写快照，且无条件覆盖三个标量
+    // 与整个 auth.json。识别到该形态时按已知写入值清理，其它情况仍保守不动。
+    let legacy_base = legacy_1_1_7_gateway_base(&config_path);
+    if legacy_base.is_some() {
+        tracing::warn!("检测到 1.1.7 遗留 Codex 接管态，按已知写入值清理残留字段");
+    }
+    prune_sugt_fields(&config_path, config, None, legacy_base.as_deref())?;
+    prune_sugt_auth_fields(&auth_path, config)?;
+    Ok(())
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {
@@ -292,16 +328,82 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 识别 1.1.7 已发布版留下的接管态，返回当时写入的网关地址。
+///
+/// 1.1.7 的特征是：无快照文件、model 没有 `sugt-` 别名前缀、provider 不带
+/// `requires_openai_auth` / `capabilities`、顶层没有注入的 `web_search`。
+/// 这些条件同时成立时，残留的三个标量与 auth.json 都确定是 SUGT 写入的，
+/// 而不是用户原值；只在此时才按已知值清理，其它形态一律保守保留。
+fn legacy_1_1_7_gateway_base(config_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    let table: toml::Table = toml::from_str(&raw).ok()?;
+    if table.get("model_provider").and_then(|value| value.as_str()) != Some(SUGT_PROVIDER_ID) {
+        return None;
+    }
+    let model = table.get("model")?.as_str()?;
+    if model.is_empty() || model.starts_with("sugt-") {
+        return None;
+    }
+    if table.contains_key("web_search") {
+        return None;
+    }
+    let provider = table
+        .get("model_providers")?
+        .as_table()?
+        .get(SUGT_PROVIDER_ID)?
+        .as_table()?;
+    if provider.get("wire_api")?.as_str()? != "responses" {
+        return None;
+    }
+    if provider.contains_key("requires_openai_auth") || provider.contains_key("capabilities") {
+        return None;
+    }
+    Some(provider.get("base_url")?.as_str()?.to_string())
+}
+
+/// 清理 auth.json 里确定由 SUGT 注入的两个键，保留用户其它登录态字段。
+///
+/// 判定条件是「auth_mode=apikey 且 key 等于本机网关 key 或带 sugt- 前缀」，
+/// 用户自己换过的 key 绝不碰；清完若为空对象就删掉文件，让客户端重新登录。
+fn prune_sugt_auth_fields(auth_path: &Path, config: &AppConfig) -> Result<()> {
+    if !auth_path.is_file() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(auth_path)?;
+    let mut value: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) if value.is_object() => value,
+        _ => return Ok(()), // 非法内容绝不猜测、绝不覆盖
+    };
+    let object = value.as_object_mut().expect("已确保是 JSON object");
+    let auth_mode_is_ours = object.get("auth_mode").and_then(|v| v.as_str()) == Some("apikey");
+    let gateway_key = crate::clients::client_api_key_for_config(config);
+    let key_is_ours = object
+        .get("OPENAI_API_KEY")
+        .and_then(|v| v.as_str())
+        .is_some_and(|key| key == gateway_key || key.starts_with("sugt-"));
+    if !(auth_mode_is_ours && key_is_ours) {
+        return Ok(());
+    }
+    object.remove("OPENAI_API_KEY");
+    object.remove("auth_mode");
+    if object.is_empty() {
+        remove_file_if_exists(auth_path)?;
+    } else {
+        atomic_write(auth_path, &serde_json::to_string_pretty(&value)?)?;
+    }
+    Ok(())
+}
+
 /// 只移除 SUGT 写入的字段，保留用户其它配置；用 toml_edit 保留注释与原格式。
 ///
-/// `apply_codex_config` 会无条件覆盖 `model` / `preferred_auth_method` /
-/// `cli_auth_credentials_store`，原值只存在于快照里。有快照时按
-/// `config_after`（SUGT 写入的值）判断字段是否被用户改过，再按
-/// `config_before` 精确还原；无快照的旧版本路径宁可残留，也绝不误删用户配置。
+/// 有快照时按 `config_after`（SUGT 写入的值）判断字段是否被用户改过，再按
+/// `config_before` 精确还原；无快照时只有识别到 1.1.7 遗留态才按已知值清理，
+/// 其它情况宁可残留，也绝不误删用户配置。
 fn prune_sugt_fields(
     config_path: &Path,
     config: &AppConfig,
     state: Option<&TakeoverState>,
+    legacy_base: Option<&str>,
 ) -> Result<()> {
     if !config_path.is_file() {
         return Ok(());
@@ -314,6 +416,12 @@ fn prune_sugt_fields(
         )
     })?;
     let expected = format!("{}/v1", config.listen_url());
+    let public_model = config
+        .providers
+        .iter()
+        .find(|provider| config.active_provider_id.as_ref() == Some(&provider.id))
+        .map(|provider| provider.public_model_id())
+        .unwrap_or_else(|| "gpt-4".to_string());
     let web_search_injected = state.is_some_and(|s| s.web_search_injected);
     let before_doc = state
         .and_then(|s| s.config_before.as_deref())
@@ -347,7 +455,11 @@ fn prune_sugt_fields(
         doc.remove("model_providers");
     }
     // 只删 SUGT 自己写进去的那个值；不再按 contains("localhost") 误删用户的本地服务。
-    if doc.get("openai_base_url").and_then(|v| v.as_str()) == Some(expected.as_str()) {
+    // 1.1.7 遗留态额外按 provider 里记录的 base_url 判定，避免网关端口变化后残留。
+    let current_base = doc.get("openai_base_url").and_then(|v| v.as_str());
+    if current_base == Some(expected.as_str())
+        || (legacy_base.is_some() && current_base == legacy_base)
+    {
         doc.remove("openai_base_url");
         changed = true;
     }
@@ -376,9 +488,26 @@ fn prune_sugt_fields(
             .and_then(|item| item.as_str())
             .map(str::to_string);
         let Some(ours) = ours else {
-            // 没有快照（旧版本）或快照不可解析：只清理确定由 SUGT 生成的模型别名，
-            // 鉴权两项归属不明，宁可残留也不能误删用户自己的配置。
-            if key == "model" && current.is_some_and(|value| value.starts_with("sugt-")) {
+            // 没有快照（旧版本）或快照不可解析：只清理确定由 SUGT 写入的值。
+            if legacy_base.is_some() {
+                // 1.1.7 无条件覆盖了这三个标量，残留的不是用户原值。
+                // 仍按值判定：用户在接管期间改过的字段一律保留。
+                let cleanup = match key {
+                    "model" => current.as_deref().is_some_and(|value| {
+                        value.starts_with("sugt-") || value == public_model.as_str()
+                    }),
+                    "preferred_auth_method" => current.as_deref() == Some("apikey"),
+                    "cli_auth_credentials_store" => current.as_deref() == Some("file"),
+                    _ => false,
+                };
+                if cleanup {
+                    doc.remove(key);
+                    changed = true;
+                }
+            } else if key == "model"
+                && current.is_some_and(|value| value.starts_with("sugt-"))
+            {
+                // 新版丢失快照：只清确定由 SUGT 生成的模型别名，鉴权两项保守保留。
                 doc.remove(key);
                 changed = true;
             }
@@ -970,4 +1099,173 @@ mod tests {
         });
     }
 
+    /// 复刻 1.1.7 已发布版的写入结果：没有快照文件、model 无 sugt- 别名前缀、
+    /// provider 不带第三方能力声明、auth.json 只剩 SUGT 注入的两个键。
+    fn write_legacy_1_1_7_takeover(home: &Path, config: &AppConfig) {
+        let openai_base = format!("{}/v1", config.listen_url());
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                concat!(
+                    "model_provider = \"sugt\"\n",
+                    "model = \"demo-model\"\n",
+                    "openai_base_url = \"{base}\"\n",
+                    "preferred_auth_method = \"apikey\"\n",
+                    "cli_auth_credentials_store = \"file\"\n",
+                    "\n[model_providers.sugt]\n",
+                    "name = \"SUGT\"\n",
+                    "base_url = \"{base}\"\n",
+                    "wire_api = \"responses\"\n"
+                ),
+                base = openai_base
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("auth.json"),
+            serde_json::json!({
+                "auth_mode": "apikey",
+                "OPENAI_API_KEY": crate::clients::client_api_key_for_config(config),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(home.join(STATE_FILE));
+    }
+
+    /// DEF-004：1.1.7 升级用户取消接管时，不能把 SUGT 自己写入的固定值
+    /// 当成「用户原值」保守保留，否则仍是半接管状态。
+    #[test]
+    fn release_cleans_legacy_1_1_7_takeover_residue() {
+        with_codex_home(|home| {
+            let config = sample_config(18801);
+            write_legacy_1_1_7_takeover(home, &config);
+
+            clear_sugt_codex_overrides(&config).unwrap();
+
+            let after = std::fs::read_to_string(home.join("config.toml")).unwrap();
+            let table: toml::Table = toml::from_str(&after).unwrap();
+            for key in [
+                "model_provider",
+                "model_providers",
+                "openai_base_url",
+                "model",
+                "preferred_auth_method",
+                "cli_auth_credentials_store",
+            ] {
+                assert!(
+                    table.get(key).is_none(),
+                    "1.1.7 残留字段 {key} 未被清理：{after}"
+                );
+            }
+            let auth_path = home.join("auth.json");
+            if auth_path.is_file() {
+                let auth: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+                assert!(
+                    auth.get("OPENAI_API_KEY").is_none(),
+                    "1.1.7 注入的本地网关 key 必须清理：{auth}"
+                );
+                assert!(
+                    auth.get("auth_mode").and_then(|v| v.as_str()) != Some("apikey"),
+                    "apikey 认证方式必须清理，否则 ChatGPT 登录态不可用：{auth}"
+                );
+            }
+        });
+    }
+
+    /// DEF-004：用户在 1.1.7 接管期间手工补过登录态字段时，
+    /// 只清 SUGT 注入的两个键，其它字段一律保留。
+    #[test]
+    fn release_keeps_user_fields_when_legacy_auth_was_edited() {
+        with_codex_home(|home| {
+            let config = sample_config(18802);
+            write_legacy_1_1_7_takeover(home, &config);
+            let auth_path = home.join("auth.json");
+            std::fs::write(
+                &auth_path,
+                serde_json::json!({
+                    "auth_mode": "apikey",
+                    "OPENAI_API_KEY": crate::clients::client_api_key_for_config(&config),
+                    "tokens": { "id_token": "keep" },
+                    "account_id": "acct_1",
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            clear_sugt_codex_overrides(&config).unwrap();
+
+            let auth: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&auth_path).unwrap()).unwrap();
+            assert_eq!(auth["tokens"]["id_token"], "keep", "用户登录态字段必须保留");
+            assert_eq!(auth["account_id"], "acct_1");
+            assert!(
+                auth.get("OPENAI_API_KEY").is_none(),
+                "假网关 key 必须清理：{auth}"
+            );
+            assert!(
+                auth.get("auth_mode").is_none(),
+                "SUGT 注入的 apikey 必须清理：{auth}"
+            );
+        });
+    }
+
+    /// DEF-007：替换失败时不能留下临时文件，也不能破坏原内容。
+    /// 目标是目录时 rename 必然失败，这条用例在所有平台都能复现该失败路径。
+    #[test]
+    fn atomic_write_failure_cleans_temp_and_keeps_original() {
+        with_codex_home(|home| {
+            let target = home.join("config.toml");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::write(target.join("keep.txt"), "keep").unwrap();
+
+            let result = atomic_write(&target, "new content");
+            assert!(result.is_err(), "目标是目录时替换应当失败");
+            assert!(
+                target.join("keep.txt").is_file(),
+                "替换失败后原内容必须保持不变"
+            );
+            let tmp = home.join("config.toml.sugt-tmp");
+            assert!(!tmp.exists(), "替换失败后必须清理临时文件：{tmp:?}");
+        });
+    }
+
+    /// DEF-007：替换失败时把原文件从备份位还原，绝不丢用户配置。
+    #[test]
+    fn replace_with_backup_restores_original_when_rename_fails() {
+        with_codex_home(|home| {
+            let target = home.join("config.toml");
+            std::fs::write(&target, "original").unwrap();
+            let missing_tmp = home.join("missing.tmp");
+            assert!(
+                replace_with_backup(&target, &missing_tmp).is_err(),
+                "临时文件不存在时替换必须失败"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&target).unwrap(),
+                "original",
+                "替换失败后原文件必须从备份位还原"
+            );
+        });
+    }
+
+    /// 正常写入后临时文件与备份文件都不能残留。
+    #[test]
+    fn atomic_write_success_cleans_temp_and_backup() {
+        with_codex_home(|home| {
+            let target = home.join("config.toml");
+            std::fs::write(&target, "old").unwrap();
+            atomic_write(&target, "new").unwrap();
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+            assert!(!home.join("config.toml.sugt-tmp").exists());
+            let leftovers: Vec<String> = std::fs::read_dir(home)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .filter(|name| name.contains(".backup"))
+                .collect();
+            assert!(leftovers.is_empty(), "成功后不能留下备份文件：{leftovers:?}");
+        });
+    }
 }

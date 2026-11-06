@@ -1,5 +1,5 @@
 use crate::store::catalog::{
-    load_mounted_meta, load_staged_meta, parse_skill_md, save_mounted_meta, save_staged_meta,
+    load_mounted_meta, load_staged_meta, parse_skill_meta, save_mounted_meta, save_staged_meta,
     MountedSkillRecord, StagedSkillRecord,
 };
 use crate::store::install::{folder_name_from_record, mount_to_dir, now_secs, MountTarget};
@@ -36,6 +36,10 @@ pub struct LocalSkillView {
     /// 已挂到的自定义/项目路径
     pub mounted_paths: Vec<String>,
     pub is_local: bool,
+    /// SKILL.md frontmatter 里声明的触发词（未声明则为空）
+    pub triggers: Vec<String>,
+    /// 规则化优化建议，LLM 不可用时仍可展示
+    pub suggestions: Vec<String>,
 }
 
 pub fn list_skill_agents(config_dir: &Path) -> Vec<SkillAgentView> {
@@ -86,8 +90,14 @@ pub fn list_local_skills(store_paths: &StorePaths, config_dir: &Path) -> Result<
     let mut items = Vec::new();
     for (skill_id, record) in staged.skills.iter() {
         let skill_dir = store_paths.staged_skill_dir(skill_id);
-        let (name, description) = parse_skill_md(&skill_dir.join("SKILL.md"))
-            .unwrap_or_else(|_| (record.name.clone(), None));
+        let meta = parse_skill_meta(&skill_dir.join("SKILL.md")).unwrap_or_else(|_| {
+            crate::store::catalog::SkillMeta {
+                name: record.name.clone(),
+                description: None,
+                triggers: Vec::new(),
+                suggestions: vec!["SKILL.md 缺失或不可读，建议补一份标准技能说明".to_string()],
+            }
+        });
         let mounted_ids = mounted
             .skills
             .get(skill_id)
@@ -107,8 +117,10 @@ pub fn list_local_skills(store_paths: &StorePaths, config_dir: &Path) -> Result<
             .unwrap_or_default();
         items.push(LocalSkillView {
             id: skill_id.clone(),
-            name,
-            description,
+            name: meta.name,
+            description: meta.description,
+            triggers: meta.triggers,
+            suggestions: meta.suggestions,
             repo_id: record.repo_id.clone(),
             repo_label: if record.repo_id == "local" {
                 "本地自建".into()
@@ -365,8 +377,9 @@ pub fn create_local_skill(store_paths: &StorePaths, name: &str) -> Result<LocalS
         return Err(anyhow!("本地技能已存在：{}", slug));
     }
     std::fs::create_dir_all(&dest)?;
+    // 模板自带 frontmatter / 触发词 / 分节，新建技能不用再从零猜格式。
     let skill_md = format!(
-        "---\nname: {name}\ndescription: A custom skill managed by SUGT.\n---\n\n# {name}\n\nDescribe when to use this skill and the steps to follow.\n"
+        "---\nname: {name}\ndescription: 说明这个技能做什么、什么时候用（建议写清适用场景与触发条件）。\ntriggers: \n---\n\n# {name}\n\n## 使用场景\n\n在这里写清什么情况下应该调用本技能。\n\n## 步骤\n\n1. 第一步\n2. 第二步\n\n## 示例\n\n在这里给一个最小可用示例。\n"
     );
     std::fs::write(dest.join("SKILL.md"), skill_md)?;
 
@@ -385,13 +398,15 @@ pub fn create_local_skill(store_paths: &StorePaths, name: &str) -> Result<LocalS
     Ok(LocalSkillView {
         id: skill_id,
         name: name.to_string(),
-        description: Some("A custom skill managed by SUGT.".into()),
+        description: Some("说明这个技能做什么、什么时候用（建议写清适用场景与触发条件）。".into()),
         repo_id: "local".into(),
         repo_label: "本地自建".into(),
         relative_path: slug,
         mounted_agents: vec![],
         mounted_paths: vec![],
         is_local: true,
+        triggers: vec![],
+        suggestions: vec!["triggers 为空：填入用户可能说出的词，Agent 更容易命中本技能".into()],
     })
 }
 

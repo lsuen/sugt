@@ -53,12 +53,8 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
 
   useEffect(() => {
     if (!open) return;
+    // 空查询直接列出能力矩阵里的全部已知客户端（含国内外常见 Agent），不再要求先输两个字。
     const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      setRows({});
-      return;
-    }
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setSearching(true);
@@ -193,7 +189,7 @@ export function AgentDiscoverModal({ open, busy, onClose, onAdded, onError }: Pr
           </label>
 
           {searching && <p className="hint compact">{t('common.searching')}</p>}
-          {!searching && query.trim().length >= 2 && results.length === 0 && (
+          {!searching && results.length === 0 && (
             <p className="hint compact">{t('disc.noMatch')}</p>
           )}
 

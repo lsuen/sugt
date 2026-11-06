@@ -20,6 +20,8 @@ export type LocalSkillView = {
   mounted_agents: MountedAgentRef[];
   mounted_paths?: string[];
   is_local: boolean;
+  triggers?: string[];
+  suggestions?: string[];
 };
 
 export type SkillAgentView = {
@@ -68,6 +70,10 @@ export function SkillsPanel({
   const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
   const [customPath, setCustomPath] = useState('');
   const [newSkillName, setNewSkillName] = useState('');
+  const [gitUrl, setGitUrl] = useState('');
+  const [gitBranch, setGitBranch] = useState('');
+  const [gitNotice, setGitNotice] = useState<string | null>(null);
+  const [adviceSkill, setAdviceSkill] = useState<LocalSkillView | null>(null);
   const [newRepo, setNewRepo] = useState({ url: '', branch: 'main', weight: '100' });
   const [repoTestHint, setRepoTestHint] = useState<string | null>(null);
   const [parsedPreview, setParsedPreview] = useState<ParsedGitRepo | null>(null);
@@ -222,6 +228,45 @@ export function SkillsPanel({
       await invoke('store_install_skill', { skillId: id });
       await Promise.all([reloadLocal(), reloadDiscover()]);
     }, t('skill.installed'));
+
+  type GitInstallResult = {
+    source: string;
+    branch: string;
+    installed: string[];
+    skill_ids: string[];
+    note: string;
+  };
+
+  // GitHub / Gitee 地址一步装进「本地技能」：下载、校验、落地与回滚全在后端确定性完成。
+  const installGitSkills = () =>
+    run(async () => {
+      const result = await invoke<GitInstallResult>('store_install_git_skills', {
+        url: gitUrl.trim(),
+        branch: gitBranch.trim() || undefined,
+      });
+      setGitUrl('');
+      setGitBranch('');
+      setTab('local');
+      setGitNotice(result.note);
+      await reloadLocal();
+    });
+
+  const openAdviceSkill = () => {
+    if (!adviceSkill) return;
+    const id = adviceSkill.id;
+    void run(async () => {
+      await invoke('store_open_skill', { skillId: id, staged: true });
+    });
+  };
+
+  useEffect(() => {
+    if (!adviceSkill) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAdviceSkill(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [adviceSkill]);
 
   const uninstallSkill = (id: string) =>
     run(async () => {
@@ -431,6 +476,47 @@ export function SkillsPanel({
                 <Plus size={14} />{t('skill.new')}
               </button>
             </div>
+
+            <div className="skills-git-row">
+              <div className="skills-git-head">
+                <strong>{t('skill.gitTitle')}</strong>
+                <span className="hint compact">{t('skill.gitHint')}</span>
+              </div>
+              <div className="skills-git-form">
+                <input
+                  placeholder={t('skill.gitPlaceholder')}
+                  value={gitUrl}
+                  disabled={busy}
+                  onChange={(e) => setGitUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && gitUrl.trim() && !busy) installGitSkills();
+                  }}
+                />
+                <input
+                  className="skills-git-branch"
+                  placeholder={t('skill.gitBranchPlaceholder')}
+                  title={t('skill.gitBranch')}
+                  value={gitBranch}
+                  disabled={busy}
+                  onChange={(e) => setGitBranch(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="primary tiny-btn"
+                  disabled={busy || !gitUrl.trim()}
+                  onClick={() => installGitSkills()}
+                >
+                  <Download size={14} />{t('skill.gitInstall')}
+                </button>
+              </div>
+            </div>
+            {gitNotice && (
+              <div className="skill-git-notice" role="status">
+                <span>{gitNotice}</span>
+                <button type="button" className="tiny ghost" onClick={() => setGitNotice(null)}>{t('skill.dismiss')}</button>
+              </div>
+            )}
+
             <div className="skills-list">
               {filteredLocal.map((skill) => (
                 <label key={skill.id} className={`skills-row${selected.has(skill.id) ? ' selected' : ''}`}>
@@ -460,6 +546,24 @@ export function SkillsPanel({
                         {t('skill.applicable', { hint: clipTriggerHint(skill.description) ?? '' })}
                       </span>
                     )}
+                    <div className="skills-trigger-row">
+                      <span className="hint compact">{t('skill.triggers')}：</span>
+                      {(skill.triggers ?? []).length > 0
+                        ? (skill.triggers ?? []).slice(0, 5).map((word) => (
+                          <span key={word} className="badge inline skills-pill">{word}</span>
+                        ))
+                        : <span className="hint compact">{t('skill.noTriggers')}</span>}
+                      <button
+                        type="button"
+                        className="tiny ghost"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setAdviceSkill(skill);
+                        }}
+                      >
+                        {t('skill.advice')}{(skill.suggestions?.length ?? 0) > 0 ? ` · ${skill.suggestions?.length}` : ''}
+                      </button>
+                    </div>
                   </div>
                   <div className="skills-row-actions">
                     <button type="button" className="tiny ghost" disabled={busy} onClick={(e) => {
@@ -619,6 +723,48 @@ export function SkillsPanel({
             </div>
           </div>
         </div>
+        </ModalPortal>
+      )}
+
+      {adviceSkill && (
+        <ModalPortal>
+          <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setAdviceSkill(null); }}>
+            <div
+              className="modal takeover-env-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label={t('skill.adviceTitle', { name: adviceSkill.name })}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-head">
+                <h3>{t('skill.adviceTitle', { name: adviceSkill.name })}</h3>
+                <button type="button" className="icon-btn" onClick={() => setAdviceSkill(null)} aria-label={t('common.close')}>×</button>
+              </div>
+              <div className="modal-body">
+                <p className="hint compact">{t('skill.adviceIntro')}</p>
+                <h4>{t('skill.triggers')}</h4>
+                {(adviceSkill.triggers ?? []).length > 0 ? (
+                  <div className="skills-trigger-row">
+                    {(adviceSkill.triggers ?? []).map((word) => (
+                      <span key={word} className="badge inline skills-pill">{word}</span>
+                    ))}
+                  </div>
+                ) : <p className="hint compact">{t('skill.noTriggers')}</p>}
+                <h4>{t('skill.advice')}</h4>
+                {(adviceSkill.suggestions ?? []).length > 0 ? (
+                  <ul className="skill-advice-list">
+                    {(adviceSkill.suggestions ?? []).map((text) => <li key={text}>{text}</li>)}
+                  </ul>
+                ) : <p className="hint compact">{t('skill.adviceEmpty')}</p>}
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="ghost" onClick={() => setAdviceSkill(null)}>{t('common.close')}</button>
+                <button type="button" className="primary" disabled={busy} onClick={openAdviceSkill}>
+                  {t('common.open')}
+                </button>
+              </div>
+            </div>
+          </div>
         </ModalPortal>
       )}
     </div>

@@ -366,7 +366,20 @@ fn windows_bash() -> Option<std::path::PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// 兼容既有调用与单测：不带运行时事实的纯提示词。
 pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, place: &str) -> String {
+    system_prompt_with_brief(zh, work, projects, config, place, "")
+}
+
+/// SOUL 实际使用的提示词：额外注入只读编排层摘要（本机事实 + 意图路由规则）。
+pub fn system_prompt_with_brief(
+    zh: bool,
+    work: &Path,
+    projects: &Path,
+    config: &Path,
+    place: &str,
+    soul_brief: &str,
+) -> String {
     let work = work.display();
     let projects = projects.display();
     let config = config.display();
@@ -406,6 +419,7 @@ pub fn system_prompt(zh: bool, work: &Path, projects: &Path, config: &Path, plac
 - 会创建、修改、删除文件的命令不会立刻执行。程序会先把命令给用户看，用户同意后才执行。不要自己再问「可以写吗」，把命令放进代码块即可。\n\
 - 不要把项目文件写进应用配置目录。用户明确要改应用配置时，工作目录会切到配置目录。\n\
 {agent_caps}\n\
+{soul_brief}\n\
 - 若模型区分 reasoning 与 content：可执行的 bash 代码块与给人看的回复必须写在 content 里，不要只写在 reasoning。\n\
 - 一次一小步。"
         )
@@ -441,6 +455,7 @@ How to reply:\n\
 - Commands that create, change, or delete files do not run immediately. The app shows them to the user first. Do not ask for permission yourself; put the command in the fence.\n\
 - Do not write project files into the app config directory. When the user wants app config edited, the working directory is the config directory.\n\
 {agent_caps}\n\
+{soul_brief}\n\
 - If the model separates reasoning from content: put the user-visible reply and any ```bash fence in content, not only in reasoning.\n\
 - One small step at a time."
         )
@@ -2497,12 +2512,18 @@ async fn speak(
     };
     let key = crate::clients::client_api_key_for_config(&config);
     let model = provider.public_model_id();
-    let prompt = system_prompt(
+    let prompt = system_prompt_with_brief(
         zh,
         &cwd,
         &projects_root(&config_dir),
         &config_dir,
         &place_line(zh, &session.mode, &session.project),
+        &crate::soul_context::soul_brief(
+            zh,
+            &config_dir,
+            &crate::store::paths::StorePaths::from_app(&runtime.paths),
+            &config.active_takeover_ids,
+        ),
     );
     let history = session.messages.clone();
     let sink_cli = matches!(sink, StepSink::Cli);

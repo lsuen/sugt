@@ -2,18 +2,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  Activity, Bot, CheckCircle2, CircleStop, Cpu, FileText, FolderOpen, Info,
-  Play, Plus, RefreshCw, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
+  Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen,
+  Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { ModalPortal } from './ModalPortal';
 import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
-import { SettingsPanel, type OverlayConfigView } from './SettingsPanel';
-import { CURRENT_VERSION, RELEASE_NOTES } from './release-notes';
+import { SettingsPanel, type OverlayConfigView, type SettingsTab } from './SettingsPanel';
 import { SkillsPanel } from './SkillsPanel';
-import { UpdateSection } from './UpdateSection';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
@@ -21,13 +19,14 @@ import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPa
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { t } from './i18n';
-import { LogViewer } from './LogViewer';
+import { editionLabel } from './AboutSection';
 import { StatusBar } from './StatusBar';
 import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
 
 bootstrapTheme();
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings' | 'logs' | 'about';
+// 日志与关于已并入设置子页，主 Tab 从 9 个收敛为 7 个。
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -187,18 +186,6 @@ function protocolLabel(protocol: ProviderProtocol) {
   return protocol === 'anthropic' ? t('common.protocolAnthropic') : t('common.protocolOpenai');
 }
 
-function editionLabel(trial?: TrialStatus): string {
-  if (!trial) return t('about.devMode');
-  switch (trial.edition) {
-    case 'public':
-      return t('about.editionPublic');
-    case 'self':
-      return t('about.editionSelf');
-    default:
-      return t('about.devMode');
-  }
-}
-
 function Modal({
   title,
   onClose,
@@ -230,6 +217,8 @@ function Modal({
 
 function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
+  // 设置子页状态提升到 App：状态栏「打开日志页」等外部入口可精确跳转，切主 Tab 不丢位置。
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('overview');
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
@@ -318,10 +307,14 @@ function App() {
     setLogs(nextLogs);
   }, []);
 
+  // 日志仅在「设置-日志」子页可见时高频拉取；状态栏抽屉由 StatusBar 自己的定时器负责，
+  // 两处不重复轮询。抽屉打开时数据仍共用同一份 logs。
+  const logsVisible = tab === 'settings' && settingsTab === 'logs';
+
   const refresh = useCallback(async () => {
     await refreshCore();
-    if (tab === 'logs') await refreshLogs();
-  }, [refreshCore, refreshLogs, tab]);
+    if (logsVisible) await refreshLogs();
+  }, [refreshCore, refreshLogs, logsVisible]);
 
   useEffect(() => {
     refreshCore().catch((error) => pushToast(formatInvokeError(error), 'error'));
@@ -330,14 +323,14 @@ function App() {
   }, [refresh, refreshCore]);
 
   useEffect(() => {
-    if (tab === 'logs') refreshLogs().catch(() => undefined);
-  }, [tab, refreshLogs]);
+    if (logsVisible) refreshLogs().catch(() => undefined);
+  }, [logsVisible, refreshLogs]);
 
   useEffect(() => {
-    if (tab !== 'logs') return undefined;
+    if (!logsVisible) return undefined;
     const timer = window.setInterval(() => refreshLogs().catch(() => undefined), 2000);
     return () => window.clearInterval(timer);
-  }, [tab, refreshLogs]);
+  }, [logsVisible, refreshLogs]);
 
   const run = async (action: () => Promise<unknown>, ok?: string) => {
     setBusy(true);
@@ -435,8 +428,6 @@ function App() {
     me: t('tab.me.title'),
     rules: t('tab.rules.title'),
     settings: t('tab.settings.title'),
-    logs: t('tab.logs.title'),
-    about: t('tab.about.title'),
   }[tab];
 
   const tabDesc = {
@@ -447,8 +438,6 @@ function App() {
     me: t('tab.me.desc'),
     rules: t('tab.rules.desc'),
     settings: t('tab.settings.desc'),
-    logs: t('tab.logs.desc'),
-    about: t('tab.about.desc'),
   }[tab];
 
   const devPreview = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
@@ -510,12 +499,15 @@ function App() {
         <button className={tab === 'me' ? 'nav active' : 'nav'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
         <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
         <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
-        <button className={tab === 'logs' ? 'nav active' : 'nav'} onClick={() => setTab('logs')}><FileText size={18} />{t('nav.logs')}</button>
-        <button className={tab === 'about' ? 'nav active' : 'nav'} onClick={() => setTab('about')}><Info size={18} />{t('nav.about')}</button>
         </div>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
           <span>{t('about.brand')}</span>
+          {/* 不占主 Tab 栏位，但保留直达设置子页的快捷入口 */}
+          <div className="sidebar-footer-links">
+            <button type="button" className="ghost tiny-btn" onClick={() => { setTab('settings'); setSettingsTab('logs'); }}>{t('nav.logs')}</button>
+            <button type="button" className="ghost tiny-btn" onClick={() => { setTab('settings'); setSettingsTab('about'); }}>{t('nav.about')}</button>
+          </div>
         </div>
       </aside>
 
@@ -593,7 +585,16 @@ function App() {
 
         {tab === 'me' && (
           <div className="tab-body me-tab">
-            <MePanel onOpenClients={() => setTab('clients')} onOpenModels={() => setTab('models')} />
+            <MePanel
+              onOpenClients={() => setTab('clients')}
+              onOpenModels={() => setTab('models')}
+              onRoute={(route) => {
+                if (route === 'clients' || route === 'preview') { setTab('clients'); return; }
+                if (route === 'skills') { setTab('skills'); return; }
+                setTab('settings');
+                setSettingsTab('overview');
+              }}
+            />
           </div>
         )}
 
@@ -634,6 +635,14 @@ function App() {
               persistStatusBarEnabled(enabled);
               if (!enabled) setLogDrawerOpen(false);
             }}
+            settingsTab={settingsTab}
+            onSettingsTabChange={setSettingsTab}
+            status={status}
+            logs={logs}
+            busy={busy}
+            setBusy={setBusy}
+            onRefreshLogs={() => { refreshLogs().catch(() => undefined); }}
+            onVersionCardClick={onVersionCardClick}
           />
           </div>
         )}
@@ -736,58 +745,6 @@ function App() {
           </div>
         )}
 
-        {tab === 'logs' && (
-          <div className="tab-body tab-body-fill">
-          <section className="card log-card-full">
-            <div className="section-title">
-              <h3>{t('logs.title')}</h3>
-              <button className="ghost tiny-btn" disabled={busy} onClick={() => refreshLogs()}><RefreshCw size={14} />{t('common.refresh')}</button>
-            </div>
-            <LogViewer lines={logs} />
-          </section>
-          </div>
-        )}
-
-        {tab === 'about' && (
-          <div className="tab-body">
-          <section className="card about-card">
-            <BrandMark size="lg" className="about-logo" />
-            <h3>{t('about.title')}</h3>
-            <p>{t('about.author')}</p>
-            <p className="trial-note">{editionLabel(status?.trial)}</p>
-            <div className="about-grid">
-              <div className="about-version-card" onClick={onVersionCardClick}>
-                <strong>{t('about.version')}</strong><span>v{CURRENT_VERSION}</span>
-              </div>
-              <div><strong>{t('about.product')}</strong><span>{status?.trial.product_label ?? t('about.full')}</span></div>
-              <div><strong>{t('about.license')}</strong><span>{editionLabel(status?.trial)}</span></div>
-              <div><strong>{t('about.configDir')}</strong><span>{status?.config_dir}</span></div>
-              <div><strong>{t('about.logFile')}</strong><span>{status?.log_file}</span></div>
-              <div><strong>{t('about.listen')}</strong><span>{status?.listen_url ?? 'http://127.0.0.1:8787'}</span></div>
-            </div>
-            <UpdateSection
-              busy={busy}
-              setBusy={setBusy}
-              pushToast={pushToast}
-              formatInvokeError={formatInvokeError}
-            />
-            <div className="release-notes-frame">
-              <div className="release-notes-head">
-                <strong>{t('about.releaseHead')}</strong>
-                <span className="hint compact">v{CURRENT_VERSION}</span>
-              </div>
-              <ul className="release-notes-list">
-                {RELEASE_NOTES.map((note) => (
-                  <li key={note.text} className={`release-note ${note.type}`}>
-                    <span className="release-tag">{note.type === 'feat' ? t('about.tagFeat') : t('about.tagFix')}</span>
-                    {note.text}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </section>
-          </div>
-        )}
       </section>
 
       {providerModal && (
@@ -843,7 +800,8 @@ function App() {
           onToggleDrawer={() => setLogDrawerOpen((v) => !v)}
           onOpenLogsTab={() => {
             setLogDrawerOpen(false);
-            setTab('logs');
+            setTab('settings');
+            setSettingsTab('logs');
           }}
           onRefreshLogs={() => {
             refreshLogs().catch(() => undefined);

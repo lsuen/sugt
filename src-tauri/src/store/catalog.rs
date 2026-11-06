@@ -245,26 +245,134 @@ pub fn make_skill_id(repo: &SkillRepo, relative_path: &str) -> String {
     format!("{}__{}", repo.id, slug)
 }
 
-pub fn parse_skill_md(path: &Path) -> Result<(String, Option<String>)> {
+/// 触发词在 SKILL.md frontmatter 里的常见别名；解析不到就返回空，绝不凭空猜。
+const TRIGGER_KEYS: &[&str] = &[
+    "triggers",
+    "trigger",
+    "trigger_words",
+    "triggerwords",
+    "触发词",
+    "keywords",
+    "when_to_use",
+    "when-to-use",
+];
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct SkillMeta {
+    pub name: String,
+    pub description: Option<String>,
+    pub triggers: Vec<String>,
+    /// 规则化优化建议；LLM 只负责解释与排序，不可用时这些建议仍然完整可用。
+    pub suggestions: Vec<String>,
+}
+
+fn normalize_triggers(raw: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in raw {
+        let value = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
+        if value.is_empty() || value.len() > 40 || out.contains(&value) {
+            continue;
+        }
+        out.push(value);
+        if out.len() >= 12 {
+            break;
+        }
+    }
+    out
+}
+
+fn build_suggestions(
+    raw: &str,
+    has_frontmatter: bool,
+    description: &Option<String>,
+    triggers: &[String],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if !has_frontmatter {
+        out.push(
+            "缺少 YAML frontmatter：建议补 name / description / triggers，Agent 才能判断何时调用"
+                .to_string(),
+        );
+    }
+    match description {
+        None => out.push("description 为空：建议用一句话写清「做什么 + 何时用」".to_string()),
+        Some(text) if text.chars().count() < 20 => out.push(format!(
+            "description 仅 {} 字：建议补充适用场景、输入与边界",
+            text.chars().count()
+        )),
+        _ => {}
+    }
+    if triggers.is_empty() {
+        out.push(
+            "未声明触发词：建议补 triggers 字段（如 triggers: 生成周报, 总结会议）"
+                .to_string(),
+        );
+    }
+    if !raw.contains("\n## ") && !raw.starts_with("## ") {
+        out.push(
+            "SKILL.md 缺少 ## 分节：建议用「## 步骤 / ## 示例」结构化，长技能更易被完整执行"
+                .to_string(),
+        );
+    }
+    out
+}
+
+/// 解析 SKILL.md：名称、描述、触发词与规则化优化建议。
+/// 支持 frontmatter 的逗号/顿号分隔值与 YAML `- item` 列表；字段名大小写不敏感。
+pub fn parse_skill_meta(path: &Path) -> Result<SkillMeta> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("无法读取 {}", path.display()))?;
     let mut name = None;
     let mut description = None;
+    let mut trigger_values: Vec<String> = Vec::new();
+    let mut has_frontmatter = false;
 
     if raw.starts_with("---") {
         if let Some(end) = raw[3..].find("---") {
+            has_frontmatter = true;
             let front = &raw[3..3 + end];
+            let mut list_key: Option<String> = None;
             for line in front.lines() {
                 let line = line.trim();
-                if let Some((key, value)) = line.split_once(':') {
-                    let key = key.trim().to_lowercase();
-                    let value = value.trim().trim_matches('"');
-                    if key == "name" && !value.is_empty() {
-                        name = Some(value.to_string());
+                if let Some(item) = line.strip_prefix("- ") {
+                    if let Some(key) = &list_key {
+                        if TRIGGER_KEYS.contains(&key.as_str()) {
+                            trigger_values.push(item.to_string());
+                        }
                     }
-                    if key == "description" && !value.is_empty() {
-                        description = Some(value.to_string());
+                    continue;
+                }
+                let Some((key, value)) = line.split_once(':') else {
+                    continue;
+                };
+                let key = key.trim().to_lowercase();
+                let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+                list_key = if value.is_empty() {
+                    Some(key.clone())
+                } else {
+                    None
+                };
+                if value.is_empty() {
+                    continue;
+                }
+                match key.as_str() {
+                    "name" if name.is_none() => name = Some(value.to_string()),
+                    "description" if description.is_none() => {
+                        description = Some(value.to_string())
                     }
+                    k if TRIGGER_KEYS.contains(&k) => {
+                        trigger_values.extend(
+                            value
+                                .split(|c| matches!(c, ',' | '，' | '、' | ';' | '；' | '|'))
+                                .map(|s| s.trim().to_string()),
+                        );
+                    }
+                    _ => {}
                 }
             }
         }
@@ -300,7 +408,20 @@ pub fn parse_skill_md(path: &Path) -> Result<(String, Option<String>)> {
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "skill".to_string());
-    Ok((name.unwrap_or(fallback), description))
+    let triggers = normalize_triggers(trigger_values);
+    let suggestions = build_suggestions(&raw, has_frontmatter, &description, &triggers);
+    Ok(SkillMeta {
+        name: name.unwrap_or(fallback),
+        description,
+        triggers,
+        suggestions,
+    })
+}
+
+/// 兼容既有调用点：只要名称与描述。
+pub fn parse_skill_md(path: &Path) -> Result<(String, Option<String>)> {
+    let meta = parse_skill_meta(path)?;
+    Ok((meta.name, meta.description))
 }
 
 pub(crate) fn load_staged_meta(store_paths: &StorePaths) -> Result<StagedMeta> {
@@ -387,6 +508,54 @@ mod tests {
         let (name, desc) = parse_skill_md(&path).unwrap();
         assert_eq!(name, "Demo Skill");
         assert_eq!(desc.as_deref(), Some("Hello world"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_trigger_words_from_separated_values() {
+        let dir = std::env::temp_dir().join("sugt-skill-triggers-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: Demo\ndescription: 一个足够长的描述，说明适用场景、输入与边界条件。\ntriggers: 生成周报, 总结会议、写日报\n---\n\n## 步骤\n\n1. 做点什么\n",
+        )
+        .unwrap();
+        let meta = parse_skill_meta(&path).unwrap();
+        assert_eq!(meta.triggers, vec!["生成周报", "总结会议", "写日报"]);
+        assert!(
+            meta.suggestions.is_empty(),
+            "结构完整时不应给建议：{:?}",
+            meta.suggestions
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_yaml_list_triggers() {
+        let dir = std::env::temp_dir().join("sugt-skill-list-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: Demo\ndescription: 一个足够长的描述，说明适用场景、输入与边界条件。\ntriggers:\n  - foo\n  - bar\n---\n\n## 示例\n\n示例内容\n",
+        )
+        .unwrap();
+        let meta = parse_skill_meta(&path).unwrap();
+        assert_eq!(meta.triggers, vec!["foo", "bar"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn missing_frontmatter_produces_actionable_suggestions() {
+        let dir = std::env::temp_dir().join("sugt-skill-advice-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, "# Plain Skill\n\nA short description.\n").unwrap();
+        let meta = parse_skill_meta(&path).unwrap();
+        assert!(meta.triggers.is_empty());
+        assert!(meta.suggestions.iter().any(|s| s.contains("frontmatter")));
+        assert!(meta.suggestions.iter().any(|s| s.contains("触发词")));
         std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -586,3 +586,47 @@ fn error_null_with_choices_is_not_a_failure() {
         "正文必须保留：{value}"
     );
 }
+
+/// DEF-005：非流式已经修好的 error:null 防护，流式分片必须同步。
+/// 兼容层在 SSE 分片里夹带 error:null 时，不能把整轮对话判成 failed。
+#[test]
+fn streaming_error_null_chunk_is_not_a_failure() {
+    let out = map_sse(vec![
+        sse(r#"{"error":null,"choices":[{"delta":{"content":"你好"}}]}"#),
+        sse(
+            r#"{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#,
+        ),
+        Bytes::from_static(b"data: [DONE]\n\n"),
+    ]);
+    let types = event_types(&out);
+    assert!(
+        !types.iter().any(|item| item == "response.failed"),
+        "error:null 分片不能把整轮流式对话判成失败：{out}"
+    );
+    assert!(
+        types.iter().any(|item| item == "response.completed"),
+        "必须正常收尾：{out}"
+    );
+    assert!(out.contains("你好"), "分片正文不能丢：{out}");
+}
+
+/// DEF-005：空 error 对象同样不是失败体，与非流式保持一致。
+#[test]
+fn streaming_empty_error_object_is_not_a_failure() {
+    let out = map_sse(vec![
+        sse(r#"{"error":{},"choices":[{"delta":{"content":"内容"}}]}"#),
+        sse(
+            r#"{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#,
+        ),
+        Bytes::from_static(b"data: [DONE]\n\n"),
+    ]);
+    let types = event_types(&out);
+    assert!(
+        !types.iter().any(|item| item == "response.failed"),
+        "空 error 对象不能误判失败：{out}"
+    );
+    assert!(
+        types.iter().any(|item| item == "response.completed"),
+        "必须正常收尾：{out}"
+    );
+}

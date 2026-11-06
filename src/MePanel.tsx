@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ChevronDown, FolderOpen, Send, Square } from 'lucide-react';
-import { lang, t } from './i18n';
+import { ModalPortal } from './ModalPortal';
+import { lang, t, type TKey } from './i18n';
 import { MeMarkdown } from './meMarkdown';
 import { clipPreview, parsePendingFiles } from './mePendingFiles';
 
@@ -420,10 +421,14 @@ export function createPreviewMeApi(): MeApi {
   };
 }
 
+/** SOUL 只读编排层允许的四类意图；写操作仍由用户点按钮走既有确定性命令。 */
+export type SoulRoute = 'clients' | 'skills' | 'preview' | 'settings';
+
 type Props = {
   api?: MeApi;
   onOpenClients: () => void;
   onOpenModels?: () => void;
+  onRoute?: (route: SoulRoute) => void;
 };
 
 function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | null {
@@ -441,7 +446,7 @@ function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | nul
   return { ok: true, text: t('me.composerDoneOk', { count: steps.length }) };
 }
 
-export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
+export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
   const client = useMemo(() => api ?? tauriMeApi(), [api]);
   const [session, setSession] = useState<MeView | null>(null);
   const [draft, setDraft] = useState('');
@@ -463,7 +468,6 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
   const [runFlash, setRunFlash] = useState<{ ok: boolean; text: string } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const placeMenuRef = useRef<HTMLDivElement>(null);
   const flashTimerRef = useRef<number | null>(null);
 
   const refreshStatus = () => {
@@ -566,18 +570,11 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
 
   useEffect(() => {
     if (!placeOpen) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!placeMenuRef.current?.contains(event.target as Node)) setPlaceOpen(false);
-    };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPlaceOpen(false);
     };
-    window.addEventListener('mousedown', onPointer);
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', onPointer);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, [placeOpen]);
 
   async function run(task: () => Promise<MeView>, waitForSu = false) {
@@ -699,7 +696,7 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
           >{t('me.placeConfig')}</button>
         </div>
 
-        <div className="me-place" ref={placeMenuRef}>
+        <div className="me-place">
           <button
             type="button"
             className="tiny me-place-btn"
@@ -715,7 +712,20 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
             <ChevronDown size={14} />
           </button>
           {placeOpen && session && (
-            <div className="me-place-menu" role="listbox">
+            <ModalPortal>
+              <div
+                className="modal-overlay"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) setPlaceOpen(false);
+                }}
+              >
+                <div className="modal me-place-modal" role="dialog" aria-modal="true" aria-label={t('me.placeMenu')}>
+                  <div className="modal-head">
+                    <h3>{t('me.placeMenu')}</h3>
+                    <button type="button" className="icon-btn" onClick={() => setPlaceOpen(false)} aria-label={t('common.close')}>×</button>
+                  </div>
+                  <div className="modal-body">
+                    <div className="me-place-menu" role="listbox">
               <div className="me-place-current" title={session.work_dir}>
                 <span>{leaf}</span>
                 <code>{shortenPath(session.work_dir)}</code>
@@ -777,7 +787,14 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
                 <span>{pathLeaf(session.config_dir)}</span>
                 <code>{shortenPath(session.config_dir)}</code>
               </button>
-            </div>
+                    </div>
+                  </div>
+                  <div className="modal-actions">
+                    <button type="button" className="ghost" onClick={() => setPlaceOpen(false)}>{t('common.close')}</button>
+                  </div>
+                </div>
+              </div>
+            </ModalPortal>
           )}
         </div>
 
@@ -866,6 +883,7 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
               busy={busy}
               onConfirm={() => void run(() => client.confirm(), true)}
               onDismiss={() => void run(() => client.dismiss())}
+              onRoute={onRoute}
             />
           );
         })}
@@ -879,6 +897,7 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
             busy={busy}
             onConfirm={() => undefined}
             onDismiss={() => undefined}
+            onRoute={onRoute}
           />
         )}
         {session?.pending && !awaiting && !session.messages.some((message) => message.role === 'assistant') && (
@@ -889,6 +908,7 @@ export function MePanel({ api, onOpenClients, onOpenModels }: Props) {
             busy={busy}
             onConfirm={() => void run(() => client.confirm(), true)}
             onDismiss={() => void run(() => client.dismiss())}
+            onRoute={onRoute}
           />
         )}
       </div>
@@ -1046,21 +1066,61 @@ type SuBubbleProps = {
   streaming?: boolean;
   onConfirm: () => void;
   onDismiss: () => void;
+  onRoute?: (route: SoulRoute) => void;
 };
 
-function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, onDismiss }: SuBubbleProps) {
+const VALID_SOUL_ROUTES: SoulRoute[] = ['clients', 'skills', 'preview', 'settings'];
+
+/// 解析模型输出的意图标记；未知 / 半截标记一律剥离，绝不当作正文或指令执行。
+function parseSoulRoutes(raw: string): { text: string; routes: SoulRoute[] } {
+  if (!raw.includes('SUGT_ROUTE')) return { text: raw, routes: [] };
+  const routes: SoulRoute[] = [];
+  const pattern = /\[\[SUGT_ROUTE\]\]([a-z]+)\[\[\/SUGT_ROUTE\]\]/g;
+  let text = raw.replace(pattern, (_match, name: string) => {
+    const route = name as SoulRoute;
+    if (VALID_SOUL_ROUTES.includes(route) && !routes.includes(route)) routes.push(route);
+    return '';
+  });
+  // 流式时标记可能只写了一半，清掉残片避免用户看到乱码。
+  text = text
+    .replace(/\[\[\/?SUGT_ROUTE\]\]/g, '')
+    .replace(/\[\[\/?SUGT_ROUTE(?:\]\])?$/, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trimEnd();
+  return { text, routes };
+}
+
+function SoulRouteCard({ routes, onRoute }: { routes: SoulRoute[]; onRoute: (route: SoulRoute) => void }) {
+  if (routes.length === 0) return null;
+  return (
+    <div className="me-route-card">
+      <p className="hint compact">{t('me.routeHint')}</p>
+      <div className="me-route-actions">
+        {routes.map((route) => (
+          <button key={route} type="button" className="ghost tiny-btn" onClick={() => onRoute(route)}>
+            {t(`me.route.${route}` as TKey)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, onDismiss, onRoute }: SuBubbleProps) {
   const processOpen = Boolean(live) || Boolean(streaming);
+  const parsed = useMemo(() => parseSoulRoutes(content), [content]);
   return (
     <article className="me-su">
       <span className={live || streaming ? 'me-seal live' : 'me-seal'} aria-hidden>su</span>
       <div className="me-su-body">
         {live && <p className="me-live">{live}</p>}
-        {content && (
+        {parsed.text && (
           <div className={streaming ? 'me-stream' : undefined}>
-            <MeMarkdown text={content} />
+            <MeMarkdown text={parsed.text} />
             {streaming && <span className="me-caret" aria-hidden />}
           </div>
         )}
+        {onRoute && <SoulRouteCard routes={parsed.routes} onRoute={onRoute} />}
         {steps.length > 0 && (
           <details className="me-process" open={processOpen}>
             <summary>

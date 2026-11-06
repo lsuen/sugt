@@ -1,12 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react';
+// 作者：sun / 孙文龙
+// 作用：设置面板。六个横向子 Tab（概览/通用/外观/高级/日志/关于），子页状态由上层受控，
+// 保证状态栏「打开日志页」等外部入口可以精确跳转，切换主 Tab 后也不丢子页位置。
+import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CircleAlert, Copy } from 'lucide-react';
+import { ModalPortal } from './ModalPortal';
 import { GithubProxyModal } from './store/GithubProxyModal';
-import { langSetting, setLang, t, type LangSetting } from './i18n';
+import { langSetting, setLang, t, type LangSetting, type TKey } from './i18n';
 import { ThemeSettingsSection } from './theme';
 import type { CustomBgState, ThemeId, ThemeMeta } from './theme';
+import { LogsSection } from './LogsSection';
+import { AboutSection } from './AboutSection';
+import { SettingsOverview, type OverviewStatus } from './SettingsOverview';
 
-type LanShareInfo = {
+export type LanShareInfo = {
   enabled: boolean;
   port: number;
   api_key: string;
@@ -68,8 +75,17 @@ type AppConfigView = {
   overlay?: OverlayConfigView;
 };
 
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings' | 'logs' | 'about';
-type SettingsTab = 'basic' | 'advanced';
+type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
+export type SettingsTab = 'overview' | 'general' | 'appearance' | 'advanced' | 'logs' | 'about';
+
+const SETTINGS_TABS: { id: SettingsTab; key: TKey }[] = [
+  { id: 'overview', key: 'set.tabOverview' },
+  { id: 'general', key: 'set.tabGeneral' },
+  { id: 'appearance', key: 'set.tabAppearance' },
+  { id: 'advanced', key: 'set.tabAdvanced' },
+  { id: 'logs', key: 'set.tabLogs' },
+  { id: 'about', key: 'set.tabAbout' },
+];
 
 type Props = {
   config: AppConfigView | null;
@@ -89,6 +105,15 @@ type Props = {
   onClearCustomBg: () => void;
   statusBarEnabled: boolean;
   onStatusBarEnabled: (enabled: boolean) => void;
+  // 子页状态：由 App 受控；未传时退回组件内 state（浏览器预览 / 单组件复用）。
+  settingsTab?: SettingsTab;
+  onSettingsTabChange?: (tab: SettingsTab) => void;
+  status?: OverviewStatus | null;
+  logs?: string[];
+  busy?: boolean;
+  setBusy?: (v: boolean) => void;
+  onRefreshLogs?: () => void;
+  onVersionCardClick?: () => void;
 };
 
 export function SettingsPanel({
@@ -109,16 +134,33 @@ export function SettingsPanel({
   onClearCustomBg,
   statusBarEnabled,
   onStatusBarEnabled,
+  settingsTab,
+  onSettingsTabChange,
+  status,
+  logs,
+  busy,
+  setBusy,
+  onRefreshLogs,
+  onVersionCardClick,
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
   const [opacity, setOpacity] = useState(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
   const [width, setWidth] = useState(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
   const [height, setHeight] = useState(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
-  const [tab, setTab] = useState<SettingsTab>('basic');
+  const [internalTab, setInternalTab] = useState<SettingsTab>('overview');
   const [lanOpen, setLanOpen] = useState(false);
   const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
-  const lanPopRef = useRef<HTMLDivElement | null>(null);
+
+  const tab = settingsTab ?? internalTab;
+  const selectTab = (next: SettingsTab) => {
+    if (onSettingsTabChange) onSettingsTabChange(next);
+    else setInternalTab(next);
+  };
+  // 统一成「kind 可选」签名，既能喂给只传一个参数的组件，也能喂给要求必传的组件。
+  const toast = (message: string, type?: 'ok' | 'error' | 'info') =>
+    (pushToast ?? (() => undefined))(message, type ?? 'ok');
+  const formatError = formatInvokeError ?? ((error: unknown) => String(error));
 
   useEffect(() => {
     if (!lanOpen) return;
@@ -137,24 +179,24 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!lanOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!lanPopRef.current?.contains(e.target as Node)) setLanOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLanOpen(false);
     };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [lanOpen]);
 
   const copyLan = async () => {
     const text = lanInfo?.copy_text?.trim();
     if (!text) {
-      pushToast?.(t('set.lanShareEmpty'), 'info');
+      toast(t('set.lanShareEmpty'), 'info');
       return;
     }
     try {
       await navigator.clipboard.writeText(text);
-      pushToast?.(t('set.lanShareCopied'), 'ok');
+      toast(t('set.lanShareCopied'), 'ok');
     } catch {
-      pushToast?.(t('gateway.copyFailed'), 'error');
+      toast(t('gateway.copyFailed'), 'error');
     }
   };
 
@@ -201,7 +243,7 @@ export function SettingsPanel({
       setProxyPrefix(settings.github_proxy_prefix ?? '');
       setProxyOpen(true);
     } catch (error) {
-      pushToast?.(formatInvokeError?.(error) ?? String(error), 'error');
+      toast(formatError(error), 'error');
     }
   };
 
@@ -212,24 +254,34 @@ export function SettingsPanel({
 
   return (
     <div className="settings-layout-wrap">
-      <div className="settings-tabs">
-        <button
-          type="button"
-          className={tab === 'basic' ? 'ghost tiny-btn active' : 'ghost tiny-btn'}
-          onClick={() => setTab('basic')}
-        >
-          {t('set.tabBasic')}
-        </button>
-        <button
-          type="button"
-          className={tab === 'advanced' ? 'ghost tiny-btn active' : 'ghost tiny-btn'}
-          onClick={() => setTab('advanced')}
-        >
-          {t('set.tabAdvanced')}
-        </button>
+      {/* 冻结在滚动容器首行：子页再长也不会把 Tab 行顶出视野 */}
+      <div className="settings-tabs" role="tablist" aria-label={t('set.tabsLabel')}>
+        {SETTINGS_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            className={tab === item.id ? 'ghost tiny-btn active' : 'ghost tiny-btn'}
+            onClick={() => selectTab(item.id)}
+          >
+            {t(item.key)}
+          </button>
+        ))}
       </div>
 
-      {tab === 'basic' && (
+      {tab === 'overview' && (
+        <SettingsOverview
+          status={status ?? null}
+          statusListenUrl={statusListenUrl}
+          lanEnabled={Boolean(config?.allow_lan_access)}
+          pushToast={toast}
+          onSubTab={selectTab}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      {tab === 'general' && (
         <div className="settings-layout settings-layout--stack">
           <div className="card settings-group settings-group-wide settings-lang-bar">
             <div className="settings-lang-main">
@@ -250,21 +302,6 @@ export function SettingsPanel({
               </label>
             </div>
           </div>
-
-          <ThemeSettingsSection
-            themeId={themeId}
-            catalog={themeCatalog}
-            onTheme={onTheme}
-            onImport={onThemeImport}
-            error={themeError}
-            pushToast={pushToast}
-            customBg={customBg}
-            onCustomBgFile={onCustomBgFile}
-            onCustomBgOpacity={onCustomBgOpacity}
-            onClearCustomBg={onClearCustomBg}
-            statusBarEnabled={statusBarEnabled}
-            onStatusBarEnabled={onStatusBarEnabled}
-          />
 
           <div className="card settings-group switches">
             <h4>{t('set.startup')}</h4>
@@ -303,7 +340,7 @@ export function SettingsPanel({
               <span className="switch-line-label">
                 {t('set.lan')}
                 {config?.allow_lan_access ? (
-                  <span className="lan-share-wrap" ref={lanPopRef}>
+                  <span className="lan-share-wrap">
                     <button
                       type="button"
                       className="tiny icon-only lan-share-btn"
@@ -318,32 +355,42 @@ export function SettingsPanel({
                       <CircleAlert size={14} />
                     </button>
                     {lanOpen && (
-                      <div className="lan-share-popover" role="dialog" aria-label={t('set.lanShare')}>
-                        <div className="lan-share-head">
-                          <strong>{t('set.lanShare')}</strong>
-                          <button type="button" className="tiny" onClick={() => void copyLan()}>
-                            <Copy size={12} />
-                            {t('set.lanShareCopy')}
-                          </button>
+                      <ModalPortal>
+                        <div
+                          className="modal-overlay"
+                          onMouseDown={(e) => {
+                            if (e.target === e.currentTarget) setLanOpen(false);
+                          }}
+                        >
+                          <div className="modal lan-share-modal" role="dialog" aria-modal="true" aria-label={t('set.lanShare')}>
+                            <div className="modal-head">
+                              <h3>{t('set.lanShare')}</h3>
+                              <button type="button" className="icon-btn" onClick={() => setLanOpen(false)} aria-label={t('common.close')}>×</button>
+                            </div>
+                            <div className="modal-body">
+                              {lanInfo?.hosts?.length ? (
+                                <ul className="lan-share-list">
+                                  {lanInfo.hosts.map((host, i) => (
+                                    <li key={host}>
+                                      <code>{lanInfo.openai_bases[i] ?? `http://${host}:${lanInfo.port}/v1`}</code>
+                                    </li>
+                                  ))}
+                                  <li><code>{lanInfo.api_key}</code></li>
+                                  <li><code>{lanInfo.model_id}</code></li>
+                                </ul>
+                              ) : (
+                                <p className="hint compact">{t('set.lanShareEmpty')}</p>
+                              )}
+                            </div>
+                            <div className="modal-actions">
+                              <button type="button" className="ghost" onClick={() => setLanOpen(false)}>{t('common.close')}</button>
+                              <button type="button" className="primary" onClick={() => void copyLan()}>
+                                <Copy size={14} />{t('set.lanShareCopy')}
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                        {lanInfo?.hosts?.length ? (
-                          <ul className="lan-share-list">
-                            {lanInfo.hosts.map((host, i) => (
-                              <li key={host}>
-                                <code>{lanInfo.openai_bases[i] ?? `http://${host}:${lanInfo.port}/v1`}</code>
-                              </li>
-                            ))}
-                            <li>
-                              <code>{lanInfo.api_key}</code>
-                            </li>
-                            <li>
-                              <code>{lanInfo.model_id}</code>
-                            </li>
-                          </ul>
-                        ) : (
-                          <p className="hint compact">{t('set.lanShareEmpty')}</p>
-                        )}
-                      </div>
+                      </ModalPortal>
                     )}
                   </span>
                 ) : null}
@@ -373,6 +420,25 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+        </div>
+      )}
+
+      {tab === 'appearance' && (
+        <div className="settings-layout settings-layout--stack">
+          <ThemeSettingsSection
+            themeId={themeId}
+            catalog={themeCatalog}
+            onTheme={onTheme}
+            onImport={onThemeImport}
+            error={themeError}
+            pushToast={toast}
+            customBg={customBg}
+            onCustomBgFile={onCustomBgFile}
+            onCustomBgOpacity={onCustomBgOpacity}
+            onClearCustomBg={onClearCustomBg}
+            statusBarEnabled={statusBarEnabled}
+            onStatusBarEnabled={onStatusBarEnabled}
+          />
 
           <div className="card settings-group switches">
             <h4>{t('set.overlay')}</h4>
@@ -480,14 +546,6 @@ export function SettingsPanel({
               </>
             )}
           </div>
-
-          <div className="card settings-group settings-group-wide settings-info">
-            <h4>{t('set.endpoint')}</h4>
-            <div className="hint compact settings-foot">
-              {t('set.endpointOpenai')}<code>{statusListenUrl}/v1</code><br />
-              {t('set.endpointAnthropic')}<code>{statusListenUrl}</code>
-            </div>
-          </div>
         </div>
       )}
 
@@ -539,6 +597,21 @@ export function SettingsPanel({
         </div>
       )}
 
+      {tab === 'logs' && (
+        <LogsSection lines={logs ?? []} busy={Boolean(busy)} onRefresh={onRefreshLogs ?? (() => undefined)} />
+      )}
+
+      {tab === 'about' && (
+        <AboutSection
+          status={status ?? null}
+          busy={Boolean(busy)}
+          setBusy={setBusy ?? (() => undefined)}
+          pushToast={toast}
+          formatInvokeError={formatError}
+          onVersionCardClick={onVersionCardClick ?? (() => undefined)}
+        />
+      )}
+
       {proxyOpen && (
         <GithubProxyModal
           prefix={proxyPrefix}
@@ -547,8 +620,8 @@ export function SettingsPanel({
             setProxyPrefix(prefix);
             setProxyOpen(false);
           }}
-          pushToast={pushToast ?? (() => undefined)}
-          formatError={formatInvokeError ?? ((e) => String(e))}
+          pushToast={toast}
+          formatError={formatError}
         />
       )}
     </div>

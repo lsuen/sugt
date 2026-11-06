@@ -81,6 +81,7 @@ pub fn run() {
             store::commands::store_ensure_preferred_repo,
             store::commands::store_list_catalog,
             store::commands::store_install_skill,
+            store::commands::store_install_git_skills,
             store::commands::store_uninstall_skill,
             store::commands::store_mount_skill,
             store::commands::store_unmount_skill,
@@ -141,6 +142,10 @@ pub fn run() {
                 }
             });
             if let Some(window) = app.get_webview_window("main") {
+                // 先恢复上次窗口尺寸，再显示，避免用户看到尺寸跳动。
+                if let Some(runtime) = app.handle().try_state::<AppRuntime>() {
+                    crate::window_state::restore(&window, &runtime.paths.config_dir);
+                }
                 let _ = window.set_skip_taskbar(false);
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -152,7 +157,17 @@ pub fn run() {
                 api.prevent_close();
                 tray::hide_main_window(window.app_handle());
             }
-            WindowEvent::Resized(_) => {}
+            WindowEvent::Resized(size) => {
+                // 记住用户手动调整后的尺寸；物理像素换算回逻辑像素再落盘。
+                if let Some(runtime) = window.app_handle().try_state::<AppRuntime>() {
+                    let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+                    crate::window_state::schedule_save(
+                        size.width as f64 / scale,
+                        size.height as f64 / scale,
+                        runtime.paths.config_dir.clone(),
+                    );
+                }
+            }
             _ => {}
         })
         .run(tauri::generate_context!())

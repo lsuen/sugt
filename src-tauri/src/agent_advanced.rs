@@ -373,6 +373,9 @@ pub fn import_skill_to_library(
         mounted_agents: vec![],
         mounted_paths: vec![],
         is_local: true,
+        // 列表刷新时会用 parse_skill_meta 重新解析出触发词与建议。
+        triggers: vec![],
+        suggestions: vec![],
     })
 }
 
