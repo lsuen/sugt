@@ -60,7 +60,7 @@ const PET_LABEL: Record<PetState, TKey> = {
   sleep: 'pet.sleep',
 };
 
-// offline 复用 idle 帧，仅核心色转为灰色
+// offline 复用 idle 帧，仅整体滤镜转灰
 const PET_FRAME: Record<PetState, string> = {
   offline: 'idle',
   idle: 'idle',
@@ -69,6 +69,11 @@ const PET_FRAME: Record<PetState, string> = {
   error: 'error',
   sleep: 'sleep',
 };
+
+// v0.7：五个状态各有 ComfyUI 编码的带 alpha 动画 WebP（6 帧 / 8fps）。
+// 全部常驻并交叉淡入，切状态不重启动画时间线；reduced-motion / 窗口隐藏时切静态海报。
+const PET_LOOPS = ['idle', 'typing', 'done', 'error', 'sleep'] as const;
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 const fmt = (n: number) => (n >= 10000 ? `${(n / 10000).toFixed(1)}w` : n.toLocaleString());
 
@@ -109,6 +114,16 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const draggedAt = useRef(0);
   const finishing = useRef(false);
   const [dragging, setDragging] = useState(false);
+  // v0.7 交互层：全部通过 CSS 变量 / class 驱动，避免 mousemove 触发 React 重渲染
+  const stageRef = useRef<HTMLDivElement>(null);
+  const figureRef = useRef<HTMLDivElement>(null);
+  const gazeRef = useRef({ x: 0, y: 0, near: 0 });
+  const blinkTimers = useRef<number[]>([]);
+  const pokeTimer = useRef(0);
+  const lastPokeBubble = useRef(0);
+  const [blinking, setBlinking] = useState(false);
+  const [poked, setPoked] = useState(false);
+  const [still, setStill] = useState(false);
 
   const clearDragFlags = useCallback(() => {
     dragActive.current = false;
@@ -151,20 +166,128 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     };
   }, []);
 
+  // 窗口隐藏 / 系统要求减少动效时切静态海报，动画 WebP 不再解码播放。
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setStill(media.matches || document.hidden);
+    update();
+    media.addEventListener('change', update);
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      media.removeEventListener('change', update);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, []);
+
+  // 视线跟随：鼠标在悬浮窗内移动时，头部做轻微 3D 转向并带动眼神高光。
+  // 无鼠标（非互动模式为鼠标穿透）时每隔几秒自主张望一次，角色不会像静止贴图。
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    let raf = 0;
+    let scanTimer = 0;
+    let resetTimer = 0;
+    const write = (x: number, y: number, near: number) => {
+      stage.style.setProperty('--gaze-x', x.toFixed(3));
+      stage.style.setProperty('--gaze-y', y.toFixed(3));
+      stage.style.setProperty('--near', near.toFixed(3));
+      stage.classList.toggle('nearby', near > 0.12);
+    };
+    const onMove = (event: PointerEvent) => {
+      const rect = figureRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const cx = rect.left + rect.width * 0.55;
+      const cy = rect.top + rect.height * 0.32;
+      const distance = Math.hypot(event.clientX - cx, event.clientY - cy);
+      const near = clamp(1 - distance / 170, 0, 1);
+      const x = clamp((event.clientX - cx) / (rect.width * 0.9), -1, 1);
+      const y = clamp((event.clientY - cy) / (rect.height * 0.6), -1, 1);
+      gazeRef.current = { x, y, near };
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => { raf = 0; write(x, y, near); });
+    };
+    const onLeave = () => {
+      gazeRef.current = { x: 0, y: 0, near: 0 };
+      write(0, 0, 0);
+    };
+    const scan = () => {
+      if (gazeRef.current.near < 0.06 && !document.hidden) {
+        const x = (Math.random() * 2 - 1) * 0.42;
+        const y = (Math.random() * 2 - 1) * 0.22;
+        write(x, y, 0);
+        window.clearTimeout(resetTimer);
+        resetTimer = window.setTimeout(() => write(0, 0, 0), 1500);
+      }
+      scanTimer = window.setTimeout(scan, 4200 + Math.random() * 4200);
+    };
+    document.addEventListener('pointermove', onMove, { passive: true });
+    document.addEventListener('pointerleave', onLeave);
+    scanTimer = window.setTimeout(scan, 2600);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerleave', onLeave);
+      if (raf) cancelAnimationFrame(raf);
+      window.clearTimeout(scanTimer);
+      window.clearTimeout(resetTimer);
+    };
+  }, []);
+
+  // 随机眨眼（含偶发双眨）；睡眠状态由 CSS 保持闭眼，这里只管清醒态。
+  useEffect(() => {
+    let cancelled = false;
+    const later = (fn: () => void, ms: number) => {
+      blinkTimers.current.push(window.setTimeout(fn, ms));
+    };
+    const schedule = () => later(() => {
+      if (cancelled) return;
+      setBlinking(true);
+      later(() => {
+        setBlinking(false);
+        if (Math.random() < 0.18) {
+          later(() => {
+            setBlinking(true);
+            later(() => setBlinking(false), 115);
+          }, 230);
+        }
+        schedule();
+      }, 125);
+    }, 2600 + Math.random() * 4200);
+    schedule();
+    return () => {
+      cancelled = true;
+      blinkTimers.current.forEach(window.clearTimeout);
+      blinkTimers.current = [];
+    };
+  }, []);
+
   // Codex 桌面宠物式「松手即停靠」：原生拖动期间 onMoved 会连续触发，
   // 防抖 320ms 后统一做贴边吸附 + 持久化；吸附引起的二次 onMoved 由 finishing 屏蔽。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let timer = 0;
+    let tiltTimer = 0;
+    let last: { x: number; y: number } | null = null;
     void getCurrentWindow()
-      .onMoved(() => {
+      .onMoved(({ payload }) => {
         if (!dragActive.current || finishing.current) return;
         movedDuringDrag.current = true;
         draggedAt.current = Date.now();
         setDragging(true);
+        // 拖动方向带一点身体倾斜，松手后平滑回正；只写 CSS 变量，不触发重渲染
+        if (last && stageRef.current) {
+          const tilt = clamp((payload.x - last.x) / 14, -1, 1);
+          stageRef.current.style.setProperty('--drag-tilt', tilt.toFixed(3));
+          window.clearTimeout(tiltTimer);
+          tiltTimer = window.setTimeout(() => {
+            stageRef.current?.style.setProperty('--drag-tilt', '0');
+          }, 340);
+        }
+        last = { x: payload.x, y: payload.y };
         window.clearTimeout(timer);
         timer = window.setTimeout(() => {
           setDragging(false);
+          last = null;
+          stageRef.current?.style.setProperty('--drag-tilt', '0');
           finishing.current = true;
           void invoke('pet_finish_drag', { snap: cfg.pet_snap !== false })
             .catch(() => undefined)
@@ -177,6 +300,7 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       .catch(() => undefined);
     return () => {
       window.clearTimeout(timer);
+      window.clearTimeout(tiltTimer);
       unlisten?.();
     };
   }, [cfg.pet_snap]);
@@ -308,11 +432,39 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       dragRequested.current = false;
       return;
     }
+    // 轻碰反馈：一次性弹跳 + 偶尔一句轻声回应，不打断状态机、不刷屏
+    setPoked(true);
+    window.clearTimeout(pokeTimer.current);
+    pokeTimer.current = window.setTimeout(() => setPoked(false), 480);
+    if (Date.now() - lastPokeBubble.current > 8000) {
+      lastPokeBubble.current = Date.now();
+      pushBubble(t('pet.bubble.poke'), 'info');
+    }
     void invoke('focus_main_window').catch(() => undefined);
   };
 
+  useEffect(() => () => window.clearTimeout(pokeTimer.current), []);
+
+  const activeFrame = PET_FRAME[petState];
+  const classNames = [
+    'pet-stage',
+    interactive ? 'interactive' : '',
+    blinking ? 'blinking' : '',
+    still ? 'still' : '',
+  ].filter(Boolean).join(' ');
+
   return (
-    <div className={`pet-stage${interactive ? ' interactive' : ''}`} data-state={petState}>
+    <div ref={stageRef} className={classNames} data-state={petState}>
+      {/* 环境层：靠近光晕、地面投影、漂浮粒子、完成时的一次性火花 */}
+      <div className="pet-ambient" aria-hidden="true">
+        <span className="pet-halo" />
+        <span className="pet-ground" />
+        {[1, 2, 3, 4, 5, 6].map((n) => <i key={n} className="pet-mote" />)}
+        <i className="pet-spark s1" />
+        <i className="pet-spark s2" />
+        <i className="pet-spark s3" />
+      </div>
+
       {/* 左侧通知栏：气泡与状态胶囊都不占用立绘区域，角色头顶不再被遮住 */}
       <div className="pet-side">
         {bubble && (
@@ -326,9 +478,10 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         </div>
       </div>
 
-      {/* 外层负责呼吸/整体滤镜，内层负责状态动效：两者不再争抢同一个 animation 属性 */}
+      {/* 角色分层：视线 3D → 呼吸 → 逐帧动画 → 眼睑/眼神；各层不争抢同一动画属性 */}
       <div
-        className={`pet-figure${dragging ? ' dragging' : ''}`}
+        ref={figureRef}
+        className={`pet-figure${dragging ? ' dragging' : ''}${poked ? ' poked' : ''}`}
         onMouseDown={onFigureMouseDown}
         onMouseMove={onFigureMouseMove}
         onContextMenu={(e) => e.preventDefault()}
@@ -336,7 +489,25 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         role={interactive ? 'button' : undefined}
         aria-label={interactive ? t(PET_LABEL[petState]) : undefined}
       >
-        <span className="pet-pose" data-frame={PET_FRAME[petState]} aria-hidden="true" />
+        <div className="pet-motion">
+          <div className="pet-loops">
+            {PET_LOOPS.map((loop) => (
+              <span
+                key={loop}
+                className={`pet-loop${activeFrame === loop ? ' is-active' : ''}`}
+                data-loop={loop}
+                aria-hidden="true"
+              />
+            ))}
+            <span
+              className={`pet-poster${still ? ' is-active' : ''}`}
+              data-frame={activeFrame}
+              aria-hidden="true"
+            />
+          </div>
+          <span className="pet-blink" aria-hidden="true" />
+          <span className="pet-gaze" aria-hidden="true" />
+        </div>
       </div>
 
       {cfg.edit && (
