@@ -22,7 +22,10 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -40,6 +43,24 @@ pub struct GatewayState {
     client: Client,
     last_hit: Arc<RwLock<Option<ProxyHit>>>,
     stats: GatewayStatsCollector,
+    /// 真实在途 LLM 请求数；只有代理入口会计数，桌面精灵据此播放 typing 动作
+    active_requests: Arc<AtomicU64>,
+}
+
+/// RAII 计数：请求进入 +1，无论成功、失败还是提前返回都在析构时 -1，避免计数泄漏。
+struct ActiveRequestGuard(Arc<AtomicU64>);
+
+impl ActiveRequestGuard {
+    fn new(counter: Arc<AtomicU64>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// 熔断器冷却时间
@@ -101,6 +122,7 @@ impl GatewayState {
             client,
             last_hit: Arc::new(RwLock::new(None)),
             stats: GatewayStatsCollector::new(),
+            active_requests: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -172,7 +194,15 @@ impl GatewayState {
     }
 
     pub async fn traffic_stats(&self) -> crate::gateway_stats::TrafficStatsView {
-        self.stats.snapshot().await
+        let mut view = self.stats.snapshot().await;
+        // 实时覆盖：/v1/_sugt/traffic 也走这里，detached 网关进程同样能给出真实在途数
+        view.active_requests = self.active_requests.load(Ordering::Relaxed);
+        view
+    }
+
+    /// 标记一个真实 LLM 请求进入；健康检查、看门狗心跳、免费通道探测不调用。
+    fn begin_request(&self) -> ActiveRequestGuard {
+        ActiveRequestGuard::new(self.active_requests.clone())
     }
 
     async fn record_request_stats(
@@ -625,6 +655,7 @@ async fn proxy_openai(
     }
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = %path, "inbound openai-compatible request");
+    let _active_guard = state.begin_request();
     let started = std::time::Instant::now();
     match proxy_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,
@@ -657,6 +688,7 @@ async fn proxy_anthropic_messages(
     }
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
+    let _active_guard = state.begin_request();
     let started = std::time::Instant::now();
     match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
         Ok(response) => response,

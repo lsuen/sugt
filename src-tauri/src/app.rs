@@ -40,6 +40,7 @@ pub fn run() {
             commands::preview_workspace_rules,
             commands::test_workspace_notify,
             commands::overlay_start_drag,
+            commands::focus_main_window,
             commands::open_config_dir,
             commands::quick_gateway_chat,
             me_agent::me_status,

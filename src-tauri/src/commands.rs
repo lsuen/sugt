@@ -1319,6 +1319,17 @@ pub async fn get_overlay_config(runtime: State<'_, AppRuntime>) -> Result<Overla
     Ok(runtime.config.read().await.overlay.clone())
 }
 
+/// 桌面精灵只读交互：把主窗口带到前台。不修改任何配置、不执行写操作。
+#[tauri::command]
+pub fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())?;
+    window.show().map_err(|e| format!("显示主窗口失败: {e}"))?;
+    window.set_focus().map_err(|e| format!("聚焦主窗口失败: {e}"))?;
+    Ok(())
+}
+
 /// 悬浮窗开始拖动：Rust 直调 window.start_dragging()。
 /// 前端 IPC 的 startDragging 受 ACL（core:window:allow-start-dragging）限制，后端直调不受影响。
 #[tauri::command]
@@ -1447,7 +1458,8 @@ pub async fn set_overlay_config(
     if !matches!(cfg.layout.as_str(), "column" | "row") {
         return Err("悬浮窗布局方向需为 column 或 row".to_string());
     }
-    if !(120.0..=800.0).contains(&cfg.width) || !(40.0..=300.0).contains(&cfg.height) {
+    // 精灵模式需要 240x320 的立绘与气泡空间，高度上限放宽到 420
+    if !(120.0..=800.0).contains(&cfg.width) || !(40.0..=420.0).contains(&cfg.height) {
         return Err("悬浮窗尺寸超出合理范围".to_string());
     }
     crate::overlay::apply(&app, &mut cfg).await?;

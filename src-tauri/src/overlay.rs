@@ -72,12 +72,15 @@ async fn write_back(app: &AppHandle, cfg: &OverlayConfig) {
 
 /// 依据配置创建/更新/销毁悬浮窗；可能改写 cfg.x/y（首次右上角、副屏回退），调用方负责持久化。
 pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
+    // 默认穿透；编辑态或精灵互动模式才接收鼠标事件。互动模式需用户显式开启，
+    // 避免常驻桌面精灵遮挡下方 IDE 的点击操作。
+    let interactive = cfg.edit || (cfg.pet_enabled && cfg.pet_interactive);
     match app.get_webview_window(LABEL) {
         Some(w) if !cfg.enabled => {
             w.close().map_err(|e| format!("关闭悬浮窗失败: {e}"))?;
         }
         Some(w) => {
-            w.set_ignore_cursor_events(!cfg.edit)
+            w.set_ignore_cursor_events(!interactive)
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
@@ -94,7 +97,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
         None if cfg.enabled => {
             ensure_on_screen(app, cfg).await?;
             let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("overlay.html".into()))
-                .title("SUGT 流量")
+                .title(if cfg.pet_enabled { "SUGT 小su" } else { "SUGT 流量" })
                 .decorations(false)
                 .transparent(true)
                 .always_on_top(true)
@@ -105,7 +108,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
-            w.set_ignore_cursor_events(!cfg.edit)
+            w.set_ignore_cursor_events(!interactive)
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;

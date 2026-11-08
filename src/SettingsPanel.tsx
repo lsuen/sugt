@@ -40,6 +40,9 @@ export type OverlayConfigView = {
   layout: 'column' | 'row';
   width: number;
   height: number;
+  // 桌面精灵模式：与后端 OverlayConfig 对应
+  pet_enabled: boolean;
+  pet_interactive: boolean;
 };
 
 // -1 表示「未定位」，由后端 overlay::apply 创建时按主屏右上角初始化
@@ -56,6 +59,8 @@ const DEFAULT_OVERLAY: OverlayConfigView = {
   layout: 'column',
   width: 280,
   height: 108,
+  pet_enabled: false,
+  pet_interactive: false,
 };
 
 // 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
@@ -204,6 +209,19 @@ export function SettingsPanel({
   const setOverlay = (patch: Partial<OverlayConfigView>) => {
     const base = config?.overlay ?? DEFAULT_OVERLAY;
     run(() => invoke('set_overlay_config', { cfg: { ...base, ...patch } }), t('common.update'));
+  };
+
+  // 切换桌面精灵：同步窗口尺寸（立绘 + 气泡需要 240x320），启用时顺带打开悬浮窗。
+  // 关闭时回到 HUD 默认尺寸，并一并关掉互动，避免残留一个会拦截点击的透明窗口。
+  const togglePet = (enabled: boolean) => {
+    setOverlay({
+      pet_enabled: enabled,
+      enabled: enabled ? true : (config?.overlay?.enabled ?? false),
+      width: enabled ? 240 : 280,
+      height: enabled ? 320 : 108,
+      layout: 'column',
+      ...(enabled ? {} : { pet_interactive: false }),
+    });
   };
 
   // 外部配置刷新后同步滑块显示值
@@ -441,13 +459,48 @@ export function SettingsPanel({
           />
 
           <div className="card settings-group switches">
+            <h4>{t('set.petTitle')}</h4>
+            <p className="hint compact">{t('set.petHint')}</p>
+            <label className="switch-line">
+              <span>{t('set.petEnable')}</span>
+              <input
+                type="checkbox"
+                checked={Boolean(config?.overlay?.pet_enabled)}
+                onChange={(e) => togglePet(e.target.checked)}
+              />
+            </label>
+            {config?.overlay?.pet_enabled && (
+              <>
+                <label className="switch-line">
+                  <span>{t('set.petInteractive')}</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(config?.overlay?.pet_interactive)}
+                    onChange={(e) => setOverlay({ pet_interactive: e.target.checked })}
+                  />
+                </label>
+                <p className="hint compact">{t('set.petInteractiveHint')}</p>
+                <div className="settings-actions-row">
+                  <button type="button" className="ghost tiny-btn" onClick={() => setOverlay({ edit: true })}>
+                    {t('set.overlayMove')}
+                  </button>
+                  <button type="button" className="ghost tiny-btn" onClick={resetOverlay}>
+                    {t('set.overlayReset')}
+                  </button>
+                  <span className="hint compact">{posText(config.overlay)}</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="card settings-group switches">
             <h4>{t('set.overlay')}</h4>
             <p className="hint compact">{t('set.overlayHint')}</p>
             <label className="switch-line">
               <span>{t('set.overlayEnable')}</span>
               <input type="checkbox" checked={Boolean(config?.overlay?.enabled)} onChange={(e) => setOverlay({ enabled: e.target.checked })} />
             </label>
-            {config?.overlay?.enabled && (
+            {config?.overlay?.enabled && !config?.overlay?.pet_enabled && (
               <>
                 <label className="switch-line">
                   <span>{t('set.overlayShowRequests')}</span>

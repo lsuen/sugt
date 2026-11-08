@@ -64,6 +64,9 @@ pub struct TrafficStatsView {
     pub hourly_buckets: Vec<HourlyBucketView>,
     pub recent_clients: Vec<ClientActivityView>,
     pub recent_channels: Vec<ChannelActivityView>,
+    /// 真实在途的 LLM 请求数（桌面精灵 typing 态依据；健康检查/心跳/探测不计入）
+    #[serde(default)]
+    pub active_requests: u64,
 }
 
 #[derive(Debug, Default)]
@@ -331,6 +334,8 @@ impl GatewayStatsCollector {
             hourly_buckets,
             recent_clients: recent,
             recent_channels: channels,
+            // 由 GatewayState::traffic_stats 覆盖为实时原子计数；此处仅作默认值
+            active_requests: 0,
         }
     }
 }

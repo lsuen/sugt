@@ -335,6 +335,12 @@ pub struct OverlayConfig {
     pub width: f64,
     #[serde(default = "default_overlay_height")]
     pub height: f64,
+    /// 桌面精灵模式：复用同一悬浮窗渲染小su，关闭时仍是原来的流量 HUD（默认关闭）
+    #[serde(default)]
+    pub pet_enabled: bool,
+    /// 精灵互动模式：解除鼠标穿透以允许悬停/点击/拖动（默认关闭，避免遮挡桌面操作）
+    #[serde(default)]
+    pub pet_interactive: bool,
 }
 
 impl Default for OverlayConfig {
@@ -353,6 +359,8 @@ impl Default for OverlayConfig {
             layout: default_overlay_layout(),
             width: default_overlay_width(),
             height: default_overlay_height(),
+            pet_enabled: false,
+            pet_interactive: false,
         }
     }
 }
