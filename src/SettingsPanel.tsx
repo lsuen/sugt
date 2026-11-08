@@ -1,7 +1,7 @@
 // 作者：sun / 孙文龙
 // 作用：设置面板。六个横向子 Tab（概览/通用/外观/高级/日志/关于），子页状态由上层受控，
 // 保证状态栏「打开日志页」等外部入口可以精确跳转，切换主 Tab 后也不丢子页位置。
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CircleAlert, Copy } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
@@ -65,12 +65,26 @@ const DEFAULT_OVERLAY: OverlayConfigView = {
   pet_snap: true,
 };
 
-// 默认「小」= 旧版 240x320 的一半；切档后重新按右下角定位，避免窗口越出屏幕
+// 立绘高度 = 旧版 240x320 的一半（160），三档等高比放大。
+// 宽度统一为高度的 1.25 倍：左侧 44% 是气泡/状态栏，右侧 56% 放立绘，
+// 立绘视觉大小只由高度决定，加宽窗口只是给通知留白，不遮挡角色头部。
 const PET_SIZES = [
-  { key: 'small', label: 'set.petSizeSmall', width: 120, height: 160 },
-  { key: 'medium', label: 'set.petSizeMedium', width: 180, height: 240 },
-  { key: 'large', label: 'set.petSizeLarge', width: 240, height: 320 },
+  { key: 'small', label: 'set.petSizeSmall', width: 200, height: 160 },
+  { key: 'medium', label: 'set.petSizeMedium', width: 300, height: 240 },
+  { key: 'large', label: 'set.petSizeLarge', width: 400, height: 320 },
 ] as const;
+
+// 用户选过的档位只影响「开启精灵」时的默认尺寸，属于本地 UI 偏好，
+// 不新增后端配置字段；关闭精灵回到 HUD 尺寸后仍能恢复上次档位。
+const PET_SIZE_STORAGE_KEY = 'sugt.pet.size.v1';
+const readPetSize = (): (typeof PET_SIZES)[number] => {
+  try {
+    const saved = window.localStorage.getItem(PET_SIZE_STORAGE_KEY);
+    return PET_SIZES.find((size) => size.key === saved) ?? PET_SIZES[0];
+  } catch {
+    return PET_SIZES[0];
+  }
+};
 
 // 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
 const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
@@ -215,21 +229,38 @@ export function SettingsPanel({
   };
 
   // 悬浮窗配置更新：合并当前配置 + 增量，持久化并即时应用
+  // 本地草稿：父级 config 由 3s 轮询刷新，快速连点两个开关时不能各自拿旧 base 覆盖
+  const overlayDraft = useRef<OverlayConfigView | null>(null);
+  const pendingWrites = useRef(0);
+  useEffect(() => {
+    if (pendingWrites.current === 0) overlayDraft.current = config?.overlay ?? null;
+  }, [config?.overlay]);
+
   const setOverlay = (patch: Partial<OverlayConfigView>) => {
-    const base = config?.overlay ?? DEFAULT_OVERLAY;
-    run(() => invoke('set_overlay_config', { cfg: { ...base, ...patch } }), t('common.update'));
+    const base = overlayDraft.current ?? config?.overlay ?? DEFAULT_OVERLAY;
+    const next = { ...base, ...patch };
+    overlayDraft.current = next;
+    pendingWrites.current += 1;
+    run(async () => {
+      try {
+        await invoke('set_overlay_config', { cfg: next });
+      } finally {
+        pendingWrites.current -= 1;
+      }
+    }, t('common.update'));
   };
 
-  // 切换桌面精灵：默认 120x160 并停靠主屏右下角（x/y = -1 是后端「未定位」哨兵）。
+  // 切换桌面精灵：恢复用户上次选的档位并停靠右下角（x/y = -1 是后端「未定位」哨兵）。
   // 关闭时回到 HUD 默认尺寸，并一并关掉互动，避免残留一个会拦截点击的透明窗口。
   const togglePet = (enabled: boolean) => {
-    setWidth(enabled ? PET_SIZES[0].width : DEFAULT_OVERLAY.width);
-    setHeight(enabled ? PET_SIZES[0].height : DEFAULT_OVERLAY.height);
+    const size = enabled ? readPetSize() : DEFAULT_OVERLAY;
+    setWidth(size.width);
+    setHeight(size.height);
     setOverlay({
       pet_enabled: enabled,
       enabled: enabled ? true : (config?.overlay?.enabled ?? false),
-      width: enabled ? PET_SIZES[0].width : DEFAULT_OVERLAY.width,
-      height: enabled ? PET_SIZES[0].height : DEFAULT_OVERLAY.height,
+      width: size.width,
+      height: size.height,
       x: -1,
       y: -1,
       layout: 'column',
@@ -237,17 +268,21 @@ export function SettingsPanel({
     });
   };
 
-  const setPetSize = (width: number, height: number) => {
-    setWidth(width);
-    setHeight(height);
+  const setPetSize = (size: (typeof PET_SIZES)[number]) => {
+    setWidth(size.width);
+    setHeight(size.height);
+    try {
+      window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
+    } catch {
+      // 隐私模式下 localStorage 不可用，不影响本次设置
+    }
     // 改尺寸后重新按右下角计算，防止放大时窗口越过屏幕边缘
-    setOverlay({ width, height, x: -1, y: -1 });
+    setOverlay({ width: size.width, height: size.height, x: -1, y: -1 });
   };
 
+  // 「回到右下角」只重置位置与编辑态，不改用户选过的尺寸档位
   const resetPet = () => {
-    setWidth(PET_SIZES[0].width);
-    setHeight(PET_SIZES[0].height);
-    setOverlay({ width: PET_SIZES[0].width, height: PET_SIZES[0].height, x: -1, y: -1, edit: false });
+    setOverlay({ x: -1, y: -1, edit: false });
   };
 
   // 外部配置刷新后同步滑块显示值
@@ -514,7 +549,7 @@ export function SettingsPanel({
                         key={size.key}
                         type="button"
                         className={`ghost tiny-btn${Math.round(config?.overlay?.width ?? DEFAULT_OVERLAY.width) === size.width ? ' active' : ''}`}
-                        onClick={() => setPetSize(size.width, size.height)}
+                        onClick={() => setPetSize(size)}
                       >
                         {t(size.label)}
                       </button>

@@ -147,14 +147,17 @@
   cursor: grabbing;
 }
 
-/* ===== 桌面精灵（小su）=====
+/* ===== 桌面精灵（小su）v0.6 =====
    overlay.html 是独立 vite 入口，不加载 styles.css / theme/registry.ts，
-   主题 token 在此不可用；颜色集中为下面的局部变量，便于后续换肤与主题包覆盖。 */
+   主题 token 在此不可用；颜色集中为下面的局部变量，便于后续换肤与主题包覆盖。
+   布局：左侧 44% 为通知栏（气泡 + 状态胶囊），右侧 56% 为立绘。
+   窗口宽高比固定 1.25，三档等比缩放；立绘高度不变，只是给通知留出空间。 */
 .pet-stage {
   --pet-accent: #4ade80;
   --pet-ink: #eaf6ff;
-  --pet-panel: rgba(8, 16, 28, 0.88);
+  --pet-panel: rgba(8, 16, 28, 0.9);
   --pet-line: rgba(140, 200, 232, 0.28);
+  --pet-side-w: 44%;
   position: relative;
   width: 100%;
   height: 100%;
@@ -163,9 +166,6 @@
   overflow: hidden;
   pointer-events: none;
 }
-/* 命中热区只给立绘本身：气泡、状态条与空白区一律穿透。
-   参考 Codex 桌面宠物的热区思路，缩小会拦截桌面点击的面积。 */
-.pet-stage.interactive .pet-frame { pointer-events: auto; }
 .pet-stage[data-state="offline"] { --pet-accent: #8fa3b8; }
 .pet-stage[data-state="idle"] { --pet-accent: #4ade80; }
 .pet-stage[data-state="typing"] { --pet-accent: #5ec8ff; }
@@ -173,38 +173,132 @@
 .pet-stage[data-state="error"] { --pet-accent: #f87171; }
 .pet-stage[data-state="sleep"] { --pet-accent: #8fa3b8; }
 
-/* 立绘帧铺满窗口并 contain：默认窗口已缩到 120x160，
-   换尺寸档位时素材自动等比缩放，不需要重出图或改 CSS 数值。 */
-.pet-frame {
+/* 左侧通知栏：气泡与状态胶囊都不覆盖立绘，角色头顶不再被遮住。
+   视口宽度即窗口宽度，用 vw + clamp 让小/中/大三档字号平滑适配。 */
+.pet-side {
   position: absolute;
   left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--pet-side-w);
+  pointer-events: none;
+}
+.pet-bubble {
+  position: absolute;
+  left: 2px;
+  right: 5px;
+  top: 7%;
+  padding: clamp(4px, 2vw, 8px);
+  border: 1px solid var(--pet-line);
+  border-right: 2px solid var(--pet-accent);
+  border-radius: 8px;
+  background: var(--pet-panel);
+  font-size: clamp(10px, 4vw, 16px);
+  line-height: 1.35;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  box-shadow: 0 6px 16px rgba(2, 8, 18, 0.45);
+  pointer-events: none;
+  animation: pet-bubble-in 0.24s ease-out;
+}
+.pet-bubble::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: 42%;
+  width: 6px;
+  height: 6px;
+  background: var(--pet-panel);
+  border-top: 1px solid var(--pet-line);
+  border-right: 1px solid var(--pet-line);
+  transform: rotate(45deg);
+}
+.pet-bubble-ok { border-right-color: #4ade80; }
+.pet-bubble-error { border-right-color: #f87171; }
+.pet-bubble-info { border-right-color: #5ec8ff; }
+
+/* 唯一的状态指示：胶囊 = 六边形状态灯 + 文字，不再叠加独立 core / hover 浮层 */
+.pet-status-bar {
+  position: absolute;
+  left: 2px;
+  bottom: 4%;
+  max-width: calc(100% - 4px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--pet-line);
+  border-radius: 999px;
+  background: rgba(8, 16, 28, 0.74);
+  font-size: clamp(9px, 3.5vw, 13px);
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(2, 8, 18, 0.35);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.pet-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 7px;
+  background: var(--pet-accent);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  filter: drop-shadow(0 0 3px var(--pet-accent));
+  transition: background 0.35s ease;
+}
+.pet-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 外层只管呼吸与整体滤镜，内层只管状态动效：
+   done/error 的一次性动画结束后，呼吸仍在父层持续，不会「僵住」。 */
+.pet-figure {
+  position: absolute;
+  left: var(--pet-side-w);
   right: 0;
   top: 0;
   bottom: 0;
-  background-repeat: no-repeat;
-  background-position: center bottom;
-  background-size: contain;
   transform-origin: 50% 100%;
   animation: pet-breathe 3.6s ease-in-out infinite;
   filter: drop-shadow(0 4px 10px rgba(4, 10, 20, 0.4));
+  pointer-events: none;
 }
-.pet-stage.interactive .pet-frame { cursor: grab; }
-.pet-stage.interactive .pet-frame:active,
-.pet-frame.dragging { cursor: grabbing; }
-.pet-frame[data-frame="idle"] { background-image: url('./assets/pet/su-idle.webp'); }
-.pet-frame[data-frame="typing"] { background-image: url('./assets/pet/su-typing.webp'); }
-.pet-frame[data-frame="done"] { background-image: url('./assets/pet/su-done.webp'); }
-.pet-frame[data-frame="error"] { background-image: url('./assets/pet/su-error.webp'); }
-.pet-frame[data-frame="sleep"] { background-image: url('./assets/pet/su-sleep.webp'); }
+.pet-stage.interactive .pet-figure { pointer-events: auto; cursor: grab; }
+.pet-stage.interactive .pet-figure:hover {
+  filter: brightness(1.08) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.5));
+}
+.pet-stage.interactive .pet-figure:active,
+.pet-figure.dragging { cursor: grabbing; }
+.pet-figure.dragging {
+  filter: brightness(1.12) drop-shadow(0 10px 20px rgba(4, 10, 20, 0.6));
+}
+.pet-pose {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: contain;
+  transform-origin: 50% 100%;
+  pointer-events: none;
+}
+.pet-pose[data-frame="idle"] { background-image: url('./assets/pet/su-idle.webp'); }
+.pet-pose[data-frame="typing"] { background-image: url('./assets/pet/su-typing.webp'); }
+.pet-pose[data-frame="done"] { background-image: url('./assets/pet/su-done.webp'); }
+.pet-pose[data-frame="error"] { background-image: url('./assets/pet/su-error.webp'); }
+.pet-pose[data-frame="sleep"] { background-image: url('./assets/pet/su-sleep.webp'); }
 
-.pet-stage[data-state="typing"] .pet-frame { animation: pet-typing 0.42s ease-in-out infinite; }
-.pet-stage[data-state="done"] .pet-frame { animation: pet-done 0.6s ease-out 1; }
-.pet-stage[data-state="error"] .pet-frame { animation: pet-error 0.4s ease-in-out 2; }
-.pet-stage[data-state="sleep"] .pet-frame {
-  animation: pet-breathe 5.5s ease-in-out infinite;
+.pet-stage[data-state="typing"] .pet-pose { animation: pet-typing 0.42s ease-in-out infinite; }
+.pet-stage[data-state="done"] .pet-pose { animation: pet-done 0.6s ease-out 1; }
+.pet-stage[data-state="error"] .pet-pose { animation: pet-error 0.4s ease-in-out 2; }
+.pet-stage[data-state="sleep"] .pet-figure {
+  animation-duration: 5.5s;
   filter: saturate(0.65) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.3));
 }
-.pet-stage[data-state="offline"] .pet-frame {
+.pet-stage[data-state="offline"] .pet-figure {
   animation: none;
   filter: grayscale(0.55) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.3));
 }
@@ -228,80 +322,11 @@
   75% { transform: translateX(3px); }
 }
 @keyframes pet-bubble-in {
-  from { opacity: 0; transform: translateY(-5px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateX(-5px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
-/* 状态灯独立于素材：Qwen-Edit 各帧胸口徽章位置不完全一致，
-   贴在胸口会出现色块漂移，改为固定的右下角六边形状态灯。 */
-.pet-core {
-  position: absolute;
-  right: 5px;
-  bottom: 4px;
-  width: 9px;
-  height: 10px;
-  background: var(--pet-accent);
-  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-  filter: drop-shadow(0 0 4px var(--pet-accent));
-  opacity: 0.92;
-  transition: background 0.35s ease;
-  pointer-events: none;
-}
-
-/* 气泡只读：无按钮、不可点、不承载写操作 */
-.pet-bubble,
-.pet-hover {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  right: 2px;
-  padding: 4px 5px;
-  border: 1px solid var(--pet-line);
-  border-left: 2px solid var(--pet-accent);
-  border-radius: 6px;
-  background: var(--pet-panel);
-  font-size: 9px;
-  line-height: 1.35;
-  word-break: break-word;
-  pointer-events: none;
-  animation: pet-bubble-in 0.22s ease-out;
-}
-.pet-bubble::after {
-  content: '';
-  position: absolute;
-  bottom: -4px;
-  left: 14px;
-  width: 6px;
-  height: 6px;
-  background: var(--pet-panel);
-  border-right: 1px solid var(--pet-line);
-  border-bottom: 1px solid var(--pet-line);
-  transform: rotate(45deg);
-}
-.pet-bubble-ok { border-left-color: #4ade80; }
-.pet-bubble-error { border-left-color: #f87171; }
-.pet-bubble-info { border-left-color: #5ec8ff; }
-.pet-hover { opacity: 0.86; }
-
-.pet-status-bar {
-  position: absolute;
-  left: 3px;
-  bottom: 2px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 8px;
-  opacity: 0.82;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
-  pointer-events: none;
-}
-.pet-status-dot {
-  width: 6px;
-  height: 7px;
-  background: var(--pet-accent);
-  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-}
-
+/* 编辑态按钮/拖柄必须显式恢复命中：父级 .pet-stage 是 pointer-events:none */
 .pet-edit-bar {
   position: absolute;
   top: 2px;
@@ -310,8 +335,13 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--pet-line);
+  border-radius: 7px;
+  background: rgba(8, 16, 28, 0.86);
 }
+.pet-stage.interactive .pet-edit-bar { pointer-events: auto; }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-frame, .pet-bubble, .pet-hover { animation: none; }
+  .pet-figure, .pet-pose, .pet-bubble { animation: none; }
 }

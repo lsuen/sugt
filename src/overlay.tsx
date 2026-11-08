@@ -83,7 +83,6 @@ type PetStageProps = {
 function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const [petState, setPetState] = useState<PetState>('offline');
   const [bubble, setBubble] = useState<Bubble | null>(null);
-  const [hover, setHover] = useState(false);
   const baseline = useRef<{
     running: boolean;
     success: number;
@@ -97,9 +96,60 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const lastFailNotice = useRef(0);
   const doneBatch = useRef({ count: 0, timer: 0 });
   const bubbleSeq = useRef(0);
+  // 最新一次状态样本的在途数：成功气泡必须等流真正结束才允许合并播报
+  const activeNow = useRef(0);
+  const wasActive = useRef(false);
+  // 拖动状态位：只有「本次按下 → 窗口确实移动」才算用户拖动。
+  // 启动停靠、改尺寸、回到右下角、吸附自身的二次移动都不应满足这个序列。
+  const dragActive = useRef(false);
+  const movedDuringDrag = useRef(false);
+  const dragRequested = useRef(false);
+  const dragCleanupTimer = useRef(0);
+  const pendingDrag = useRef<{ x: number; y: number } | null>(null);
   const draggedAt = useRef(0);
   const finishing = useRef(false);
   const [dragging, setDragging] = useState(false);
+
+  const clearDragFlags = useCallback(() => {
+    dragActive.current = false;
+    movedDuringDrag.current = false;
+    dragRequested.current = false;
+    pendingDrag.current = null;
+    setDragging(false);
+  }, []);
+
+  const beginDrag = useCallback(() => {
+    dragActive.current = true;
+    movedDuringDrag.current = false;
+    dragRequested.current = false;
+    window.clearTimeout(dragCleanupTimer.current);
+    // 原生 start_dragging 在部分平台会吞掉 pointerup，超时兜底避免状态位永久卡住
+    dragCleanupTimer.current = window.setTimeout(clearDragFlags, 5000);
+  }, [clearDragFlags]);
+
+  // 松手后仍保留一小段 movedDuringDrag，用来吞掉原生拖动后迟到的 click
+  useEffect(() => {
+    const onUp = () => {
+      if (!dragActive.current) return;
+      dragActive.current = false;
+      setDragging(false);
+      window.clearTimeout(dragCleanupTimer.current);
+      dragCleanupTimer.current = window.setTimeout(() => {
+        movedDuringDrag.current = false;
+        dragRequested.current = false;
+        pendingDrag.current = null;
+      }, 900);
+    };
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('blur', onUp, true);
+    return () => {
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('blur', onUp, true);
+      window.clearTimeout(dragCleanupTimer.current);
+    };
+  }, []);
 
   // Codex 桌面宠物式「松手即停靠」：原生拖动期间 onMoved 会连续触发，
   // 防抖 320ms 后统一做贴边吸附 + 持久化；吸附引起的二次 onMoved 由 finishing 屏蔽。
@@ -108,7 +158,8 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     let timer = 0;
     void getCurrentWindow()
       .onMoved(() => {
-        if (finishing.current) return;
+        if (!dragActive.current || finishing.current) return;
+        movedDuringDrag.current = true;
         draggedAt.current = Date.now();
         setDragging(true);
         window.clearTimeout(timer);
@@ -152,10 +203,12 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     const failed = traffic.failed_count ?? 0;
     const failover = Boolean(status.last_proxy_failover);
     const now = Date.now();
+    activeNow.current = active;
 
     // 首个样本只建立基线，避免刚打开窗口就误报「网关已就绪」
     if (!baseline.current) {
       baseline.current = { running, success, failed, failover };
+      wasActive.current = active > 0;
       setPetState(running ? 'idle' : 'offline');
       return;
     }
@@ -180,22 +233,34 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       }
       hold.current = { state: 'error', until: now + 6000 };
     }
-    // 连续成功合并成一条，静默 8s 后出泡，避免高频请求把气泡刷成骚扰
+    // 连续成功合并成一条，静默 8s 后出泡，避免高频请求把气泡刷成骚扰。
+    // 上游在响应头到达时就记成功，流式 body 可能还在输出：只要仍有在途请求就继续等，
+    // 不允许「流还在跑，精灵已经报完成」。
     if (success > prev.success) {
       doneBatch.current.count += success - prev.success;
       if (doneBatch.current.timer) window.clearTimeout(doneBatch.current.timer);
-      doneBatch.current.timer = window.setTimeout(() => {
+      const flushDone = () => {
+        if (activeNow.current > 0) {
+          doneBatch.current.timer = window.setTimeout(flushDone, 2000);
+          return;
+        }
         const count = doneBatch.current.count;
         doneBatch.current.count = 0;
         doneBatch.current.timer = 0;
         if (count > 0) pushBubble(t('pet.bubble.done', { n: count }), 'ok');
-      }, 8000);
-      const errorHeld = hold.current.state === 'error' && hold.current.until > now;
-      if (active === 0 && !errorHeld) hold.current = { state: 'done', until: now + 3500 };
+      };
+      doneBatch.current.timer = window.setTimeout(flushDone, 8000);
     }
-    // 真实在途请求优先；流式响应返回时计数会先归零，留 1.5s 余晖仅作 UI 防抖
+    // 真实在途请求优先；留 1.5s 余晖仅作轮询间隙的 UI 防抖
     if (active > 0) typingUntil.current = now + 1500;
     if (active > 0 || success > prev.success) lastActivity.current = now;
+
+    // 流式响应真正结束的那一刻补一次完成态：此前 success 已 +1，但 typing 一直压着 done
+    const errorHeld = hold.current.state === 'error' && hold.current.until > now;
+    if (wasActive.current && active === 0 && !errorHeld) {
+      hold.current = { state: 'done', until: now + 3500 };
+    }
+    wasActive.current = active > 0;
 
     const held = hold.current;
     let next: PetState;
@@ -219,8 +284,61 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
 
   const interactive = cfg.pet_interactive || cfg.edit;
 
+  // 4px 阈值：纯单击不进入原生拖动循环（部分平台会吞掉 click），移动后才真正开始拖。
+  const onFigureMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!interactive || cfg.edit || e.button !== 0) return;
+    e.preventDefault();
+    pendingDrag.current = { x: e.clientX, y: e.clientY };
+    beginDrag();
+  };
+  const onFigureMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const start = pendingDrag.current;
+    if (!start) return;
+    if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 4) return;
+    pendingDrag.current = null;
+    dragRequested.current = true;
+    void invoke('overlay_start_drag').catch(() => undefined);
+  };
+  const onFigureClick = () => {
+    pendingDrag.current = null;
+    if (!interactive || cfg.edit) return;
+    // 本次按下发生过移动（或请求过原生拖动）就只算拖动，不抢主窗口焦点
+    if (movedDuringDrag.current || dragRequested.current || Date.now() - draggedAt.current < 350) {
+      movedDuringDrag.current = false;
+      dragRequested.current = false;
+      return;
+    }
+    void invoke('focus_main_window').catch(() => undefined);
+  };
+
   return (
     <div className={`pet-stage${interactive ? ' interactive' : ''}`} data-state={petState}>
+      {/* 左侧通知栏：气泡与状态胶囊都不占用立绘区域，角色头顶不再被遮住 */}
+      <div className="pet-side">
+        {bubble && (
+          <div key={bubble.id} className={`pet-bubble pet-bubble-${bubble.kind}`} role="status">
+            {bubble.text}
+          </div>
+        )}
+        <div className="pet-status-bar" role="status">
+          <span className="pet-status-dot" aria-hidden="true" />
+          <span className="pet-status-text">{t(PET_LABEL[petState])}</span>
+        </div>
+      </div>
+
+      {/* 外层负责呼吸/整体滤镜，内层负责状态动效：两者不再争抢同一个 animation 属性 */}
+      <div
+        className={`pet-figure${dragging ? ' dragging' : ''}`}
+        onMouseDown={onFigureMouseDown}
+        onMouseMove={onFigureMouseMove}
+        onContextMenu={(e) => e.preventDefault()}
+        onClick={onFigureClick}
+        role={interactive ? 'button' : undefined}
+        aria-label={interactive ? t(PET_LABEL[petState]) : undefined}
+      >
+        <span className="pet-pose" data-frame={PET_FRAME[petState]} aria-hidden="true" />
+      </div>
+
       {cfg.edit && (
         <div className="pet-edit-bar">
           <button type="button" className="overlay-save" onClick={onSave} disabled={busy}>
@@ -228,51 +346,12 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
           </button>
           <span
             className="overlay-grip"
-            onMouseDown={onDrag}
+            onMouseDown={(e) => { onDrag(e); beginDrag(); }}
             title={t('overlay.drag')}
             aria-label={t('overlay.drag')}
           />
         </div>
       )}
-
-      <div
-        className={`pet-frame${dragging ? ' dragging' : ''}`}
-        data-frame={PET_FRAME[petState]}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        onMouseDown={(e) => {
-          // 编辑态有专用拖柄；互动模式下直接按住立绘即可拖动，无需进入编辑态
-          if (!interactive || cfg.edit || e.button !== 0) return;
-          e.preventDefault();
-          void invoke('overlay_start_drag').catch(() => undefined);
-        }}
-        onContextMenu={(e) => e.preventDefault()}
-        onClick={() => {
-          // 只读互动 + 单击/拖拽互斥：刚拖动过就不触发「回主窗口」
-          if (!interactive || Date.now() - draggedAt.current < 700) return;
-          void invoke('focus_main_window').catch(() => undefined);
-        }}
-        role={interactive ? 'button' : undefined}
-        aria-label={interactive ? t(PET_LABEL[petState]) : undefined}
-      >
-        <span className="pet-core" aria-hidden="true" />
-      </div>
-
-      {bubble && (
-        <div key={bubble.id} className={`pet-bubble pet-bubble-${bubble.kind}`} role="status">
-          {bubble.text}
-        </div>
-      )}
-      {hover && interactive && !bubble && (
-        <div className="pet-hover" role="status">
-          {t(PET_LABEL[petState])}
-        </div>
-      )}
-
-      <div className="pet-status-bar">
-        <span className="pet-status-dot" aria-hidden="true" />
-        <span>{t(PET_LABEL[petState])}</span>
-      </div>
     </div>
   );
 }
