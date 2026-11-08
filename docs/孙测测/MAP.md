@@ -9,9 +9,14 @@
 
 | 脚本编号 | 脚本路径 | 能力分类 | 覆盖检查项 | 主要输入 | 产出留痕 | 关联版本报告 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| SCR-001 | `scripts/check_version_consistency.py` | 配置管理 / 白盒 | `package.json`、`Cargo.toml`、`Cargo.lock`、`tauri.conf.json` 四处版本号一致性 | `--root` `--expect` `--out` | `traces/版本一致性检查-<时间戳>.md` | 所有 `sugt*测试报告NN.md` 的报告头「版本/构建号」 | 已落地、已自测 |
+| SCR-001 | `scripts/check_version_consistency.py` | 配置管理 / 白盒 | `package.json`、`Cargo.toml`、`Cargo.lock`、`tauri.conf.json` 四处版本号一致性（7 键） | `--root` `--expect` `--out` | `traces/版本一致性检查-<时间戳>.md` | 所有 `sugt*测试报告NN.md` 的报告头「版本/构建号」 | 已落地、已自测 |
+| SCR-002 | `scripts/comfyui_qwen_smoke.py` | 素材链路 / 环境 | 本地 ComfyUI 连通性、模型与 LoRA 可用性冒烟 | `--host` `--out` | `traces/ComfyUI-Qwen定稿冒烟-<时间戳>.md` | 精灵素材落包留痕 | 已落地 |
+| SCR-003 | `scripts/comfyui_pet_assets.py` | 素材链路 / 生成 | Qwen 定稿 → Qwen-Edit 状态帧 → H3 短片的关键帧生产 | `--host` `--out` | `traces/桌面精灵素材落包-<时间戳>.md` | 精灵素材落包留痕 | 已落地 |
+| SCR-004 | `scripts/pet_frames_to_webp.py` | 素材链路 / 后处理 | 抽帧、纯白严格抠图、alpha bbox 几何对齐、@2x 透明 WebP 落包 | `--root` `--out` | `traces/桌面精灵素材落包-<时间戳>.md` | 精灵素材落包留痕、`src/assets/pet/ASSETS.md` | 已落地 |
+| SCR-005 | `scripts/build_pet_preview.py` | 前端 UI / 可视化 | 从 `src/overlay.css` 抽同源样式 + 内联素材生成离线预览页，校验 7 个关键选择器 | `--root` `--out` `--trace-dir` | `traces/桌面精灵预览页生成-<时间戳>.md`、`docs/design/pet-v06-preview.html` | v0.6 复验报告视觉验收 | 已落地 |
+| SCR-006 | `scripts/check_pet_overlay.py` | 白盒架构 / 契约 | 精灵源码修复点、ACL、i18n 双语、dist 产物、预览同源共 19 项可判定检查 | `--root` `--out` | `traces/桌面精灵链路契约检查-<时间戳>.md` | v0.6 复验报告回归结论 | 已落地 |
 
-> 后续新增脚本按 `SCR-002`、`SCR-003` 递增登记，**先登记再写脚本**，保证索引不落后于实现。
+> 后续新增脚本按 `SCR-007` 起递增登记，**先登记再写脚本**，保证索引不落后于实现。
 
 ## 二、检查项 ↔ 能力矩阵
 
@@ -40,6 +45,10 @@
 | 2026-11-06 23:30:21 | SCR-001 | 通过（四处均 1.1.7，退出码 0） | `traces/版本一致性检查-20261106-233021.md` | 1.1.8 打版前基线（脚本当时仍只查四处） |
 | 2026-11-06 23:38:57 | SCR-001 | 通过（7 键均 1.1.8，退出码 0） | `traces/版本一致性检查-20261106-233857.md` | 脚本扩展到 7 键后打版终检；证据见 `docs/TEST_REPORT.md` 第 18 节 |
 | 2026-11-07 00:28:13 | SCR-001 | 通过（7 键均 1.1.8，退出码 0） | `traces/版本一致性检查-20261107-002813.md` | 封版复验；release run 42250535758 全绿后 |
+| 2026-11-08 20:23:33 | SCR-005 | 通过（5 张素材内联、7 个选择器齐全，退出码 0） | `traces/桌面精灵预览页生成-20261108-202333.md` | v0.6 首版预览页 |
+| 2026-11-08 20:24:55 | SCR-005 | 通过（新增 URL hash 组合验收，退出码 0） | `traces/桌面精灵预览页生成-20261108-202455.md` | 大档/出错态/编辑态/浅色桌面批量截图 |
+| 2026-11-08 20:26:53 | SCR-006 | 通过（19/19，退出码 0） | `traces/桌面精灵链路契约检查-20261108-202653.md` | v0.6 修复后回归 |
+| 2026-11-08 20:27:02 | SCR-001 | 通过（7 键均 1.1.9，退出码 0） | `traces/版本一致性检查-20261108-202702.md` | 本轮未改版本，确认无漂移 |
 
 ## 五、报告索引规则
 

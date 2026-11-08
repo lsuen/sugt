@@ -14,7 +14,12 @@ docs/孙测测/
 ├── README.md                      ← 本文件：总索引 + 全部规范 + 工作流程
 ├── MAP.md                         ← 映射表：脚本 ↔ 检查项 ↔ 留痕 ↔ 版本报告
 ├── scripts/                       ← 可复用 Python 脚本（PEP8 + 中文注释）
-│   └── check_version_consistency.py
+│   ├── check_version_consistency.py   ← SCR-001 版本一致性
+│   ├── comfyui_qwen_smoke.py          ← SCR-002 本地 ComfyUI 冒烟
+│   ├── comfyui_pet_assets.py          ← SCR-003 精灵素材生成
+│   ├── pet_frames_to_webp.py          ← SCR-004 抠图 / 对齐 / 落包
+│   ├── build_pet_preview.py           ← SCR-005 同源 CSS 预览页
+│   └── check_pet_overlay.py           ← SCR-006 精灵链路契约检查
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论
