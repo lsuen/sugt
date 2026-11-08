@@ -1330,6 +1330,26 @@ pub fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 桌面精灵拖动结束：贴边吸附 + 持久化新位置 + 通知悬浮窗刷新配置。
+/// 前端只需监听窗口 onMoved 防抖后调用一次，不需要再走一遍 set_overlay_config。
+#[tauri::command]
+pub async fn pet_finish_drag(
+    runtime: State<'_, AppRuntime>,
+    app: tauri::AppHandle,
+    snap: bool,
+) -> Result<[i32; 2], String> {
+    let (x, y) = crate::overlay::snap_position(&app, snap)?;
+    let cfg = {
+        let mut guard = runtime.config.write().await;
+        guard.overlay.x = x;
+        guard.overlay.y = y;
+        guard.overlay.clone()
+    };
+    let _ = app.emit("sugt://overlay-config-changed", &cfg);
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok([x, y])
+}
+
 /// 悬浮窗开始拖动：Rust 直调 window.start_dragging()。
 /// 前端 IPC 的 startDragging 受 ACL（core:window:allow-start-dragging）限制，后端直调不受影响。
 #[tauri::command]

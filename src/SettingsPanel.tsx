@@ -43,6 +43,7 @@ export type OverlayConfigView = {
   // 桌面精灵模式：与后端 OverlayConfig 对应
   pet_enabled: boolean;
   pet_interactive: boolean;
+  pet_snap: boolean;
 };
 
 // -1 表示「未定位」，由后端 overlay::apply 创建时按主屏右上角初始化
@@ -61,7 +62,15 @@ const DEFAULT_OVERLAY: OverlayConfigView = {
   height: 108,
   pet_enabled: false,
   pet_interactive: false,
+  pet_snap: true,
 };
+
+// 默认「小」= 旧版 240x320 的一半；切档后重新按右下角定位，避免窗口越出屏幕
+const PET_SIZES = [
+  { key: 'small', label: 'set.petSizeSmall', width: 120, height: 160 },
+  { key: 'medium', label: 'set.petSizeMedium', width: 180, height: 240 },
+  { key: 'large', label: 'set.petSizeLarge', width: 240, height: 320 },
+] as const;
 
 // 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
 const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
@@ -211,17 +220,34 @@ export function SettingsPanel({
     run(() => invoke('set_overlay_config', { cfg: { ...base, ...patch } }), t('common.update'));
   };
 
-  // 切换桌面精灵：同步窗口尺寸（立绘 + 气泡需要 240x320），启用时顺带打开悬浮窗。
+  // 切换桌面精灵：默认 120x160 并停靠主屏右下角（x/y = -1 是后端「未定位」哨兵）。
   // 关闭时回到 HUD 默认尺寸，并一并关掉互动，避免残留一个会拦截点击的透明窗口。
   const togglePet = (enabled: boolean) => {
+    setWidth(enabled ? PET_SIZES[0].width : DEFAULT_OVERLAY.width);
+    setHeight(enabled ? PET_SIZES[0].height : DEFAULT_OVERLAY.height);
     setOverlay({
       pet_enabled: enabled,
       enabled: enabled ? true : (config?.overlay?.enabled ?? false),
-      width: enabled ? 240 : 280,
-      height: enabled ? 320 : 108,
+      width: enabled ? PET_SIZES[0].width : DEFAULT_OVERLAY.width,
+      height: enabled ? PET_SIZES[0].height : DEFAULT_OVERLAY.height,
+      x: -1,
+      y: -1,
       layout: 'column',
       ...(enabled ? {} : { pet_interactive: false }),
     });
+  };
+
+  const setPetSize = (width: number, height: number) => {
+    setWidth(width);
+    setHeight(height);
+    // 改尺寸后重新按右下角计算，防止放大时窗口越过屏幕边缘
+    setOverlay({ width, height, x: -1, y: -1 });
+  };
+
+  const resetPet = () => {
+    setWidth(PET_SIZES[0].width);
+    setHeight(PET_SIZES[0].height);
+    setOverlay({ width: PET_SIZES[0].width, height: PET_SIZES[0].height, x: -1, y: -1, edit: false });
   };
 
   // 外部配置刷新后同步滑块显示值
@@ -480,12 +506,33 @@ export function SettingsPanel({
                   />
                 </label>
                 <p className="hint compact">{t('set.petInteractiveHint')}</p>
+                <div className="switch-line">
+                  <span>{t('set.petSize')}</span>
+                  <div className="overlay-layout-switch">
+                    {PET_SIZES.map((size) => (
+                      <button
+                        key={size.key}
+                        type="button"
+                        className={`ghost tiny-btn${Math.round(config?.overlay?.width ?? DEFAULT_OVERLAY.width) === size.width ? ' active' : ''}`}
+                        onClick={() => setPetSize(size.width, size.height)}
+                      >
+                        {t(size.label)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label className="switch-line">
+                  <span>{t('set.petSnap')}</span>
+                  <input
+                    type="checkbox"
+                    checked={config.overlay.pet_snap !== false}
+                    onChange={(e) => setOverlay({ pet_snap: e.target.checked })}
+                  />
+                </label>
+                <p className="hint compact">{t('set.petSnapHint')}</p>
                 <div className="settings-actions-row">
-                  <button type="button" className="ghost tiny-btn" onClick={() => setOverlay({ edit: true })}>
-                    {t('set.overlayMove')}
-                  </button>
-                  <button type="button" className="ghost tiny-btn" onClick={resetOverlay}>
-                    {t('set.overlayReset')}
+                  <button type="button" className="ghost tiny-btn" onClick={resetPet}>
+                    {t('set.petReset')}
                   </button>
                   <span className="hint compact">{posText(config.overlay)}</span>
                 </div>

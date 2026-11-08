@@ -161,7 +161,7 @@ commands.allow = [
 [[permission]]
 identifier = "allow-overlay-commands"
 description = "Enables traffic overlay commands"
-commands.allow = ["get_overlay_config", "set_overlay_config", "overlay_start_drag", "focus_main_window"]
+commands.allow = ["get_overlay_config", "set_overlay_config", "overlay_start_drag", "focus_main_window", "pet_finish_drag"]
 
 [[permission]]
 identifier = "allow-takeover-commands"

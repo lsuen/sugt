@@ -25,6 +25,7 @@ type OverlayConfigView = {
   height: number;
   pet_enabled: boolean;
   pet_interactive: boolean;
+  pet_snap: boolean;
 };
 
 type TrafficSlice = {
@@ -96,6 +97,38 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const lastFailNotice = useRef(0);
   const doneBatch = useRef({ count: 0, timer: 0 });
   const bubbleSeq = useRef(0);
+  const draggedAt = useRef(0);
+  const finishing = useRef(false);
+  const [dragging, setDragging] = useState(false);
+
+  // Codex 桌面宠物式「松手即停靠」：原生拖动期间 onMoved 会连续触发，
+  // 防抖 320ms 后统一做贴边吸附 + 持久化；吸附引起的二次 onMoved 由 finishing 屏蔽。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let timer = 0;
+    void getCurrentWindow()
+      .onMoved(() => {
+        if (finishing.current) return;
+        draggedAt.current = Date.now();
+        setDragging(true);
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          setDragging(false);
+          finishing.current = true;
+          void invoke('pet_finish_drag', { snap: cfg.pet_snap !== false })
+            .catch(() => undefined)
+            .finally(() => {
+              window.setTimeout(() => { finishing.current = false; }, 250);
+            });
+        }, 320);
+      })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => undefined);
+    return () => {
+      window.clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [cfg.pet_snap]);
 
   const pushBubble = useCallback((text: string, kind: Bubble['kind']) => {
     bubbleSeq.current += 1;
@@ -203,13 +236,21 @@ function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       )}
 
       <div
-        className="pet-frame"
+        className={`pet-frame${dragging ? ' dragging' : ''}`}
         data-frame={PET_FRAME[petState]}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
+        onMouseDown={(e) => {
+          // 编辑态有专用拖柄；互动模式下直接按住立绘即可拖动，无需进入编辑态
+          if (!interactive || cfg.edit || e.button !== 0) return;
+          e.preventDefault();
+          void invoke('overlay_start_drag').catch(() => undefined);
+        }}
+        onContextMenu={(e) => e.preventDefault()}
         onClick={() => {
-          // 只读互动：仅把主窗口带到前台，不执行任何写操作
-          if (interactive) void invoke('focus_main_window').catch(() => undefined);
+          // 只读互动 + 单击/拖拽互斥：刚拖动过就不触发「回主窗口」
+          if (!interactive || Date.now() - draggedAt.current < 700) return;
+          void invoke('focus_main_window').catch(() => undefined);
         }}
         role={interactive ? 'button' : undefined}
         aria-label={interactive ? t(PET_LABEL[petState]) : undefined}

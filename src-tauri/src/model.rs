@@ -341,6 +341,9 @@ pub struct OverlayConfig {
     /// 精灵互动模式：解除鼠标穿透以允许悬停/点击/拖动（默认关闭，避免遮挡桌面操作）
     #[serde(default)]
     pub pet_interactive: bool,
+    /// 拖动结束后自动贴边吸附（默认开启，对应桌面精灵「松手即停靠」行为）
+    #[serde(default = "default_true")]
+    pub pet_snap: bool,
 }
 
 impl Default for OverlayConfig {
@@ -361,6 +364,7 @@ impl Default for OverlayConfig {
             height: default_overlay_height(),
             pet_enabled: false,
             pet_interactive: false,
+            pet_snap: true,
         }
     }
 }
