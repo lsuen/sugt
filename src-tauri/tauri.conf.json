@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SUTAI",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "identifier": "com.qmtech.sugt",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,10 +34,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "copyright": "Copyright © 2026 孙文龙. All rights reserved.",
+    "copyright": "Copyright \u00a9 2026 \u5b59\u6587\u9f99. All rights reserved.",
     "category": "DeveloperTool",
-    "shortDescription": "SUTAI 朴素的 AI 时代中控台",
-    "longDescription": "朴素的 AI 时代中控台：一台本机工具，统一管理大模型接入、Agent 接管与技能发现。",
+    "shortDescription": "SUTAI \u6734\u7d20\u7684 AI \u65f6\u4ee3\u4e2d\u63a7\u53f0",
+    "longDescription": "\u6734\u7d20\u7684 AI \u65f6\u4ee3\u4e2d\u63a7\u53f0\uff1a\u4e00\u53f0\u672c\u673a\u5de5\u5177\uff0c\u7edf\u4e00\u7ba1\u7406\u5927\u6a21\u578b\u63a5\u5165\u3001Agent \u63a5\u7ba1\u4e0e\u6280\u80fd\u53d1\u73b0\u3002",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

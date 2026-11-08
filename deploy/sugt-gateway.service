@@ -1,0 +1,36 @@
+# 作者：sun / 孙文龙
+# 用途：systemd 样例 —— 以 sugt-cli 无头模式跑局域网/服务器网关。
+# 用法：
+#   1. 把 sugt-cli 放到 /usr/local/bin/（或改 ExecStart）
+#   2. 用 SUGT_CONFIG_DIR 指向可写配置目录，先在该目录准备好 config.toml
+#      （providers、gateway_client_api_key 等；LAN 务必换成强密钥）
+#   3. sudo cp deploy/sugt-gateway.service /etc/systemd/system/
+#   4. sudo systemctl daemon-reload && sudo systemctl enable --now sugt-gateway
+#
+# 默认仍绑定本机；要开局域网请保留 --lan，并确保防火墙放行端口。
+
+[Unit]
+Description=SUGT local AI gateway (sugt-cli)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sugt
+Group=sugt
+Environment=SUGT_CONFIG_DIR=/var/lib/sugt
+# --lan 绑定 0.0.0.0；非回环时网关强制要求客户端 API Key
+ExecStart=/usr/local/bin/sugt-cli serve --lan --port 8787
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+# 加固（按发行版能力可再收紧）
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sugt
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

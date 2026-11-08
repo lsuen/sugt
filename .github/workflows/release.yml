@@ -1,9 +1,10 @@
 # 作者：sun / 孙文龙
-# 用途：推送 v* tag 自动构建 Windows / macOS 安装包并发布到 GitHub Release。
+# 用途：推送 v* tag 自动构建 Windows / macOS 安装包、Linux CLI 无头包并发布到 GitHub Release。
 # 关键约定：release 资产名固定、不带版本号，这样
 #   https://github.com/lsuen/sugt/releases/latest/download/<asset>
 # 永远是有效链接，下载站、Homebrew cask 与应用内更新都不必随版本改动。
-# tag 仍必须是语义化版本号（v1.1.8），因为应用内更新用 tag 做版本比较。
+# tag 仍必须是语义化版本号（v1.1.9），因为应用内更新用 tag 做版本比较。
+# Linux 只发 sugt-cli（服务器 / 局域网网关），暂不打 Tauri 桌面 GUI。
 
 name: release
 
@@ -13,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（例如 v1.1.8）"
+        description: "要发布的 tag（例如 v1.1.9）"
         required: true
         type: string
 
@@ -30,6 +31,8 @@ env:
   ASSET_WIN_ZIP: SUTAI-windows-x64.zip
   ASSET_MAC_ARM64: SUTAI-macos-arm64.zip
   ASSET_MAC_X64: SUTAI-macos-x64.zip
+  ASSET_LINUX_X64: SUTAI-linux-x64.tar.gz
+  ASSET_LINUX_ARM64: SUTAI-linux-arm64.tar.gz
   ASSET_CHECKSUMS: SUTAI-checksums.txt
 
 jobs:
@@ -135,8 +138,56 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset: SUTAI-linux-x64.tar.gz
+          - runner: ubuntu-24.04-arm
+            asset: SUTAI-linux-arm64.tar.gz
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Linux linker deps for Tauri crate graph
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build sugt-cli (headless gateway)
+        run: cargo build --release --bin sugt-cli --manifest-path src-tauri/Cargo.toml
+
+      - name: Package stable-name tarball
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/stage
+          cp src-tauri/target/release/sugt-cli release-assets/stage/sugt-cli
+          cp deploy/sugt-gateway.service release-assets/stage/sugt-gateway.service
+          chmod +x release-assets/stage/sugt-cli
+          tar -C release-assets/stage -czf "release-assets/${{ matrix.asset }}" sugt-cli sugt-gateway.service
+          rm -rf release-assets/stage
+          ls -lh release-assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.runner }}
+          path: release-assets/*
+          if-no-files-found: error
+
   publish:
-    needs: [windows, macos]
+    needs: [windows, macos, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -149,7 +200,14 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          sha256sum $ASSET_WIN_SETUP $ASSET_WIN_ZIP $ASSET_MAC_ARM64 $ASSET_MAC_X64 > "$ASSET_CHECKSUMS"
+          sha256sum \
+            "$ASSET_WIN_SETUP" \
+            "$ASSET_WIN_ZIP" \
+            "$ASSET_MAC_ARM64" \
+            "$ASSET_MAC_X64" \
+            "$ASSET_LINUX_X64" \
+            "$ASSET_LINUX_ARM64" \
+            > "$ASSET_CHECKSUMS"
           cat "$ASSET_CHECKSUMS"
           ls -lh
 
@@ -165,8 +223,11 @@ jobs:
             - Windows 便携包：`SUTAI-windows-x64.zip`
             - macOS Apple Silicon：`SUTAI-macos-arm64.zip`
             - macOS Intel：`SUTAI-macos-x64.zip`
+            - Linux CLI x86_64：`SUTAI-linux-x64.tar.gz`（含 `sugt-cli` + systemd 样例）
+            - Linux CLI arm64：`SUTAI-linux-arm64.tar.gz`
             - 校验清单：`SUTAI-checksums.txt`
 
+            Linux 无头网关示例：`sugt-cli serve --lan --port 8787`（非回环绑定强制客户端 API Key）。
             也可直接用 `https://github.com/lsuen/sugt/releases/latest/download/<文件名>` 获取。
             macOS 应用未签名，首次启动请右键 → 打开，或执行 `xattr -cr "/Applications/SUTAI.app"`。
           files: |
@@ -174,6 +235,8 @@ jobs:
             release-assets/SUTAI-windows-x64.zip
             release-assets/SUTAI-macos-arm64.zip
             release-assets/SUTAI-macos-x64.zip
+            release-assets/SUTAI-linux-x64.tar.gz
+            release-assets/SUTAI-linux-arm64.tar.gz
             release-assets/SUTAI-checksums.txt
           fail_on_unmatched_files: true
         env:

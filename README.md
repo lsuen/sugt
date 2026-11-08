@@ -175,6 +175,15 @@ The cask uses `version :latest` with a fixed download URL, so a new SUGT release
 
 Launch from Applications as **SUTAI**. The app is unsigned: on first launch, right-click → **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
 
+**Linux (headless gateway / server)** — download `SUTAI-linux-x64.tar.gz` or `SUTAI-linux-arm64.tar.gz`. Each archive contains `sugt-cli` plus a systemd unit sample:
+
+```bash
+tar -xzf SUTAI-linux-x64.tar.gz
+./sugt-cli serve --lan --port 8787   # LAN-reachable; omit --lan to stay on 127.0.0.1
+```
+
+Non-loopback binds **require** a client API key (`Authorization: Bearer …` or `x-api-key`). Change `gateway_client_api_key` in config before sharing on a network. See `sugt-gateway.service` in the tarball or [`deploy/sugt-gateway.service`](deploy/sugt-gateway.service). There is **no** Linux desktop GUI package yet.
+
 **Release packages (stable names).** Asset filenames never carry a version number — only the git tag does:
 
 | Platform | Asset |
@@ -183,9 +192,11 @@ Launch from Applications as **SUTAI**. The app is unsigned: on first launch, rig
 | Windows portable | `SUTAI-windows-x64.zip` |
 | macOS Apple Silicon | `SUTAI-macos-arm64.zip` |
 | macOS Intel | `SUTAI-macos-x64.zip` |
+| Linux CLI x86_64 | `SUTAI-linux-x64.tar.gz` |
+| Linux CLI arm64 | `SUTAI-linux-arm64.tar.gz` |
 | SHA256 list | `SUTAI-checksums.txt` |
 
-`https://github.com/lsuen/sugt/releases/latest/download/<asset>` therefore always resolves to the newest build. The download site, the Homebrew cask and the in-app updater all read `/releases/latest`, so publishing a new version only replaces the same-named assets — no link or config changes anywhere. Tags stay semantic (`v1.1.8`) because the in-app updater compares the tag with the bundled `CARGO_PKG_VERSION`; a fixed `latest` tag would silently disable update checks. Windows and both macOS architectures are built by `.github/workflows/release.yml` on every `v*` tag push.
+`https://github.com/lsuen/sugt/releases/latest/download/<asset>` therefore always resolves to the newest build. The download site, the Homebrew cask and the in-app updater all read `/releases/latest`, so publishing a new version only replaces the same-named assets — no link or config changes anywhere. Tags stay semantic (`v1.1.9`) because the in-app updater compares the tag with the bundled `CARGO_PKG_VERSION`; a fixed `latest` tag would silently disable update checks. Windows, both macOS architectures and Linux CLI builds are produced by `.github/workflows/release.yml` on every `v*` tag push.
 
 **In-app updates:** Settings → About → Check for Updates. Fallback order is direct GitHub → your configured GitHub proxy → built-in/remote mirrors. Windows can silent-install the NSIS package; macOS replaces the `.app` when writable, otherwise opens the download folder for a manual drag into Applications. Homebrew / winget remain install channels.
 
@@ -196,11 +207,12 @@ Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/
 ```bash
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
+sugt-cli serve --lan --port 8787          # LAN/server: bind 0.0.0.0, require client key
 sugt-cli env        # takeover management
 sugt-cli test       # connectivity test
 ```
 
-> The CLI ships inside the app bundle at `SUTAI.app/Contents/MacOS/sugt-cli` on macOS.
+> On macOS the CLI ships inside the app bundle at `SUTAI.app/Contents/MacOS/sugt-cli`. Linux releases ship the CLI only.
 
 ## Build from Source
 

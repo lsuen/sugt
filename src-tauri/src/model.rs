@@ -389,6 +389,13 @@ fn default_gateway_client_api_key() -> String {
     "sugt-local-key".to_string()
 }
 
+fn is_loopback_bind_host(host: &str) -> bool {
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "" | "127.0.0.1" | "::1" | "localhost"
+    )
+}
+
 fn default_port_fallback_enabled() -> bool {
     true
 }
@@ -415,6 +422,12 @@ impl AppConfig {
         } else {
             self.host.clone()
         }
+    }
+
+    /// 是否绑定到非回环地址（局域网 / 公网可达）。
+    /// 此时网关必须要求客户端携带有效 API Key，避免上游 Key 被蹭用。
+    pub fn binds_non_loopback(&self) -> bool {
+        !is_loopback_bind_host(&self.bind_host())
     }
 
     /// 写入客户端环境变量 / 健康检查用的主机名

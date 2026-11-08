@@ -1,11 +1,12 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use sugt_lib::{
-    clients, commands::AppRuntime, config, gateway::GatewayState, gateway_daemon, logging, me_agent,
-    model::ProviderConfig, takeover_profiles, trial,
+    clients, commands::AppRuntime, config, gateway::GatewayState, gateway_daemon, lan, logging,
+    me_agent, model::{mask_secret, AppConfig, ProviderConfig}, takeover_profiles, trial,
 };
 use std::time::Duration;
 use tokio::signal;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "sugt-cli", version, about = "SUGT su gateway CLI")]
@@ -30,6 +31,9 @@ enum Command {
         host: Option<String>,
         #[arg(long)]
         port: Option<u16>,
+        /// 绑定 0.0.0.0，允许局域网访问；非回环绑定时强制要求客户端 API Key
+        #[arg(long)]
+        lan: bool,
     },
     Test,
     /// 小su / SOUL：无界面发消息（自动检测本机 OS）
@@ -44,6 +48,11 @@ enum Command {
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
+    },
+    /// 企业 / 团队内网部署：生成强密钥 + 开启局域网 + 打印员工接入片段
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
     },
 }
 
@@ -98,6 +107,18 @@ enum SkillCommand {
     },
     /// 基于项目上下文推荐技能
     Suggest,
+}
+
+#[derive(Subcommand)]
+enum TeamCommand {
+    /// 配置内网共享网关并打印员工端接入命令
+    Setup {
+        /// 指定内网监听端口（默认沿用配置端口）
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// 仅打印 Linux systemd 服务单元（用于服务器常驻）
+    Service,
 }
 
 #[derive(Subcommand)]
@@ -169,7 +190,7 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::Serve { host, port } => {
+        Command::Serve { host, port, lan } => {
             let (paths, mut app_config) = config::load_or_init_config()?;
             trial::ensure_allowed(&paths)?;
             if let Some(host) = host {
@@ -177,6 +198,27 @@ async fn main() -> Result<()> {
             }
             if let Some(port) = port {
                 app_config.port = port;
+            }
+            if lan {
+                app_config.allow_lan_access = true;
+            }
+            if app_config.binds_non_loopback() {
+                match ensure_strong_client_key(&mut app_config, &paths)? {
+                    Some(new_key) => {
+                        eprintln!(
+                            "info: 局域网/服务器模式已启用（bind={}）；已自动生成强客户端密钥并写入配置，请妥善保管并分发给内网员工：",
+                            app_config.bind_host()
+                        );
+                        eprintln!("      gateway_client_api_key = {}", new_key);
+                        eprintln!("      内网客户端必须携带 Authorization: Bearer <该密钥> 或 x-api-key");
+                    }
+                    None => {
+                        eprintln!(
+                            "info: LAN/server 模式已启用（bind={}）；局域网客户端必须带 Authorization: Bearer <gateway_client_api_key> 或 x-api-key",
+                            app_config.bind_host()
+                        );
+                    }
+                }
             }
             let gateway = GatewayState::new(app_config, Some(paths.config_file.clone()))?;
             let url = gateway.start().await?;
@@ -480,6 +522,50 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Command::Team { command } => {
+            let (paths, mut app_config) = config::load_or_init_config()?;
+            trial::ensure_allowed(&paths)?;
+            match command {
+                TeamCommand::Setup { port } => {
+                    if let Some(port) = port {
+                        app_config.port = port;
+                    }
+                    app_config.allow_lan_access = true;
+                    let generated = ensure_strong_client_key(&mut app_config, &paths)?;
+                    config::save_config(&paths, &app_config)?;
+                    let key = app_config.gateway_client_api_key.clone();
+                    let port = app_config.port;
+                    let lan_ips = lan::lan_ipv4_addrs();
+                    println!("=== SUGT 企业内网部署 ===");
+                    println!("配置文件: {}", paths.config_file.display());
+                    match &generated {
+                        Some(k) => {
+                            println!("已自动生成强客户端密钥（请妥善保存，分发给内网员工）：");
+                            println!("  gateway_client_api_key = {}", k);
+                        }
+                        None => println!("复用已有客户端密钥: {}", mask_secret(&key)),
+                    }
+                    println!();
+                    println!("员工端接入（内网每台机器执行，把 <KEY> 换成上面的 gateway_client_api_key）：");
+                    for ip in lan_ips.iter().chain(std::iter::once(&"127.0.0.1".to_string())) {
+                        let base = format!("http://{}:{}", ip, port);
+                        println!();
+                        println!("# 内网地址 {} — Claude Code", base);
+                        println!("export ANTHROPIC_BASE_URL={}", base);
+                        println!("export ANTHROPIC_AUTH_TOKEN=<KEY>");
+                        println!("# 内网地址 {} — Codex / OpenAI 兼容", format!("{}/v1", base));
+                        println!("export OPENAI_BASE_URL={}/v1", base);
+                        println!("export OPENAI_API_KEY=<KEY>");
+                    }
+                    println!();
+                    println!("启动网关（本机）：sugt-cli serve --lan");
+                    println!("或安装为系统服务常驻：sugt-cli team service");
+                }
+                TeamCommand::Service => {
+                    print_systemd_unit();
+                }
+            }
+        }
     }
 
     Ok(())
@@ -565,4 +651,46 @@ async fn ensure_gateway_reachable(
         }
     }
     bail!("已尝试后台启动网关，但健康检查仍未通过，请手动执行 sugt-cli serve")
+}
+
+/// 内网/局域网模式下确保客户端密钥是强密钥：默认或空则生成并落盘。
+/// 返回 Some(新密钥) 表示本次生成，None 表示复用已有强密钥。
+fn ensure_strong_client_key(
+    app_config: &mut AppConfig,
+    paths: &config::AppPaths,
+) -> Result<Option<String>> {
+    let key = app_config.gateway_client_api_key.trim();
+    if key.is_empty() || key == "sugt-local-key" {
+        let new_key = format!("sugt-{}", Uuid::new_v4().simple());
+        app_config.gateway_client_api_key = new_key.clone();
+        config::save_config(paths, app_config)?;
+        Ok(Some(new_key))
+    } else {
+        Ok(None)
+    }
+}
+
+/// 打印 Linux systemd 服务单元模板，供管理员复制到服务器常驻运行。
+fn print_systemd_unit() {
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "sugt-cli".to_string());
+    let config_dir = config::resolve_paths()
+        .map(|p| p.config_dir.display().to_string())
+        .unwrap_or_else(|_| "$HOME/.sugt".to_string());
+    println!("# 保存为 /etc/systemd/system/sugt-gateway.service，然后执行：");
+    println!("#   sudo systemctl daemon-reload && sudo systemctl enable --now sugt-gateway");
+    println!("[Unit]");
+    println!("Description=SUGT 内网 AI 网关");
+    println!("After=network.target");
+    println!("");
+    println!("[Service]");
+    println!("Type=simple");
+    println!("ExecStart={} serve --lan", exe);
+    println!("WorkingDirectory={}", config_dir);
+    println!("Restart=on-failure");
+    println!("RestartSec=5");
+    println!("");
+    println!("[Install]");
+    println!("WantedBy=multi-user.target");
 }

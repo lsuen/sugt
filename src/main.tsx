@@ -492,11 +492,14 @@ function App() {
           </div>
         </div>
         <div className="nav-scroll">
+        {/* 门面层：控制台（默认首屏，给普通用户专业感）+ SOUL（所有人的未来入口，提权至第二顺位） */}
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />{t('nav.dashboard')}</button>
+        <button className={tab === 'me' ? 'nav active nav--soul' : 'nav nav--soul'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
+        <div className="nav-divider" role="separator" aria-hidden="true" />
+        {/* 工具层：专业用户的可控能力，普通用户可暂不触碰 */}
         <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
         <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
         <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
-        <button className={tab === 'me' ? 'nav active' : 'nav'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
         <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
         <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
         </div>

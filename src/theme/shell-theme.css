@@ -72,6 +72,11 @@ body,
   border: 1px solid var(--border-strong);
 }
 
+/* SOUL 提权：常驻左侧强调条，第二顺位即被识别为"未来主入口"，激活态也不丢失 */
+.nav--soul {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .card {
   /* 毛玻璃放在 ::before，避免 backdrop-filter 把 position:fixed 弹窗裁进卡片 */
   position: relative;

@@ -175,6 +175,15 @@ cask 使用 `version :latest` + 固定下载地址，SUGT 发新版时 tap 无�
 
 从「应用程序」打开 **SUTAI**。应用未签名：首次启动请右键 →「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
+**Linux（无头网关 / 服务器）**：下载 `SUTAI-linux-x64.tar.gz` 或 `SUTAI-linux-arm64.tar.gz`，解压后得到 `sugt-cli` 与 systemd 样例：
+
+```bash
+tar -xzf SUTAI-linux-x64.tar.gz
+./sugt-cli serve --lan --port 8787   # 局域网可访问；默认仍是本机 127.0.0.1（去掉 --lan）
+```
+
+非回环绑定时网关**强制**校验客户端 API Key（`Authorization: Bearer …` 或 `x-api-key`）。请先在配置里把 `gateway_client_api_key` 改成强密钥，再对外共享。systemd 样例见包内 `sugt-gateway.service` 或仓库 [`deploy/sugt-gateway.service`](deploy/sugt-gateway.service)。当前 **不提供** Linux 桌面 GUI 安装包。
+
 **发布包（固定文件名）**：release 资产名一律不带版本号，只有 git tag 带版本号。
 
 | 平台 | 资产名 |
@@ -183,9 +192,11 @@ cask 使用 `version :latest` + 固定下载地址，SUGT 发新版时 tap 无�
 | Windows 便携包 | `SUTAI-windows-x64.zip` |
 | macOS Apple Silicon | `SUTAI-macos-arm64.zip` |
 | macOS Intel | `SUTAI-macos-x64.zip` |
+| Linux CLI x86_64 | `SUTAI-linux-x64.tar.gz` |
+| Linux CLI arm64 | `SUTAI-linux-arm64.tar.gz` |
 | SHA256 清单 | `SUTAI-checksums.txt` |
 
-因此 `https://github.com/lsuen/sugt/releases/latest/download/<资产名>` 永远指向最新构建。下载站、Homebrew cask 与应用内更新都读 `/releases/latest`，以后发新版**只需替换同名 release 资产**，两边仓库与配置都不用再动。tag 仍保持语义化（`v1.1.8`），因为应用内更新要用 tag 与内置的 `CARGO_PKG_VERSION` 比较；若固定成 `latest`，更新检查会永远不提示。Windows 与 macOS 双架构由 `.github/workflows/release.yml` 在每次推送 `v*` tag 时自动构建。
+因此 `https://github.com/lsuen/sugt/releases/latest/download/<资产名>` 永远指向最新构建。下载站、Homebrew cask 与应用内更新都读 `/releases/latest`，以后发新版**只需替换同名 release 资产**，两边仓库与配置都不用再动。tag 仍保持语义化（`v1.1.9`），因为应用内更新要用 tag 与内置的 `CARGO_PKG_VERSION` 比较；若固定成 `latest`，更新检查会永远不提示。Windows、macOS 双架构与 Linux CLI 由 `.github/workflows/release.yml` 在每次推送 `v*` tag 时自动构建。
 
 **应用内更新**：打开「设置」→「关于」→「检查更新」。会按「直连 GitHub → 你配置的 GitHub 代理 → 内置/远端镜像」回退；Win 可静默安装 NSIS，macOS 在可写时自动替换 `.app`，否则打开下载目录供手动拖入「应用程序」。Homebrew / winget 仍可作为安装渠道。
 
@@ -196,11 +207,12 @@ cask 使用 `version :latest` + 固定下载地址，SUGT 发新版时 tap 无�
 ```bash
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
+sugt-cli serve --lan --port 8787          # 局域网 / 服务器：绑定 0.0.0.0，强制客户端 Key
 sugt-cli env        # 接管管理
 sugt-cli test       # 连通性测试
 ```
 
-> macOS 上 CLI 内置于应用包：`SUTAI.app/Contents/MacOS/sugt-cli`。
+> macOS 上 CLI 内置于应用包：`SUTAI.app/Contents/MacOS/sugt-cli`。Linux Release 包只含 CLI。
 
 ## 从源码构建
 
