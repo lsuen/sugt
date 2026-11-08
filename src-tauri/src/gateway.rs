@@ -63,6 +63,31 @@ impl Drop for ActiveRequestGuard {
     }
 }
 
+/// 把在途计数守卫挂到响应体生命周期。
+///
+/// handler 返回时 hyper 才刚开始发送 body，SSE 流可能还要跑几十秒；若守卫随 handler
+/// 栈帧析构，`active_requests` 会在响应头到达时就归零，桌面精灵会提前停止 typing。
+/// 这里用一层只做转发的 stream 持有守卫：body 读完（或客户端断开导致 body 被丢弃）
+/// 时守卫才析构。不缓冲任何字节，不改变流式语义。
+fn hold_guard_through_body(
+    response: Response<Body>,
+    guard: ActiveRequestGuard,
+) -> Response<Body> {
+    let (parts, body) = response.into_parts();
+    let stream = body
+        .into_data_stream()
+        .map(|item| item.map_err(std::io::Error::other));
+    let held = async_stream::stream! {
+        // 守卫被移入生成器状态：即使一次都未 poll，也已经不再属于 handler 栈帧
+        let _held = guard;
+        let mut stream = std::pin::pin!(stream);
+        while let Some(chunk) = stream.next().await {
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(held))
+}
+
 /// 熔断器冷却时间
 const CIRCUIT_BREAKER_COOLDOWN: Duration = Duration::from_secs(30);
 
@@ -655,10 +680,10 @@ async fn proxy_openai(
     }
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = %path, "inbound openai-compatible request");
-    let _active_guard = state.begin_request();
+    let active_guard = state.begin_request();
     let started = std::time::Instant::now();
     match proxy_request(state.clone(), headers.clone(), request).await {
-        Ok(response) => response,
+        Ok(response) => hold_guard_through_body(response, active_guard),
         Err(err) => {
             error!(client = %client, path = %path, error = %err, "inbound request failed");
             state
@@ -688,10 +713,10 @@ async fn proxy_anthropic_messages(
     }
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
-    let _active_guard = state.begin_request();
+    let active_guard = state.begin_request();
     let started = std::time::Instant::now();
     match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
-        Ok(response) => response,
+        Ok(response) => hold_guard_through_body(response, active_guard),
         Err(err) => {
             error!(client = %client, path = "v1/messages", error = %err, "inbound request failed");
             state

@@ -113,6 +113,48 @@ fn free_channel_attempts_follow_failover_switch() {
     assert_eq!(off[0].model_name, free.model_name);
 }
 
+/// 流式响应：守卫必须活到 body 读完，而不是 handler 返回就归零。
+#[tokio::test]
+async fn active_guard_lives_until_streaming_body_ends() {
+    let counter = Arc::new(AtomicU64::new(0));
+    let guard = ActiveRequestGuard::new(counter.clone());
+    let chunks = vec![
+        Ok::<_, std::io::Error>(Bytes::from_static(b"data: one\n\n")),
+        Ok::<_, std::io::Error>(Bytes::from_static(b"data: two\n\n")),
+    ];
+    let body = Body::from_stream(futures_util::stream::iter(chunks));
+    let response = hold_guard_through_body(Response::new(body), guard);
+
+    // handler 已返回、body 一个字节都还没读：在途数必须仍是 1
+    assert_eq!(counter.load(Ordering::Relaxed), 1, "响应体未消费时不应提前归零");
+
+    let mut stream = response.into_body().into_data_stream();
+    assert_eq!(
+        stream.next().await.unwrap().unwrap(),
+        Bytes::from_static(b"data: one\n\n"),
+        "包装层不得改写或缓冲字节"
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), 1, "流输出中途仍应保持在途");
+    assert!(stream.next().await.is_some());
+    assert!(stream.next().await.is_none());
+    assert_eq!(counter.load(Ordering::Relaxed), 0, "流结束才允许归零");
+}
+
+/// 客户端断开：body 被丢弃时守卫也要释放，不能泄漏计数。
+#[tokio::test]
+async fn active_guard_releases_when_body_is_dropped() {
+    let counter = Arc::new(AtomicU64::new(0));
+    let guard = ActiveRequestGuard::new(counter.clone());
+    let chunks = vec![Ok::<_, std::io::Error>(Bytes::from_static(b"pending"))];
+    let response = hold_guard_through_body(
+        Response::new(Body::from_stream(futures_util::stream::iter(chunks))),
+        guard,
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), 1);
+    drop(response.into_body());
+    assert_eq!(counter.load(Ordering::Relaxed), 0, "丢弃 body 应释放守卫");
+}
+
 #[test]
 fn orders_failover_providers() {
     let mut config = AppConfig::default();
