@@ -82,8 +82,28 @@ fn point_inside(x: i32, y: i32, origin_x: i32, origin_y: i32, width: u32, height
         && y < origin_y.saturating_add_unsigned(height)
 }
 
-/// 未定位或坐标不在任一 monitor 内 → 按当前模式重新定位；坐标已被改写。
-/// x/y < 0 是显式哨兵（多屏 origin 可能为负，不能只靠 point_inside 判断）。
+/// 窗口是否完整落在某个显示器内（全部为物理像素）。
+/// 只看左上角会在拔屏 / 改分辨率后留下「只剩一角可见」的悬浮窗。
+fn window_fully_inside(
+    x: i32,
+    y: i32,
+    window_w: i32,
+    window_h: i32,
+    origin_x: i32,
+    origin_y: i32,
+    screen_width: u32,
+    screen_height: u32,
+) -> bool {
+    let right = x.saturating_add(window_w);
+    let bottom = y.saturating_add(window_h);
+    x >= origin_x
+        && y >= origin_y
+        && right <= origin_x.saturating_add_unsigned(screen_width)
+        && bottom <= origin_y.saturating_add_unsigned(screen_height)
+}
+
+/// 未定位或窗口不完整落在任一 monitor 内 → 按当前模式重新定位；坐标已被改写。
+/// x/y < 0 是显式哨兵（多屏 origin 可能为负，不能只靠坐标范围判断）。
 async fn ensure_on_screen(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
     let unpositioned = cfg.x < 0 || cfg.y < 0;
     let on = if unpositioned {
@@ -95,7 +115,13 @@ async fn ensure_on_screen(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<()
             .any(|m| {
                 let p = m.position();
                 let s = m.size();
-                point_inside(cfg.x, cfg.y, p.x, p.y, s.width, s.height)
+                let scale = m.scale_factor().max(1.0);
+                let window_w = (cfg.width * scale) as i32;
+                let window_h = (cfg.height * scale) as i32;
+                window_fully_inside(
+                    cfg.x, cfg.y, window_w, window_h,
+                    p.x, p.y, s.width, s.height,
+                )
             })
     };
     if on {
@@ -122,6 +148,10 @@ pub fn snap_position(app: &AppHandle, snap: bool) -> Result<(i32, i32), String> 
         let size = window
             .outer_size()
             .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+        // 用窗口中心而不是左上角选显示器：跨屏拖动时左上角可能仍落在原屏幕，
+        // 按左上角吸附会把精灵拽回错误的屏幕边缘。
+        let center_x = x.saturating_add(size.width as i32 / 2);
+        let center_y = y.saturating_add(size.height as i32 / 2);
         let monitors = app
             .available_monitors()
             .map_err(|e| format!("读取显示器列表失败: {e}"))?;
@@ -130,7 +160,7 @@ pub fn snap_position(app: &AppHandle, snap: bool) -> Result<(i32, i32), String> 
             .find(|m| {
                 let p = m.position();
                 let s = m.size();
-                point_inside(x, y, p.x, p.y, s.width, s.height)
+                point_inside(center_x, center_y, p.x, p.y, s.width, s.height)
             })
         {
             let origin = m.position();
@@ -230,7 +260,35 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{bottom_right_physical, point_inside, top_right_physical};
+    use super::{bottom_right_physical, point_inside, top_right_physical, window_fully_inside};
+
+    #[test]
+    fn pet_default_size_docks_on_retina() {
+        // v0.6 默认 200x160（立绘高度不变，左侧留给通知栏）
+        let (x, y) = bottom_right_physical(0, 0, 3024, 1964, 2.0, 200.0, 160.0);
+        assert_eq!(x, 3024 - 400 - 32);
+        assert_eq!(y, 1964 - 320 - 32);
+    }
+
+    #[test]
+    fn window_visibility_requires_all_corners_inside() {
+        assert!(window_fully_inside(
+            3024 - 400 - 32, 1964 - 320 - 32, 400, 320, 0, 0, 3024, 1964,
+        ));
+        // 分辨率变小后左上角仍在屏内、右下角越界：必须重定位
+        assert!(!window_fully_inside(1500, 900, 400, 320, 0, 0, 1920, 1080));
+        // 副屏 origin 为负时按物理坐标判定
+        assert!(window_fully_inside(-1820, 200, 400, 320, -1920, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn monitor_lookup_uses_window_center() {
+        // 主屏 0..1920、副屏 -1920..0：窗口左上角在副屏，中心在主屏
+        let left = -80;
+        let center_x = left + 400 / 2;
+        assert!(!point_inside(left, 100, 0, 0, 1920, 1080), "左上角不在主屏");
+        assert!(point_inside(center_x, 100, 0, 0, 1920, 1080), "中心点在主屏，吸附应跟随主屏");
+    }
 
     #[test]
     fn pet_default_docks_bottom_right_on_retina() {
