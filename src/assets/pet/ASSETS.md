@@ -1,72 +1,79 @@
-# 小su 桌面精灵 · 进包素材留痕（v2 全身版）
+# 小su 桌面精灵 · 进包素材留痕（v4 / v0.7 真实逐帧动画版）
 
 生成日期：2026-11-08　|　编写：孙测测　|　生成方式：**全部本地 ComfyUI，零云端额度**
 
-> v2 修订：按用户反馈重做素材——补出完整双腿与鞋、消除「四手」、修掉 sleep 橙色圆眼、
-> 清理发丝缝隙残留白块，并新增几何对齐解决状态切换忽大忽小。
+> v4 修订（对应「头发没抠干净 / 在想时奇怪摇晃 / 别只是图片叠加」三轮反馈）：
+> - **放弃白底泛洪**：改 Qwen-Edit 均匀洋红纯色底 + 色度空间软色键，发丝缝隙是纯背景色，必然 `alpha=0`；深/浅桌面下无白块、无粉边，白鞋白袜无破洞。因色键已能干净处理发丝，**未改白头发**，保持雾蓝短发设定。
+> - **真实逐帧动画**：5 个状态各 6 帧 / 8fps、带 alpha 的动画 WebP，由 ComfyUI `SaveAnimatedWEBP` 编码，替代 v0.6 的静态图 + CSS 无限旋转。
+> - **闭眼帧程序化生成**：Qwen-Edit 闭眼指令不稳定，改为按实测眼位局部覆盖 + 睫毛弧线，sleep 循环也由闭眼帧重编码，不再有「睁眼睡觉」瑕疵。
+> - 前置能力核实见 `docs/孙测测/traces/桌面精灵v0.7能力核实与方案-20261108.md`。
 
 ## 一、产物清单
 
-| 文件 | 状态 | 用途 | 体积 |
+| 文件 | 类型 | 用途 | 体积 |
 | --- | --- | --- | --- |
-| `su-idle.webp` | idle / offline | 待机（offline 复用此帧 + 灰状态灯 + 降饱和） | 17.76 KB |
-| `su-typing.webp` | typing | 真实请求在途，配合 CSS 快速颤动 | 17.91 KB |
-| `su-done.webp` | done | 请求完成，配合 CSS 弹跳 | 16.61 KB |
-| `su-error.webp` | error | 上游 4xx / 空响应 / 请求失败，配合 CSS 摇晃 | 16.95 KB |
-| `su-sleep.webp` | sleep | 60s 无活动后休息（降饱和 + 慢呼吸） | 16.23 KB |
+| `su-idle.webp` | 静态海报 | reduced-motion / 窗口隐藏时降级显示 | 10.52 KB |
+| `su-typing.webp` | 静态海报 | 同上（处理中） | 10.13 KB |
+| `su-done.webp` | 静态海报 | 同上（已完成） | 9.61 KB |
+| `su-error.webp` | 静态海报 | 同上（出错了） | 10.08 KB |
+| `su-sleep.webp` | 静态海报 | 同上（休息中，闭眼） | 8.69 KB |
+| `su-blink.webp` | 静态海报 | 运行时随机眨眼叠加层（程序化闭眼帧） | 10.37 KB |
+| `su-idle-loop.webp` | 动画 WebP | idle 循环，6 帧 / 8fps / alpha | 72.29 KB |
+| `su-typing-loop.webp` | 动画 WebP | typing 循环，6 帧 / 8fps / alpha | 69.40 KB |
+| `su-done-loop.webp` | 动画 WebP | done 循环，6 帧 / 8fps / alpha | 66.18 KB |
+| `su-error-loop.webp` | 动画 WebP | error 循环，6 帧 / 8fps / alpha | 69.21 KB |
+| `su-sleep-loop.webp` | 动画 WebP | sleep 循环，6 帧 / 8fps / alpha（闭眼） | 67.74 KB |
 
-- 尺寸：360×560（@2x），CSS 按 `background-size: contain` 铺满窗口，默认窗口 120×160。
-- 五帧已按人物 alpha 包围盒统一对齐到 `(102, 28, 252, 540)`，状态切换不会忽大忽小。
-- **合计 85.45 KB**。WebP 已是压缩格式，安装包 zip 二次压缩几乎不再缩小，故净增量 ≈ 85 KB。
-- 落地留痕：`docs/孙测测/traces/桌面精灵素材落包-20261108-194455.md`。
+- **合计 11 张 / 404.23 KB**；`dist` 内 11 张同源，契约检查 D04 复核一致。
+- 尺寸 240×360（@2x），CSS `background-size: contain`；5 个状态先按 alpha 包围盒对齐，切换不漂移。
+- 每个 loop 由 RIFF 校验：`ANMF >= 2`、`VP8X` 的 `0x10`（alpha）与 `0x02`（animation）均置位；契约检查 D06 复核。
+- 落包留痕：`docs/孙测测/traces/桌面精灵v0.7色键落包-*.md`；预览页生成留痕：`桌面精灵预览页生成-*.md`。
 
 ## 二、生成链路（可复现）
 
-服务：`http://192.168.31.84:8188/`（ComfyUI 0.36.0 / RTX 5080 Laptop 16GB / `--use-sage-attention`）
+服务：`http://192.168.31.84:8188/`（ComfyUI 0.36.0 / RTX 5080 Laptop 16GB）
 
-1. **唯一全身定稿**：`qwen_image_fp8_e4m3fn` + `Qwen-Image-Lightning-8steps-V1.0`，8 steps / cfg 1.0 / euler-simple，1024×1536，seed `20261120`。
-   - v1 只写「全身」时模型稳定输出膝上大半身；v2 在正向里明确写出**深蓝黑短裤、完整小腿、白袜、白色运动鞋、双脚着地**，三张候选全部为完整全身。
-2. **状态帧由图生图派生**：`qwen_image_edit_2509_fp8_e4m3fn` + `Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16`，`TextEncodeQwenImageEdit` + `ModelSamplingAuraFlow(shift=3.0)` + `VAEEncode`，4 steps / cfg 1.0。
-   - 最终帧来源：`idle=20261114`、`done=20261111`（取自定稿派生批次），`error=20261124`、`sleep=20261123`、`typing=20261126`（单独重出，构图以干净的 idle 帧为参考）。
-   - **四手修复**：v1 的 typing / done 指令要求「把手抬到身前」，模型把原手臂也留在身侧，产生四条手臂。v2 全部状态帧改为**手臂保持自然下垂不动**，只改表情、视线与粒子；`EDIT_BASE` 额外声明「角色始终只有两条手臂两只手，不复制或残留多余手臂」。
-   - **sleep 橙圆修复**：v1 闭眼被渲染成两个橙色实心圆；v2 改用「擦除瞳孔/虹膜/眼白，只留两道弧线」的否定式指令。Qwen-Edit 两轮均未真正闭眼，但橙色圆已消失（见「已知瑕疵」）。
-3. **透明底**（`pet_frames_to_webp.py` v2 算法）：
-   - 纯白严格判据 `low>=252 && spread<=4`。实测背景、白袜、白鞋均为 `(255,255,255)`，而米白外套为 `(247,243,240)` / `(219,214,215)`；v1 的 `low>=224` 会把外套整片判成背景并打出噪点破洞。
-   - 四边泛洪 → 上半身 55% 宽松扩散（允许跨过 3px 细线稿，清掉发丝缝隙里的封闭白块）→ 上半身边缘去白（消掉缩图抗锯齿白边）。
-   - **下半身不做宽松清除**，专门保护与背景同色的白鞋白袜；不再做「小封闭白块清除」，避免角色内部被打洞。
-4. **几何对齐**：量出每帧 alpha 包围盒 → 取各坐标中位数为基准框 → 预乘 alpha 双线性重采样。这一步根治 Qwen-Edit 各帧构图漂移（实测 typing 的原始 bbox 高 466px，其余帧 497–516px）。
-5. **缩放编码**：ffmpeg Lanczos → 360×560 → cwebp q=82 / alpha_q=92。
+1. **洋红底基准图**：Qwen-Edit 把 v2 白底全身定稿的背景改成均匀洋红纯色，得 `v4/pet-chroma-base.png`；实测背景中位色 `(255, 62, 166)`，边界样本均匀。
+2. **状态差分帧**（`comfyui_pet_v07.py states`）：`qwen_image_edit_2509_fp8_e4m3fn` + Lightning 4steps LoRA，4 steps / cfg 1.0；从洋红底重出 typing / done / error / sleep。`EDIT_BASE` 强制「背景保持同一块纯净洋红纯色」「只有两条手臂」「正面全身站姿」。
+3. **色键落包**（`pet_v07_frames.py`）：
+   - 色度空间软色键：以 `(R-G, B-G)` 到背景色的距离定 alpha，`CHROMA_FLOOR=14` / `CHROMA_FULL=180`；再做**反预乘去溢色**，消除洋红描边。
+   - `clean_specks()` 连通域清噪，`SPECK_MIN_AREA=48`，清掉 error 帧的游离呆毛碎块。
+   - `alpha_bbox` / `median_box` / `warp_to_box` 对齐，消除 Qwen-Edit 构图漂移。
+   - `make_closed_eyes()` 按实测眼位 `EYE_BOXES = ((102,83,117,97),(124,83,139,97))` 局部羽化覆盖为肤色并画向下弯弧睫毛线，产 `su-blink.webp`；**不用 CSS 贴片眼睑**（会盖住刘海，像蒙眼布）。
+   - `motion_frames()` 生成 6 帧真实差异帧、首尾闭合，供动画编码。
+4. **ComfyUI 动画编码**（`comfyui_pet_v07.py anim`）：上传 RGBA 序列帧 → `LoadImage` → **`JoinImageWithAlpha` 还原 alpha** → `ImageBatch` → `SaveAnimatedWEBP`（`fps=8` / `quality=88` / `lossless=False`，WebP 的 `ALPH` 块独立压缩，仍保留透明通道）→ 剥离 EXIF → RIFF 结构校验。
 
 复现命令（仓库根目录）：
 
 ```bash
-# 定稿候选（取 pet-master-s20261120_00001_.png）
-SUGT_PET_OUT="$PWD/docs/design/assets/generated/v2" \
-  python3 docs/孙测测/scripts/comfyui_pet_assets.py master 20261120 20261121 20261122
-# 状态帧（按 README 中列出的参考图分别派生）
-python3 docs/孙测测/scripts/pet_frames_to_webp.py --src docs/design/assets/generated/v3
+# 状态差分帧（输出默认落到 docs/design/assets/generated/v4，可用 SUGT_PET_OUT 覆盖）
+python3 docs/孙测测/scripts/comfyui_pet_v07.py states \
+  docs/design/assets/generated/v4/pet-chroma-base.png typing done error sleep
+# 色键 → RGBA → 静态海报 + 序列帧（默认写到 src/assets/pet 与 v4/frames）
+python3 docs/孙测测/scripts/pet_v07_frames.py
+# 序列帧 → 带 alpha 动画 WebP
+python3 docs/孙测测/scripts/comfyui_pet_v07.py anim \
+  docs/design/assets/generated/v4/frames
+# 同源预览页与契约复核
+python3 docs/孙测测/scripts/build_pet_preview.py
+python3 docs/孙测测/scripts/check_pet_overlay.py
 ```
 
-提示词全文见 `docs/孙测测/scripts/comfyui_pet_assets.py` 的 `POSITIVE` / `NEGATIVE` / `EDIT_BASE` / `EDIT_JOBS`。
+## 三、两个必须避开的坑（能力核实已确认）
 
-## 三、与 v0.3 设计规格的偏差（如实记录）
+- **`SaveAnimatedWEBP` 会对相同帧去重**：用 `RepeatImageBatch` 重复 4 张同图，产出的是静态单帧（`VP8X(0x18)`、无 `ANIM`、`ffprobe nb_read_frames=1`）。因此动画必须由**真实差异帧**组成，不能靠 CSS 叠图或复制帧。
+- **`LoadImage` 会把 RGBA 拆成 `IMAGE(RGB) + MASK(alpha)`**：编码前不 `JoinImageWithAlpha` 还原，动画 WebP 会变成洋红 / 黑底。已用独立 RGBA 探针验证 `SaveImage` 输出 `pix_fmt=rgba`。
 
-| 项 | 规格 | 实际 | 原因 |
+## 四、与 v0.3 设计规格的偏差（如实记录）
+
+| 项 | 规格 | v0.7 实际 | 原因 |
 | --- | --- | --- | --- |
-| 帧数 | 一期 37 帧 + H3 补间 | 5 帧 + CSS 动效 | 5 个状态各一帧已覆盖状态机；CSS 负责呼吸/颤动/摇晃/弹跳，包体积压到 85 KB |
-| MiniMax-H3 | 补间产出进包素材 | **未用于进包素材**，保留给社区宣传短片 | 图生图派生更可控、体积更小，无需处理视频 alpha 跨平台解码 |
-| 全身 | 完整全身含脚 | **已达成**：短裤、小腿、白袜、运动鞋、双脚完整 | v2 提示词补出下半身具体内容 |
-| 光环 / 飘带 | S 形呆毛 + 数据流飘带 | v2 定稿保留飘带，edit 派生帧多为纯白简洁版 | 桌面小尺寸下简洁版更清晰；飘带仍在定稿与宣传素材中 |
-| 核心色 | 胸口六边形运行时染色 | **改为右下角独立六边形状态灯** | Qwen-Edit 各帧胸口徽章位置/形状不一致（有空白、有青色描边、有白色方块），贴胸口会漂移 |
-| 互动 | 一期零互动 | 一期 L1 只读：悬停看状态、点击回主窗口、拖动移动 | 写操作仍禁止进气泡，走既有确定性命令 + 后果预览 + `ModalPortal` |
-| typing 动作 | 敲键盘 | 手臂不动，靠 CSS 颤动 + 蓝色状态灯 + 状态条 | 抬手是「四手 bug」根因，宁可牺牲动作换正确性 |
-
-## 四、已知瑕疵
-
-- `su-sleep.webp` 仍是睁眼：Qwen-Edit 2509 两轮重出都未执行闭眼（角色一致性约束过强），但 v1 的橙色实心圆已消除。休息态目前靠降饱和 + 慢呼吸 + 灰色状态灯 + 「休息中」文案区分。
-- `su-typing.webp` 与 `su-idle.webp` 表情差异较小，处理中态主要靠蓝色状态灯、快速颤动与「处理中」文案区分。
-- `su-error.webp` 与 `su-idle.webp` 表情差异较小，异常态靠红色状态灯 + 摇晃动效 + error 气泡区分。
-- 以上三帧若要强化表情，需改用局部重绘（inpaint）而不是整图指令编辑；不影响代码。
+| 帧数 | 一期 37 帧 + H3 补间 | 5 状态 × 6 帧 = 30 帧 + 1 闭眼帧 | 6 帧闭环已覆盖呼吸/点头/轻摆，包体积可控（404 KB） |
+| MiniMax-H3 | 补间产出进包素材 | **未用于进包素材**，保留给社区宣传短片 | 序列帧更可控；视频 alpha 跨平台解码风险高 |
+| 动态载体 | 透明序列帧进包 | **带 alpha 的动画 WebP 进包**，CSS 只做交叉淡入与交互叠加 | 用户明确要求「不是图片叠加」；动画 WebP 由 ComfyUI 原生编码 |
+| 闭眼 | Qwen-Edit 出 sleep 帧 | 程序化闭眼帧 + sleep loop 重编码 | Qwen-Edit 两轮闭眼指令均未生效 |
+| 抠图 | rembg / 白底泛洪 | 洋红纯色底 + 色度空间软色键 | 本机缺 BiRefNet `Matting-HR.safetensors` 等权重；白底泛洪会留发丝缝隙白块、误伤白鞋白袜 |
+| 互动 | 一期零互动 | 视线跟随、靠近光晕、随机眨眼、自主张望、轻碰回应、拖动倾斜 | v0.7 打磨项；写操作仍不进气泡，走确定性命令 + 后果预览 |
 
 ## 五、授权与合规
 

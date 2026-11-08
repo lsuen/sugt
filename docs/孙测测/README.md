@@ -19,7 +19,10 @@ docs/孙测测/
 │   ├── comfyui_pet_assets.py          ← SCR-003 精灵素材生成
 │   ├── pet_frames_to_webp.py          ← SCR-004 抠图 / 对齐 / 落包
 │   ├── build_pet_preview.py           ← SCR-005 同源 CSS 预览页
-│   └── check_pet_overlay.py           ← SCR-006 精灵链路契约检查
+│   ├── check_pet_overlay.py           ← SCR-006 精灵链路契约检查
+│   ├── comfyui_pet_v07.py             ← SCR-007 v0.7 ComfyUI 状态帧 / 动画 WebP 编码
+│   ├── pet_v07_frames.py              ← SCR-008 洋红底色键 / 闭眼帧 / 差异序列落包
+│   └── pet_v07_browser_smoke.py       ← SCR-009 真实时间浏览器冒烟
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论

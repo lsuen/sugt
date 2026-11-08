@@ -13,10 +13,13 @@
 | SCR-002 | `scripts/comfyui_qwen_smoke.py` | 素材链路 / 环境 | 本地 ComfyUI 连通性、模型与 LoRA 可用性冒烟 | `--host` `--out` | `traces/ComfyUI-Qwen定稿冒烟-<时间戳>.md` | 精灵素材落包留痕 | 已落地 |
 | SCR-003 | `scripts/comfyui_pet_assets.py` | 素材链路 / 生成 | Qwen 定稿 → Qwen-Edit 状态帧 → H3 短片的关键帧生产 | `--host` `--out` | `traces/桌面精灵素材落包-<时间戳>.md` | 精灵素材落包留痕 | 已落地 |
 | SCR-004 | `scripts/pet_frames_to_webp.py` | 素材链路 / 后处理 | 抽帧、纯白严格抠图、alpha bbox 几何对齐、@2x 透明 WebP 落包 | `--root` `--out` | `traces/桌面精灵素材落包-<时间戳>.md` | 精灵素材落包留痕、`src/assets/pet/ASSETS.md` | 已落地 |
-| SCR-005 | `scripts/build_pet_preview.py` | 前端 UI / 可视化 | 从 `src/overlay.css` 抽同源样式 + 内联素材生成离线预览页，校验 7 个关键选择器 | `--root` `--out` `--trace-dir` | `traces/桌面精灵预览页生成-<时间戳>.md`、`docs/design/pet-v06-preview.html` | v0.6 复验报告视觉验收 | 已落地 |
-| SCR-006 | `scripts/check_pet_overlay.py` | 白盒架构 / 契约 | 精灵源码修复点、ACL、i18n 双语、dist 产物、预览同源共 19 项可判定检查 | `--root` `--out` | `traces/桌面精灵链路契约检查-<时间戳>.md` | v0.6 复验报告回归结论 | 已落地 |
+| SCR-005 | `scripts/build_pet_preview.py` | 前端 UI / 可视化 | 从 `src/overlay.css` 抽同源样式 + 内联 11 张素材（含 5 个动画 WebP）生成离线预览页，校验 13 个关键选择器与 iframe 脚本闭合 | `--root` `--out` `--trace-dir` | `traces/桌面精灵预览页生成-<时间戳>.md`、`docs/design/pet-v07-preview.html` | v0.7 视觉验收 | 已落地 |
+| SCR-006 | `scripts/check_pet_overlay.py` | 白盒架构 / 契约 | 精灵源码修复点、ACL、i18n 双语、dist 产物、预览同源、动画 WebP RIFF 结构、iframe 脚本闭合共 28 项可判定检查 | `--root` `--out` | `traces/桌面精灵链路契约检查-<时间戳>.md` | v0.7 复验报告回归结论 | 已落地 |
+| SCR-007 | `scripts/comfyui_pet_v07.py` | 素材链路 / 生成 | 本地 ComfyUI 洋红底状态差分帧 + `SaveAnimatedWEBP` 带 alpha 动画编码 + EXIF 剥离与 RIFF 校验 | `states\|anim <源>`、`SUGT_PET_OUT` / `SUGT_COMFYUI_BASE` | v4 状态帧 / 序列帧 / loop WebP、`traces/桌面精灵v0.7色键落包-*.md` | v0.7 素材链路 | 已落地 |
+| SCR-008 | `scripts/pet_v07_frames.py` | 素材链路 / 后处理 | 洋红底色度空间软色键、反预乘去溢色、连通域清噪、alpha bbox 对齐、程序化闭眼帧、6 帧首尾闭合差异序列 | `--src` `--out` `--frames` `--trace` `--size` `--count` | `traces/桌面精灵v0.7色键落包-<时间戳>.md` | `src/assets/pet/ASSETS.md` | 已落地 |
+| SCR-009 | `scripts/pet_v07_browser_smoke.py` | 前端 UI / 浏览器 | Playwright 真实时间采样：动画 WebP 逐帧播放、视线跟随与靠近光晕、眨眼帧、静态降级、状态切换、轻碰反馈、验收截图 | `--root` `--out`、`SUGT_PLAYWRIGHT_MODULE` / `SUGT_CHROME_PATH` | `traces/桌面精灵v0.7浏览器冒烟-<时间戳>.md` + 同名 PNG | v0.7 复验报告 UI 结论 | 已落地 |
 
-> 后续新增脚本按 `SCR-007` 起递增登记，**先登记再写脚本**，保证索引不落后于实现。
+> 后续新增脚本按 `SCR-010` 起递增登记，**先登记再写脚本**，保证索引不落后于实现。
 
 ## 二、检查项 ↔ 能力矩阵
 
@@ -49,6 +52,10 @@
 | 2026-11-08 20:24:55 | SCR-005 | 通过（新增 URL hash 组合验收，退出码 0） | `traces/桌面精灵预览页生成-20261108-202455.md` | 大档/出错态/编辑态/浅色桌面批量截图 |
 | 2026-11-08 20:26:53 | SCR-006 | 通过（19/19，退出码 0） | `traces/桌面精灵链路契约检查-20261108-202653.md` | v0.6 修复后回归 |
 | 2026-11-08 20:27:02 | SCR-001 | 通过（7 键均 1.1.9，退出码 0） | `traces/版本一致性检查-20261108-202702.md` | 本轮未改版本，确认无漂移 |
+| 2026-11-08 21:52:02 | SCR-005 | 通过（11 张素材内联、13 个选择器齐全，退出码 0） | `traces/桌面精灵预览页生成-20261108-215202.md` | 修复 srcdoc 结束标签双重转义后重新生成，iframe 视线脚本恢复执行 |
+| 2026-11-08 21:52:17 | SCR-009 | 通过（7/7，退出码 0） | `traces/桌面精灵v0.7浏览器冒烟-20261108-215217.md` | 动画 WebP 7 次采样 6 个不同帧；视线 gaze-x -0.829→0.237、贴头 near 0.999 / nearby=true |
+| 2026-11-08 21:52:36 | SCR-001 | 通过（7 键均 1.1.9，退出码 0） | `traces/版本一致性检查-20261108-215236.md` | v0.7 未改版本，确认无漂移 |
+| 2026-11-08 21:53:55 | SCR-006 | 通过（28/28，退出码 0） | `traces/桌面精灵链路契约检查-20261108-215355.md` | 新增 D07 预览页 iframe 脚本闭合检查；D06 五个 loop 均 6 帧 / alpha |
 
 ## 五、报告索引规则
 
