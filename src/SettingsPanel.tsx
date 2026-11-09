@@ -1,5 +1,5 @@
 // 作者：sun / 孙文龙
-// 作用：设置面板。六个横向子 Tab（概览/通用/外观/高级/日志/关于），子页状态由上层受控，
+// 作用：设置面板。横向子 Tab（概览/通用/外观/高级/精灵/日志/关于），子页状态由上层受控，
 // 保证状态栏「打开日志页」等外部入口可以精确跳转，切换主 Tab 后也不丢子页位置。
 import React, { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -12,6 +12,9 @@ import type { CustomBgState, ThemeId, ThemeMeta } from './theme';
 import { LogsSection } from './LogsSection';
 import { AboutSection } from './AboutSection';
 import { SettingsOverview, type OverviewStatus } from './SettingsOverview';
+import { PetSettingsSection } from './PetSettingsSection';
+import { DEFAULT_OVERLAY, type OverlayConfigView } from './pet/config';
+export type { OverlayConfigView };
 
 export type LanShareInfo = {
   enabled: boolean;
@@ -25,66 +28,6 @@ export type LanShareInfo = {
 };
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
-
-// 流量悬浮窗配置（与后端 model.rs OverlayConfig 对应）
-export type OverlayConfigView = {
-  enabled: boolean;
-  opacity: number;
-  edit: boolean;
-  show_tokens: boolean;
-  show_client: boolean;
-  show_channel: boolean;
-  show_requests: boolean;
-  x: number;
-  y: number;
-  layout: 'column' | 'row';
-  width: number;
-  height: number;
-  // 桌面精灵模式：与后端 OverlayConfig 对应
-  pet_enabled: boolean;
-  pet_interactive: boolean;
-  pet_snap: boolean;
-};
-
-// -1 表示「未定位」，由后端 overlay::apply 创建时按主屏右上角初始化
-const DEFAULT_OVERLAY: OverlayConfigView = {
-  enabled: false,
-  opacity: 0.72,
-  edit: false,
-  show_tokens: true,
-  show_client: true,
-  show_channel: true,
-  show_requests: true,
-  x: -1,
-  y: -1,
-  layout: 'column',
-  width: 280,
-  height: 108,
-  pet_enabled: false,
-  pet_interactive: false,
-  pet_snap: true,
-};
-
-// 立绘高度 = 旧版 240x320 的一半（160），三档等高比放大。
-// 宽度统一为高度的 1.25 倍：左侧 44% 是气泡/状态栏，右侧 56% 放立绘，
-// 立绘视觉大小只由高度决定，加宽窗口只是给通知留白，不遮挡角色头部。
-const PET_SIZES = [
-  { key: 'small', label: 'set.petSizeSmall', width: 200, height: 160 },
-  { key: 'medium', label: 'set.petSizeMedium', width: 300, height: 240 },
-  { key: 'large', label: 'set.petSizeLarge', width: 400, height: 320 },
-] as const;
-
-// 用户选过的档位只影响「开启精灵」时的默认尺寸，属于本地 UI 偏好，
-// 不新增后端配置字段；关闭精灵回到 HUD 尺寸后仍能恢复上次档位。
-const PET_SIZE_STORAGE_KEY = 'sugt.pet.size.v1';
-const readPetSize = (): (typeof PET_SIZES)[number] => {
-  try {
-    const saved = window.localStorage.getItem(PET_SIZE_STORAGE_KEY);
-    return PET_SIZES.find((size) => size.key === saved) ?? PET_SIZES[0];
-  } catch {
-    return PET_SIZES[0];
-  }
-};
 
 // 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
 const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
@@ -104,13 +47,14 @@ type AppConfigView = {
 };
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
-export type SettingsTab = 'overview' | 'general' | 'appearance' | 'advanced' | 'logs' | 'about';
+export type SettingsTab = 'overview' | 'general' | 'appearance' | 'advanced' | 'pet' | 'logs' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; key: TKey }[] = [
   { id: 'overview', key: 'set.tabOverview' },
   { id: 'general', key: 'set.tabGeneral' },
   { id: 'appearance', key: 'set.tabAppearance' },
   { id: 'advanced', key: 'set.tabAdvanced' },
+  { id: 'pet', key: 'set.tabPet' },
   { id: 'logs', key: 'set.tabLogs' },
   { id: 'about', key: 'set.tabAbout' },
 ];
@@ -248,41 +192,6 @@ export function SettingsPanel({
         pendingWrites.current -= 1;
       }
     }, t('common.update'));
-  };
-
-  // 切换桌面精灵：恢复用户上次选的档位并停靠右下角（x/y = -1 是后端「未定位」哨兵）。
-  // 关闭时回到 HUD 默认尺寸，并一并关掉互动，避免残留一个会拦截点击的透明窗口。
-  const togglePet = (enabled: boolean) => {
-    const size = enabled ? readPetSize() : DEFAULT_OVERLAY;
-    setWidth(size.width);
-    setHeight(size.height);
-    setOverlay({
-      pet_enabled: enabled,
-      enabled: enabled ? true : (config?.overlay?.enabled ?? false),
-      width: size.width,
-      height: size.height,
-      x: -1,
-      y: -1,
-      layout: 'column',
-      ...(enabled ? {} : { pet_interactive: false }),
-    });
-  };
-
-  const setPetSize = (size: (typeof PET_SIZES)[number]) => {
-    setWidth(size.width);
-    setHeight(size.height);
-    try {
-      window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
-    } catch {
-      // 隐私模式下 localStorage 不可用，不影响本次设置
-    }
-    // 改尺寸后重新按右下角计算，防止放大时窗口越过屏幕边缘
-    setOverlay({ width: size.width, height: size.height, x: -1, y: -1 });
-  };
-
-  // 「回到右下角」只重置位置与编辑态，不改用户选过的尺寸档位
-  const resetPet = () => {
-    setOverlay({ x: -1, y: -1, edit: false });
   };
 
   // 外部配置刷新后同步滑块显示值
@@ -520,62 +429,6 @@ export function SettingsPanel({
           />
 
           <div className="card settings-group switches">
-            <h4>{t('set.petTitle')}</h4>
-            <p className="hint compact">{t('set.petHint')}</p>
-            <label className="switch-line">
-              <span>{t('set.petEnable')}</span>
-              <input
-                type="checkbox"
-                checked={Boolean(config?.overlay?.pet_enabled)}
-                onChange={(e) => togglePet(e.target.checked)}
-              />
-            </label>
-            {config?.overlay?.pet_enabled && (
-              <>
-                <label className="switch-line">
-                  <span>{t('set.petInteractive')}</span>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(config?.overlay?.pet_interactive)}
-                    onChange={(e) => setOverlay({ pet_interactive: e.target.checked })}
-                  />
-                </label>
-                <p className="hint compact">{t('set.petInteractiveHint')}</p>
-                <div className="switch-line">
-                  <span>{t('set.petSize')}</span>
-                  <div className="overlay-layout-switch">
-                    {PET_SIZES.map((size) => (
-                      <button
-                        key={size.key}
-                        type="button"
-                        className={`ghost tiny-btn${Math.round(config?.overlay?.width ?? DEFAULT_OVERLAY.width) === size.width ? ' active' : ''}`}
-                        onClick={() => setPetSize(size)}
-                      >
-                        {t(size.label)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <label className="switch-line">
-                  <span>{t('set.petSnap')}</span>
-                  <input
-                    type="checkbox"
-                    checked={config.overlay.pet_snap !== false}
-                    onChange={(e) => setOverlay({ pet_snap: e.target.checked })}
-                  />
-                </label>
-                <p className="hint compact">{t('set.petSnapHint')}</p>
-                <div className="settings-actions-row">
-                  <button type="button" className="ghost tiny-btn" onClick={resetPet}>
-                    {t('set.petReset')}
-                  </button>
-                  <span className="hint compact">{posText(config.overlay)}</span>
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="card settings-group switches">
             <h4>{t('set.overlay')}</h4>
             <p className="hint compact">{t('set.overlayHint')}</p>
             <label className="switch-line">
@@ -682,6 +535,14 @@ export function SettingsPanel({
             )}
           </div>
         </div>
+      )}
+
+      {tab === 'pet' && (
+        <PetSettingsSection
+          overlay={config?.overlay}
+          defaults={DEFAULT_OVERLAY}
+          onPatch={setOverlay}
+        />
       )}
 
       {tab === 'advanced' && (

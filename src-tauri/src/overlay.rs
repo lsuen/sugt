@@ -201,6 +201,78 @@ pub fn snap_position(app: &AppHandle, snap: bool) -> Result<(i32, i32), String> 
     Ok((x, y))
 }
 
+/// 自主走动：把前端插值出的目标点夹在当前显示器可用区内（物理像素）后移动窗口。
+/// 前端负责「整屏随机落点 + 缓动」，后端负责「永不越屏」硬边界；本命令不写配置，
+/// 走动结束后由 `pet_finish_drag` 统一持久化最终坐标。
+pub fn roam_to(app: &AppHandle, x: i32, y: i32) -> Result<[i32; 2], String> {
+    let window = app
+        .get_webview_window(LABEL)
+        .ok_or_else(|| "悬浮窗不存在".to_string())?;
+    let size = window
+        .outer_size()
+        .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+    let current = window
+        .outer_position()
+        .map_err(|e| format!("读取窗口位置失败: {e}"))?;
+    // 按窗口中心选屏，与 snap_position 保持一致，避免跨屏时被夹回错误显示器
+    let center_x = current.x.saturating_add(size.width as i32 / 2);
+    let center_y = current.y.saturating_add(size.height as i32 / 2);
+    let monitors = app
+        .available_monitors()
+        .map_err(|e| format!("读取显示器列表失败: {e}"))?;
+    let picked = monitors
+        .iter()
+        .find(|m| {
+            let p = m.position();
+            let s = m.size();
+            point_inside(center_x, center_y, p.x, p.y, s.width, s.height)
+        })
+        .map(|m| {
+            let p = m.position();
+            let s = m.size();
+            (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
+        });
+    let Some((ox, oy, sw, sh, scale)) = picked.or_else(|| {
+        app.primary_monitor().ok().flatten().map(|m| {
+            let p = m.position();
+            let s = m.size();
+            (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
+        })
+    }) else {
+        return Ok([current.x, current.y]);
+    };
+    let margin = (MARGIN * scale.max(1.0)) as i32;
+    let (cx, cy) = clamp_roam_position(
+        x, y, size.width as i32, size.height as i32, ox, oy, sw, sh, margin,
+    );
+    if (cx, cy) != (current.x, current.y) {
+        window
+            .set_position(PhysicalPosition::new(cx, cy))
+            .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
+    }
+    Ok([cx, cy])
+}
+
+/// 夹取纯函数：窗口四角必须留在同一显示器内，并留出 MARGIN 安全边距。
+/// 抽成纯函数便于跨平台单测（无需 GUI 会话）。
+fn clamp_roam_position(
+    x: i32,
+    y: i32,
+    window_w: i32,
+    window_h: i32,
+    origin_x: i32,
+    origin_y: i32,
+    screen_w: i32,
+    screen_h: i32,
+    margin: i32,
+) -> (i32, i32) {
+    let min_x = origin_x + margin;
+    let min_y = origin_y + margin;
+    let max_x = (origin_x + screen_w - window_w - margin).max(min_x);
+    let max_y = (origin_y + screen_h - window_h - margin).max(min_y);
+    (x.clamp(min_x, max_x), y.clamp(min_y, max_y))
+}
+
 /// 把 cfg 写回 runtime.config（apply 调整位置后调用）
 async fn write_back(app: &AppHandle, cfg: &OverlayConfig) {
     if let Some(rt) = app.try_state::<AppRuntime>() {
@@ -211,16 +283,23 @@ async fn write_back(app: &AppHandle, cfg: &OverlayConfig) {
 
 /// 依据配置创建/更新/销毁悬浮窗；可能改写 cfg.x/y（首次右上角、副屏回退），调用方负责持久化。
 pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
-    // 默认穿透；编辑态或精灵互动模式才接收鼠标事件。互动模式需用户显式开启，
-    // 避免常驻桌面精灵遮挡下方 IDE 的点击操作。
-    let interactive = cfg.edit || (cfg.pet_enabled && cfg.pet_interactive);
+    // HUD：仅编辑态解除穿透。
+    // 精灵：创建即穿透；之后的更新不要再写 ignore_cursor_events（交给前端按立绘/
+    // 菜单命中框动态 pet_set_clickable）。配置热更若整窗解穿透，空白侧栏会变透明墙。
+    let hud_interactive = cfg.edit && !cfg.pet_enabled;
     match app.get_webview_window(LABEL) {
         Some(w) if !cfg.enabled => {
             w.close().map_err(|e| format!("关闭悬浮窗失败: {e}"))?;
         }
         Some(w) => {
-            w.set_ignore_cursor_events(!interactive)
-                .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
+            if !cfg.pet_enabled {
+                w.set_ignore_cursor_events(!hud_interactive)
+                    .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
+            } else if cfg.edit {
+                // 精灵编辑态需要点保存/拖柄；退出编辑后由前端重新按命中框切回穿透
+                w.set_ignore_cursor_events(false)
+                    .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
+            }
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
             w.set_size(LogicalSize::new(cfg.width, cfg.height))
@@ -247,7 +326,13 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
-            w.set_ignore_cursor_events(!interactive)
+            // 新建窗口：精灵默认穿透；HUD 按编辑态
+            let ignore = if cfg.pet_enabled {
+                !cfg.edit
+            } else {
+                !hud_interactive
+            };
+            w.set_ignore_cursor_events(ignore)
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
@@ -260,14 +345,17 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{bottom_right_physical, point_inside, top_right_physical, window_fully_inside};
+    use super::{
+        bottom_right_physical, clamp_roam_position, point_inside, top_right_physical,
+        window_fully_inside,
+    };
 
     #[test]
     fn pet_default_size_docks_on_retina() {
-        // v0.6 默认 200x160（立绘高度不变，左侧留给通知栏）
-        let (x, y) = bottom_right_physical(0, 0, 3024, 1964, 2.0, 200.0, 160.0);
-        assert_eq!(x, 3024 - 400 - 32);
-        assert_eq!(y, 1964 - 320 - 32);
+        // v0.9 默认紧凑窗 148×168
+        let (x, y) = bottom_right_physical(0, 0, 3024, 1964, 2.0, 148.0, 168.0);
+        assert_eq!(x, 3024 - 296 - 32);
+        assert_eq!(y, 1964 - 336 - 32);
     }
 
     #[test]
@@ -328,5 +416,36 @@ mod tests {
     fn offscreen_marker_is_not_inside_primary() {
         assert!(!point_inside(-1, -1, 0, 0, 3024, 1964));
         assert!(point_inside(2400, 32, 0, 0, 3024, 1964));
+    }
+
+    #[test]
+    fn roam_never_leaves_screen_edges() {
+        // 左上越界 → 夹到安全边距
+        assert_eq!(
+            clamp_roam_position(-500, -500, 148, 168, 0, 0, 1920, 1080, 16),
+            (16, 16)
+        );
+        // 右下越界 → 夹到「屏幕 - 窗口 - 边距」，四角仍完整可见
+        assert_eq!(
+            clamp_roam_position(9999, 9999, 148, 168, 0, 0, 1920, 1080, 16),
+            (1920 - 148 - 16, 1080 - 168 - 16)
+        );
+    }
+
+    #[test]
+    fn roam_keeps_in_bounds_target_untouched() {
+        assert_eq!(
+            clamp_roam_position(800, 500, 148, 168, 0, 0, 1920, 1080, 16),
+            (800, 500)
+        );
+    }
+
+    #[test]
+    fn roam_respects_negative_secondary_monitor_origin() {
+        // 副屏 origin.x = -1920：不能被当成负坐标直接夹成 0
+        assert_eq!(
+            clamp_roam_position(-3000, 400, 148, 168, -1920, 200, 1920, 1080, 16),
+            (-1904, 400)
+        );
     }
 }

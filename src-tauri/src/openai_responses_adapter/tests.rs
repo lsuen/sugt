@@ -5,24 +5,41 @@ use super::*;
 use futures_util::{stream, StreamExt};
 
 #[test]
-fn ark_code_model_triggers_native_even_with_wrong_base() {
+fn ark_code_model_triggers_native_but_keeps_configured_base() {
     assert!(should_try_native_responses(
         "https://api-inference.modelscope.cn/v1",
         "ark-code-latest"
     ));
     let base =
         native_responses_base_url("https://api-inference.modelscope.cn/v1", "ark-code-latest");
-    assert_eq!(base, "https://ark.cn-beijing.volces.com/api/coding/v3");
+    assert_eq!(base, "https://api-inference.modelscope.cn/v1");
 }
 
 #[test]
-fn volcengine_coding_supports_native_responses() {
+fn volcengine_plan_and_coding_keep_configured_base() {
     assert!(provider_supports_native_responses(
         "https://ark.cn-beijing.volces.com/api/coding/v3"
+    ));
+    assert!(provider_supports_native_responses(
+        "https://ark.cn-beijing.volces.com/api/plan/v3"
     ));
     assert!(!provider_supports_native_responses(
         "https://api-inference.modelscope.cn/v1"
     ));
+    assert_eq!(
+        native_responses_base_url(
+            "https://ark.cn-beijing.volces.com/api/plan/v3",
+            "ark-code-latest"
+        ),
+        "https://ark.cn-beijing.volces.com/api/plan/v3"
+    );
+    assert_eq!(
+        native_responses_base_url(
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "ark-code-latest"
+        ),
+        "https://ark.cn-beijing.volces.com/api/coding/v3"
+    );
 }
 
 #[test]
@@ -499,4 +516,134 @@ async fn sse_stream_reasoning_only_promotes_to_output_text() {
     assert!(all.contains("response.output_text.delta"));
     assert!(all.contains("only think"));
     assert!(all.contains("response.completed"));
+}
+
+/// 空流（只有 [DONE]）必须 failed，不能伪装 completed。
+#[tokio::test]
+async fn empty_sse_stream_becomes_failed_not_completed() {
+    let upstream = stream::iter(vec![Ok(Bytes::from("data: [DONE]\n\n"))]);
+    let mapped = chat_sse_to_responses_sse(upstream, "m".to_string());
+    let chunks: Vec<Bytes> = mapped.map(|r| r.expect("io")).collect().await;
+    let all = chunks
+        .iter()
+        .map(|b| String::from_utf8_lossy(b))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        all.contains("response.failed"),
+        "空流必须 failed：{all}"
+    );
+    assert!(
+        !all.contains("response.completed"),
+        "空流不能伪装 completed：{all}"
+    );
+}
+
+/// 上游半路 Err：发 failed_events，不要把 Err 抛给客户端当连接断开。
+#[tokio::test]
+async fn midstream_upstream_error_yields_failed_events() {
+    let boom = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(50))
+        // 回环探测必须直连：环境 HTTP_PROXY 会把连不上的端口转成 502 响应，
+        // 让 expect_err 拿到 Ok，全量套件在办公代理环境下假红。
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get("http://127.0.0.1:1/")
+        .send()
+        .await
+        .expect_err("连不上的端口应立即失败");
+    let upstream = stream::iter(vec![
+        Ok(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+        )),
+        Err(boom),
+    ]);
+    let mapped = chat_sse_to_responses_sse(upstream, "m".to_string());
+    let mut saw_failed = false;
+    let mut saw_io_err = false;
+    let mut mapped = mapped;
+    while let Some(item) = mapped.next().await {
+        match item {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                if text.contains("response.failed") {
+                    saw_failed = true;
+                }
+            }
+            Err(_) => saw_io_err = true,
+        }
+    }
+    assert!(saw_failed, "半路截断应发 response.failed");
+    assert!(!saw_io_err, "不应再把 Err 抛给客户端");
+}
+
+/// 正文已发后，工具 output_index 必须连续（message=0 → tool=1）。
+#[tokio::test]
+async fn tool_output_index_is_contiguous_after_message() {
+    let upstream = stream::iter(vec![
+        Ok(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        )),
+        Ok(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"shell_command\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n",
+        )),
+        Ok(Bytes::from("data: [DONE]\n\n")),
+    ]);
+    let mapped = chat_sse_to_responses_sse(upstream, "m".to_string());
+    let chunks: Vec<Bytes> = mapped.map(|r| r.expect("io")).collect().await;
+    let all = chunks
+        .iter()
+        .map(|b| String::from_utf8_lossy(b))
+        .collect::<Vec<_>>()
+        .join("");
+    // 找 function_call 的 output_item.added
+    let mut message_idx = None;
+    let mut tool_idx = None;
+    for line in all.lines() {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("response.output_item.added") {
+            continue;
+        }
+        let idx = v.get("output_index").and_then(Value::as_u64);
+        let typ = v.pointer("/item/type").and_then(Value::as_str);
+        match typ {
+            Some("message") => message_idx = idx,
+            Some("function_call") => tool_idx = idx,
+            _ => {}
+        }
+    }
+    assert_eq!(message_idx, Some(0), "message 应为 0：{all}");
+    assert_eq!(tool_idx, Some(1), "tool 应紧跟为 1，不能跳号：{all}");
+}
+
+/// 命令模式：正文标记合成 function_call，并带用户可读提示。
+#[test]
+fn command_mode_synthesizes_function_call_from_markers() {
+    let upstream = r#"{"id":"chat1","choices":[{"message":{"role":"assistant","content":"执行一下\n[[SUGT_CMD]]{\"name\":\"shell_command\",\"arguments\":{\"command\":\"pwd\"}}[[/SUGT_CMD]]"}}]}"#;
+    let mut meta = ChatToolMeta::default();
+    meta.command_mode = true;
+    let bytes = chat_json_to_responses_body_with_meta(upstream, "m", &meta).unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["status"], "completed");
+    let output = v["output"].as_array().unwrap();
+    assert!(
+        output.iter().any(|i| {
+            i["type"] == "function_call"
+                && i["name"] == "shell_command"
+                && i["arguments"].as_str().unwrap_or("").contains("pwd")
+        }),
+        "应合成 function_call：{output:?}"
+    );
+    let text = v["output_text"].as_str().unwrap_or("");
+    assert!(
+        text.contains(crate::command_mode::USER_NOTICE),
+        "应提示已切换命令模式：{text}"
+    );
+    assert!(!text.contains("[[SUGT_CMD]]"), "可见正文应去掉标记：{text}");
 }

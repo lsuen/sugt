@@ -1,4 +1,4 @@
-use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, store, tray, update};
+use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, pet, store, tray, update};
 use tauri::{Emitter, Manager, WindowEvent};
 
 pub fn run() {
@@ -41,7 +41,11 @@ pub fn run() {
             commands::test_workspace_notify,
             commands::overlay_start_drag,
             commands::focus_main_window,
-            commands::pet_finish_drag,
+            pet::pet_finish_drag,
+            pet::pet_global_cursor,
+            pet::pet_roam_to,
+            pet::pet_set_clickable,
+            pet::open_settings_tab,
             commands::open_config_dir,
             commands::quick_gateway_chat,
             me_agent::me_status,

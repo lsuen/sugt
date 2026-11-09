@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen,
   Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
@@ -10,7 +11,8 @@ import { ModalPortal } from './ModalPortal';
 import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
-import { SettingsPanel, type OverlayConfigView, type SettingsTab } from './SettingsPanel';
+import { SettingsPanel, type SettingsTab } from './SettingsPanel';
+import type { OverlayConfigView } from './pet/config';
 import { SkillsPanel } from './SkillsPanel';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
@@ -219,6 +221,8 @@ function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
   // 设置子页状态提升到 App：状态栏「打开日志页」等外部入口可精确跳转，切主 Tab 不丢位置。
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('overview');
+  /** SOUL `[[SUGT_ROUTE]]preview`：切到 Clients 后由 TakeoverProfilesSection 自动打开影响预览 */
+  const [pendingTakeoverPreview, setPendingTakeoverPreview] = useState(false);
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
@@ -287,6 +291,26 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // 桌面精灵右键菜单「打开设置」：跨窗口跳转到对应设置子页。
+  useEffect(() => {
+    const un = listen<string>('sugt://navigate-settings', (e) => {
+      const target = e.payload;
+      if (target === 'pet') {
+        setTab('settings');
+        setSettingsTab('pet');
+      } else if (target === 'logs') {
+        setTab('settings');
+        setSettingsTab('logs');
+      } else {
+        setTab('settings');
+        setSettingsTab('overview');
+      }
+    });
+    return () => {
+      un.then((fn) => fn()).catch(() => undefined);
+    };
   }, []);
 
   const refreshCore = useCallback(async () => {
@@ -464,7 +488,7 @@ function App() {
               </div>
             </header>
             <div className="tab-body me-tab">
-              <MePanel api={previewApi} onOpenClients={() => undefined} onOpenModels={() => undefined} />
+              <MePanel api={previewApi} onOpenClients={() => undefined} onOpenModels={() => undefined} onOpenSkills={() => undefined} />
             </div>
           </section>
         </main>
@@ -591,9 +615,20 @@ function App() {
             <MePanel
               onOpenClients={() => setTab('clients')}
               onOpenModels={() => setTab('models')}
+              onOpenSkills={() => setTab('skills')}
               onRoute={(route) => {
-                if (route === 'clients' || route === 'preview') { setTab('clients'); return; }
+                if (route === 'preview') {
+                  setTab('clients');
+                  setPendingTakeoverPreview(true);
+                  return;
+                }
+                if (route === 'clients') { setTab('clients'); return; }
                 if (route === 'skills') { setTab('skills'); return; }
+                if (route === 'pet') {
+                  setTab('settings');
+                  setSettingsTab('pet');
+                  return;
+                }
                 setTab('settings');
                 setSettingsTab('overview');
               }}
@@ -725,6 +760,8 @@ function App() {
                   run={run}
                   pushToast={pushToast}
                   onClientsChange={setClients}
+                  openPreviewRequest={pendingTakeoverPreview}
+                  onOpenPreviewRequestHandled={() => setPendingTakeoverPreview(false)}
                   onOpenSkills={(agentId) => {
                     setSkillsAgentFilter(agentId);
                     setTab('skills');

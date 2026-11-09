@@ -132,7 +132,9 @@ impl GatewayState {
         let config_mtime = config_file
             .as_ref()
             .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-        let client = build_upstream_client(Duration::from_secs(600))?;
+        // 流式代理不能绑「整段请求总超时」：Codex 工具环经常远超 10 分钟，
+        // 总超时会在半路掐断 SSE，客户端只看到截断。连接超时 + keepalive 即可。
+        let client = build_upstream_client()?;
 
         Ok(Self {
             inner: Arc::new(RwLock::new(GatewayInner {
@@ -1240,36 +1242,221 @@ async fn proxy_responses_via_chat(
                 }
             }
 
-            let (chat_body, tool_meta) =
+            let (chat_body_base, tool_meta_base) =
                 crate::openai_responses_adapter::responses_to_chat_with_meta(
                     &body_bytes,
                     &attempt.model_name,
                 )?;
             let target = build_target_url(&attempt.base_url, "v1/chat/completions", query);
-            let mut builder = state.client.request(method.clone(), &target);
-            builder =
-                copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+            let has_tools = crate::command_mode::chat_body_has_tools(&chat_body_base);
+            // 对齐 cc-switch / 官方 Gateway 要求：先保留 tools 走 Chat Completions 转换，
+            // 绝不为「免费通道」抢先扒掉 tools（那会直接毁掉 Codex 工具环）。
+            // 仅当上游明确拒 FC（tools_unsupported_hint）时，同 attempt 再降级命令模式一次。
+            let mut use_command_mode = false;
+            let mut command_mode_retried = false;
 
-            info!(
-                provider = %attempt.name,
-                model = %attempt.model_name,
-                base_url = %attempt.base_url,
-                target_url = %target,
-                path = "v1/responses",
-                stream,
-                attempt = attempt_idx,
-                mode = "chat_completions_adapter",
-                custom_tools = tool_meta.custom_names.len(),
-                "proxying codex responses via chat completions"
-            );
+            // 同一 attempt 最多两次：原生 tools →（若拒 FC）命令模式重试一次。
+            loop {
+                let mut tool_meta = tool_meta_base.clone();
+                let chat_body = if use_command_mode {
+                    tool_meta.command_mode = true;
+                    let shell = crate::command_mode::preferred_shell_tool_name(
+                        &tool_meta.flattened_names,
+                        &tool_meta.custom_names,
+                    );
+                    crate::command_mode::prepare_chat_body_for_command_mode(
+                        &chat_body_base,
+                        &shell,
+                    )?
+                } else {
+                    chat_body_base.clone()
+                };
 
-            let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
-                std::str::from_utf8(&chat_body).unwrap_or(""),
-            );
+                let mut builder = state.client.request(method.clone(), &target);
+                builder =
+                    copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
 
-            if stream {
+                info!(
+                    provider = %attempt.name,
+                    model = %attempt.model_name,
+                    base_url = %attempt.base_url,
+                    target_url = %target,
+                    path = "v1/responses",
+                    stream,
+                    attempt = attempt_idx,
+                    mode = "chat_completions_adapter",
+                    command_mode = use_command_mode,
+                    custom_tools = tool_meta.custom_names.len(),
+                    "proxying codex responses via chat completions"
+                );
+
+                let estimated_input = crate::quick_chat::estimate_chat_input_tokens(
+                    std::str::from_utf8(&chat_body).unwrap_or(""),
+                );
+
+                if stream {
+                    match builder.body(chat_body).send().await {
+                        Ok(response) if response.status().is_success() => {
+                            state.reset_circuit(&provider.id).await;
+                            state
+                                .record_proxy_hit(
+                                    attempt,
+                                    "v1/responses",
+                                    index,
+                                    started.elapsed().as_millis() as u64,
+                                    &headers,
+                                    "chat_completions_adapter",
+                                    true,
+                                    rules_injected,
+                                )
+                                .await;
+                            let status = response.status();
+                            let model = attempt.public_model_id();
+                            let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
+                                response.bytes_stream(),
+                                model,
+                                tool_meta,
+                                estimated_input,
+                            );
+                            let tapped = tap_stream_for_token_stats(
+                                mapped,
+                                Some(state.stats.clone()),
+                                Some(token_attr_from(&headers, attempt)),
+                            );
+                            return Ok(Response::builder()
+                                .status(status)
+                                .header(
+                                    http::header::CONTENT_TYPE,
+                                    "text/event-stream; charset=utf-8",
+                                )
+                                .header(http::header::CACHE_CONTROL, "no-cache")
+                                .body(Body::from_stream(tapped))?);
+                        }
+                        Ok(response) if response.status().as_u16() < 500 => {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_default();
+                            if has_tools
+                                && !command_mode_retried
+                                && crate::command_mode::tools_unsupported_hint(&text)
+                            {
+                                warn!(
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    %status,
+                                    "上游不支持 function calling，改走命令模式重试"
+                                );
+                                use_command_mode = true;
+                                command_mode_retried = true;
+                                continue;
+                            }
+                            if is_free {
+                                warn!(
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    %status,
+                                    body = %text,
+                                    "codex chat stream upstream error, trying next attempt"
+                                );
+                                last_error =
+                                    Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
+                                break;
+                            }
+                            warn!(
+                                provider = %attempt.name,
+                                model = %attempt.model_name,
+                                %status,
+                                body = %text,
+                                "codex chat stream 上游返回客户端错误，改为 Responses failed 事件"
+                            );
+                            state
+                                .record_proxy_hit(
+                                    attempt,
+                                    "v1/responses",
+                                    index,
+                                    started.elapsed().as_millis() as u64,
+                                    &headers,
+                                    "chat_completions_adapter",
+                                    false,
+                                    rules_injected,
+                                )
+                                .await;
+                            let failed = crate::openai_responses_adapter::upstream_failure_sse(
+                                &attempt.public_model_id(),
+                                &format!("上游 {} 返回 {}：{}", attempt.name, status, text),
+                            );
+                            return Ok(Response::builder()
+                                .status(status)
+                                .header(
+                                    http::header::CONTENT_TYPE,
+                                    "text/event-stream; charset=utf-8",
+                                )
+                                .header(http::header::CACHE_CONTROL, "no-cache")
+                                .body(Body::from(failed))?);
+                        }
+                        Ok(response) => {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_default();
+                            warn!(
+                                provider = %attempt.name,
+                                model = %attempt.model_name,
+                                %status,
+                                body = %text,
+                                "codex chat stream upstream error, trying next attempt"
+                            );
+                            last_error =
+                                Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
+                            break;
+                        }
+                        Err(err) => {
+                            warn!(
+                                provider = %attempt.name,
+                                error = %err,
+                                "codex chat stream request error"
+                            );
+                            last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
+                            break;
+                        }
+                    }
+                } else {
                 match builder.body(chat_body).send().await {
-                    Ok(response) if response.status().is_success() => {
+                    Ok(response)
+                        if response.status().is_success() || response.status().as_u16() < 500 =>
+                    {
+                        let status = response.status();
+                        let body_text = response.text().await.unwrap_or_default();
+                        let looks_error = !status.is_success()
+                            || crate::openai_responses_adapter::is_openai_compat_error_body(
+                                &body_text,
+                            );
+                        if looks_error
+                            && has_tools
+                            && !command_mode_retried
+                            && crate::command_mode::tools_unsupported_hint(&body_text)
+                        {
+                            warn!(
+                                provider = %attempt.name,
+                                model = %attempt.model_name,
+                                %status,
+                                "上游不支持 function calling，改走命令模式重试"
+                            );
+                            use_command_mode = true;
+                            command_mode_retried = true;
+                            continue;
+                        }
+                        if looks_error {
+                            warn!(
+                                provider = %attempt.name,
+                                model = %attempt.model_name,
+                                %status,
+                                body = %body_text,
+                                "upstream error for codex responses, trying next attempt"
+                            );
+                            last_error =
+                                Some(anyhow!("{} 上游错误: {}", attempt.name, body_text));
+                            if is_free || !status.is_success() {
+                                break;
+                            }
+                        }
                         state.reset_circuit(&provider.id).await;
                         state
                             .record_proxy_hit(
@@ -1279,169 +1466,56 @@ async fn proxy_responses_via_chat(
                                 started.elapsed().as_millis() as u64,
                                 &headers,
                                 "chat_completions_adapter",
-                                true,
+                                status.is_success(),
                                 rules_injected,
                             )
                             .await;
-                        let status = response.status();
-                        let model = attempt.public_model_id();
-                        let mapped =
-                            crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
-                                response.bytes_stream(),
-                                model,
-                                tool_meta,
-                                estimated_input,
-                            );
-                        let tapped = tap_stream_for_token_stats(
-                            mapped,
-                            Some(state.stats.clone()),
-                            Some(token_attr_from(&headers, attempt)),
-                        );
+                        if status.is_success() {
+                            let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
+                                .unwrap_or_else(|| {
+                                    (
+                                        estimated_input,
+                                        crate::quick_chat::estimate_output_tokens(&body_text),
+                                    )
+                                });
+                            if input > 0 || output > 0 {
+                                let attr = token_attr_from(&headers, attempt);
+                                state
+                                    .stats
+                                    .record_tokens_attributed(
+                                        input,
+                                        output,
+                                        Some(attr.0.as_str()),
+                                        Some(attr.1.as_str()),
+                                    )
+                                    .await;
+                            }
+                        }
+                        let bytes = if status.is_success() {
+                            crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
+                                &body_text,
+                                &attempt.public_model_id(),
+                                &tool_meta,
+                            )?
+                        } else {
+                            Bytes::from(body_text)
+                        };
                         return Ok(Response::builder()
                             .status(status)
-                            .header(
-                                http::header::CONTENT_TYPE,
-                                "text/event-stream; charset=utf-8",
-                            )
-                            .header(http::header::CACHE_CONTROL, "no-cache")
-                            .body(Body::from_stream(tapped))?);
-                    }
-                    Ok(response) if response.status().as_u16() < 500 && !is_free => {
-                        let status = response.status();
-                        let text = response.text().await.unwrap_or_default();
-                        warn!(
-                            provider = %attempt.name,
-                            model = %attempt.model_name,
-                            %status,
-                            body = %text,
-                            "codex chat stream 上游返回客户端错误，改为 Responses failed 事件"
-                        );
-                        state
-                            .record_proxy_hit(
-                                attempt,
-                                "v1/responses",
-                                index,
-                                started.elapsed().as_millis() as u64,
-                                &headers,
-                                "chat_completions_adapter",
-                                false,
-                                rules_injected,
-                            )
-                            .await;
-                        // 不能把 4xx 错误体当成功 SSE 流转发：客户端会收到空 completed，
-                        // 工具调用看起来「静默消失」。这里给一段明确的 failed 事件流。
-                        let failed = crate::openai_responses_adapter::upstream_failure_sse(
-                            &attempt.public_model_id(),
-                            &format!("上游 {} 返回 {}：{}", attempt.name, status, text),
-                        );
-                        return Ok(Response::builder()
-                            .status(status)
-                            .header(
-                                http::header::CONTENT_TYPE,
-                                "text/event-stream; charset=utf-8",
-                            )
-                            .header(http::header::CACHE_CONTROL, "no-cache")
-                            .body(Body::from(failed))?);
+                            .header(http::header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(bytes))?);
                     }
                     Ok(response) => {
-                        let status = response.status();
-                        let text = response.text().await.unwrap_or_default();
-                        warn!(
-                            provider = %attempt.name,
-                            model = %attempt.model_name,
-                            %status,
-                            body = %text,
-                            "codex chat stream upstream error, trying next attempt"
-                        );
-                        last_error =
-                            Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
-                        continue;
+                        last_error = Some(anyhow!("{} 返回 {}", attempt.name, response.status()));
+                        break;
                     }
                     Err(err) => {
-                        warn!(provider = %attempt.name, error = %err, "codex chat stream request error");
                         last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
-                        continue;
+                        break;
                     }
                 }
-            }
-
-            match builder.body(chat_body).send().await {
-                Ok(response)
-                    if response.status().is_success() || response.status().as_u16() < 500 =>
-                {
-                    let status = response.status();
-                    let body_text = response.text().await.unwrap_or_default();
-                    if !status.is_success()
-                        || crate::openai_responses_adapter::is_openai_compat_error_body(&body_text)
-                    {
-                        warn!(
-                            provider = %attempt.name,
-                            model = %attempt.model_name,
-                            %status,
-                            body = %body_text,
-                            "upstream error for codex responses, trying next attempt"
-                        );
-                        last_error =
-                            Some(anyhow!("{} 上游错误: {}", attempt.name, body_text));
-                        if is_free || !status.is_success() {
-                            continue;
-                        }
-                    }
-                    state.reset_circuit(&provider.id).await;
-                    state
-                        .record_proxy_hit(
-                            attempt,
-                            "v1/responses",
-                            index,
-                            started.elapsed().as_millis() as u64,
-                            &headers,
-                            "chat_completions_adapter",
-                            status.is_success(),
-                            rules_injected,
-                        )
-                        .await;
-                    if status.is_success() {
-                        let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
-                            .unwrap_or_else(|| {
-                                (
-                                    estimated_input,
-                                    crate::quick_chat::estimate_output_tokens(&body_text),
-                                )
-                            });
-                        if input > 0 || output > 0 {
-                            let attr = token_attr_from(&headers, attempt);
-                            state
-                                .stats
-                                .record_tokens_attributed(
-                                    input,
-                                    output,
-                                    Some(attr.0.as_str()),
-                                    Some(attr.1.as_str()),
-                                )
-                                .await;
-                        }
-                    }
-                    let bytes = if status.is_success() {
-                        crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
-                            &body_text,
-                            &attempt.public_model_id(),
-                            &tool_meta,
-                        )?
-                    } else {
-                        Bytes::from(body_text)
-                    };
-                    return Ok(Response::builder()
-                        .status(status)
-                        .header(http::header::CONTENT_TYPE, "application/json")
-                        .body(Body::from(bytes))?);
-                }
-                Ok(response) => {
-                    last_error = Some(anyhow!("{} 返回 {}", attempt.name, response.status()));
-                }
-                Err(err) => {
-                    last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
-                }
-            }
+                } // else non-stream
+            } // command_mode retry loop
         }
 
         state.trip_circuit(&provider.id).await;
@@ -1572,16 +1646,29 @@ fn copy_forward_headers(
     Ok(builder)
 }
 
+/// 网关主客户端：不设整段 timeout（Codex 流式工具环经常远超 10 分钟）。
+pub fn build_upstream_client() -> Result<Client> {
+    build_upstream_client_inner(None)
+}
+
+/// 短请求（探测 / 快捷对话）可带总超时；流式代理请用 [`build_upstream_client`]。
+pub fn build_upstream_client_with_timeout(timeout: Duration) -> Result<Client> {
+    build_upstream_client_inner(Some(timeout))
+}
+
 /// 上游 HTTP 客户端：优先 IPv4，避免 Windows 上 AAAA 不可达时卡满 connect_timeout。
-pub fn build_upstream_client(timeout: Duration) -> Result<Client> {
-    Ok(Client::builder()
-        .timeout(timeout)
-        .connect_timeout(Duration::from_secs(8))
+fn build_upstream_client_inner(timeout: Option<Duration>) -> Result<Client> {
+    let mut builder = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
         .tcp_keepalive(Duration::from_secs(30))
+        .tcp_nodelay(true)
         .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(4)
-        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
-        .build()?)
+        .pool_max_idle_per_host(8)
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    if let Some(t) = timeout {
+        builder = builder.timeout(t);
+    }
+    Ok(builder.build()?)
 }
 
 /// 克隆并绑定实验免费通道路由；用户自定义源原样返回。

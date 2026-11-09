@@ -308,7 +308,8 @@ impl WorkspaceRules {
 /// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示请求统计同源数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayConfig {
-    #[serde(default)]
+    /// 默认开启：产品默认就是桌面精灵全功能
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// 窗口整体不透明度 0.1~1.0
     #[serde(default = "default_overlay_opacity")]
@@ -335,36 +336,65 @@ pub struct OverlayConfig {
     pub width: f64,
     #[serde(default = "default_overlay_height")]
     pub height: f64,
-    /// 桌面精灵模式：复用同一悬浮窗渲染小su，关闭时仍是原来的流量 HUD（默认关闭）
-    #[serde(default)]
+    /// 桌面精灵模式：默认开启；关闭时回退流量 HUD
+    #[serde(default = "default_true")]
     pub pet_enabled: bool,
-    /// 精灵互动模式：解除鼠标穿透以允许悬停/点击/拖动（默认关闭，避免遮挡桌面操作）
-    #[serde(default)]
+    /// 精灵互动：悬停/点击/拖动；默认开启（全功能）
+    #[serde(default = "default_true")]
     pub pet_interactive: bool,
     /// 拖动结束后自动贴边吸附（默认开启，对应桌面精灵「松手即停靠」行为）
     #[serde(default = "default_true")]
     pub pet_snap: bool,
+    /// 无活动多久后进入休眠（秒）；旧配置缺省时按 5 分钟
+    #[serde(default = "default_pet_sleep_after_secs")]
+    pub pet_sleep_after_secs: u32,
+    /// 结果气泡展示时长（毫秒）
+    #[serde(default = "default_pet_bubble_ms")]
+    pub pet_bubble_ms: u32,
+    /// 视线跟随（转头 / 眼神高光）；关闭后保持正视
+    #[serde(default = "default_true")]
+    pub pet_gaze: bool,
+    /// 随机眨眼；睡眠 / 离线态本身已是闭眼帧，不受此开关影响
+    #[serde(default = "default_true")]
+    pub pet_blink: bool,
+    /// 免打扰：不出结果气泡（含轻碰），状态动画仍可切换
+    #[serde(default)]
+    pub pet_quiet: bool,
+    /// 长期互动：等同常开 pet_interactive，与会话性 interactive 合并判定
+    #[serde(default = "default_true")]
+    pub pet_always_interactive: bool,
+    /// 允许在当前显示器可用区内自主走动；关闭后精灵只在原地播动作
+    #[serde(default = "default_true")]
+    pub pet_roam: bool,
 }
 
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             opacity: default_overlay_opacity(),
             edit: false,
             show_tokens: default_true(),
             show_client: default_true(),
             show_channel: default_true(),
             show_requests: default_true(),
-            // -1 表示「未定位」，由 overlay::apply 创建窗口时按主屏右上角初始化
+            // -1 表示「未定位」，由 overlay::apply 创建窗口时按模式落点（精灵右下角）
             x: -1,
             y: -1,
             layout: default_overlay_layout(),
-            width: default_overlay_width(),
-            height: default_overlay_height(),
-            pet_enabled: false,
-            pet_interactive: false,
+            // 精灵默认紧凑窗：贴合立绘，减少透明命中框
+            width: default_pet_width(),
+            height: default_pet_height(),
+            pet_enabled: true,
+            pet_interactive: true,
             pet_snap: true,
+            pet_sleep_after_secs: default_pet_sleep_after_secs(),
+            pet_bubble_ms: default_pet_bubble_ms(),
+            pet_gaze: true,
+            pet_blink: true,
+            pet_quiet: false,
+            pet_always_interactive: true,
+            pet_roam: true,
         }
     }
 }
@@ -390,11 +420,29 @@ fn default_overlay_layout() -> String {
 }
 
 fn default_overlay_width() -> f64 {
-    280.0
+    // 缺省即精灵紧凑窗（流量 HUD 开启时由前端切回 280×108）
+    default_pet_width()
 }
 
 fn default_overlay_height() -> f64 {
-    108.0
+    default_pet_height()
+}
+
+fn default_pet_width() -> f64 {
+    // 立绘偏右贴边 + 窄侧栏；比旧 200×160 更贴身，减少透明空框
+    148.0
+}
+
+fn default_pet_height() -> f64 {
+    168.0
+}
+
+fn default_pet_sleep_after_secs() -> u32 {
+    300
+}
+
+fn default_pet_bubble_ms() -> u32 {
+    4000
 }
 
 fn default_gateway_client_api_key() -> String {

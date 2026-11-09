@@ -43,6 +43,8 @@ pub struct ChatToolMeta {
     pub dropped_request_fields: Vec<String>,
     /// 同名工具出现在多个 namespace：去程无法唯一确定展平名，历史改写必须保守跳过。
     pub ambiguous_tool_names: HashSet<String>,
+    /// 上游不支持 FC 时进入命令模式：正文里的约定标记会合成 function_call。
+    pub command_mode: bool,
 }
 
 /// 将 OpenAI Responses 请求转为 Chat Completions（Codex → 仅 Chat 的上游）。
@@ -1126,6 +1128,20 @@ pub fn chat_json_to_responses_body_with_meta(
         );
         text = reasoning;
     }
+
+    // 命令模式：正文里的约定标记合成 function_call，并给用户可读提示。
+    let mut command_items: Vec<Value> = Vec::new();
+    if meta.command_mode {
+        let shell = crate::command_mode::preferred_shell_tool_name(
+            &meta.flattened_names,
+            &meta.custom_names,
+        );
+        let (visible, items) =
+            crate::command_mode::materialize_command_mode_output(&text, id, &shell);
+        text = visible;
+        command_items = items;
+    }
+
     if !text.is_empty() {
         output.push(json!({
             "type": "message",
@@ -1176,6 +1192,15 @@ pub fn chat_json_to_responses_body_with_meta(
                 }));
             }
         }
+    }
+    // 原生 tool_calls 优先；没有时才用命令模式合成，避免重复。
+    if message
+        .get("tool_calls")
+        .and_then(|v| v.as_array())
+        .map(|a| a.is_empty())
+        .unwrap_or(true)
+    {
+        output.extend(command_items);
     }
 
     if output.is_empty() {
@@ -1431,6 +1456,110 @@ fn apply_usage_fallback(state: &mut SseMapState) {
         && (state.input_tokens > 0 || state.output_tokens > 0);
 }
 
+/// 流结束收尾：空流 → failed；有内容/推理/工具 → completed（含命令模式合成）。
+fn end_stream_events(state: &mut SseMapState) -> String {
+    if state.completed {
+        return String::new();
+    }
+    if state.text_buffer.is_empty()
+        && state.tool_calls.is_empty()
+        && state.reasoning_buffer.is_empty()
+    {
+        warn!("上游流式响应为空（无正文/工具/推理），降级为 Responses failed");
+        return failed_events(state, "上游返回空流式响应（无正文/工具/推理）");
+    }
+    finalize_events(state)
+}
+
+/// 命令模式流式收尾：清洗正文、补用户提示，并把约定命令写入 tool_calls。
+fn apply_command_mode_to_stream_state(state: &mut SseMapState, out: &mut String) {
+    let shell = crate::command_mode::preferred_shell_tool_name(
+        &state.tool_meta.flattened_names,
+        &state.tool_meta.custom_names,
+    );
+    let raw = state.text_buffer.clone();
+    let (visible, items) =
+        crate::command_mode::materialize_command_mode_output(&raw, &state.response_id, &shell);
+    if items.is_empty() && visible == raw {
+        return;
+    }
+
+    // done 事件以清洗后的正文为准；若尚未发过 message prelude，这里补发。
+    if visible != raw {
+        if !state.message_prelude_sent && !visible.is_empty() {
+            *out += &ensure_message_prelude(state);
+            state.sequence += 1;
+            *out += &format_sse_data(&json!({
+                "type": "response.output_text.delta",
+                "sequence_number": state.sequence,
+                "item_id": state.item_id,
+                "output_index": state.message_output_index,
+                "content_index": 0,
+                "delta": visible.clone(),
+            }));
+        } else if state.message_prelude_sent
+            && !raw.contains(crate::command_mode::USER_NOTICE)
+            && visible.contains(crate::command_mode::USER_NOTICE)
+        {
+            // 分片里已有正文：追加一句提示，避免用户不知道为何走了命令模式。
+            let notice_delta = format!("\n{}", crate::command_mode::USER_NOTICE);
+            state.sequence += 1;
+            *out += &format_sse_data(&json!({
+                "type": "response.output_text.delta",
+                "sequence_number": state.sequence,
+                "item_id": state.item_id,
+                "output_index": state.message_output_index,
+                "content_index": 0,
+                "delta": notice_delta,
+            }));
+        }
+        state.text_buffer = visible;
+    }
+
+    for (idx, item) in items.iter().enumerate() {
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("cmd")
+            .to_string();
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(shell.as_str())
+            .to_string();
+        let arguments = item
+            .get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or("{}")
+            .to_string();
+        let output_index = state.output_index;
+        state.output_index += 1;
+
+        state.sequence += 1;
+        *out += &format_sse_data(&json!({
+            "type": "response.output_item.added",
+            "sequence_number": state.sequence,
+            "output_index": output_index,
+            "item": tool_item_shell(&call_id, &name, false, &state.tool_meta),
+        }));
+        *out += &arguments_delta_event(&mut state.sequence, &call_id, output_index, &arguments);
+
+        // 用高位 key，避免与上游 tool_calls.index 撞车。
+        state.tool_calls.insert(
+            10_000 + idx,
+            ToolCallAccum {
+                id: call_id,
+                name,
+                arguments,
+                item_added: true,
+                output_index,
+                is_custom: false,
+                pending_deltas: Vec::new(),
+            },
+        );
+    }
+}
+
 fn finalize_events(state: &mut SseMapState) -> String {
     if state.completed {
         return String::new();
@@ -1442,6 +1571,11 @@ fn finalize_events(state: &mut SseMapState) -> String {
 
     // 先修「上游始终没给工具名」的分片，保证后面的 done / completed 拿到可解析的名字。
     repair_anonymous_tool_calls(state, &mut out);
+
+    // 命令模式：把正文里的约定标记合成 tool_calls，再进入正常 done 路径。
+    if state.tool_meta.command_mode && state.tool_calls.is_empty() {
+        apply_command_mode_to_stream_state(state, &mut out);
+    }
 
     // 仅有推理、没有正文/工具时：把推理兜底进正文，避免 Codex 空白气泡
     if state.text_buffer.is_empty()
@@ -1908,12 +2042,10 @@ fn process_tool_call_delta(state: &mut SseMapState, choice: &Value) -> String {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as usize;
         let entry = state.tool_calls.entry(index).or_insert_with(|| {
-            let output_index = if state.message_prelude_sent || !state.text_buffer.is_empty() {
-                state.output_index + 1
-            } else {
-                state.output_index
-            };
-            state.output_index = output_index + 1;
+            // 与 message/reasoning prelude 一样连续占用 output_index，
+            // 正文已发后不要再 +1，否则会跳号（0=message → 误分到 2）。
+            let output_index = state.output_index;
+            state.output_index += 1;
             ToolCallAccum {
                 id: String::new(),
                 name: String::new(),
@@ -2033,7 +2165,7 @@ fn capture_usage_from_chat_payload(state: &mut SseMapState, parsed: &Value) {
 
 fn process_upstream_payload(state: &mut SseMapState, payload: &str) -> String {
     if payload == "[DONE]" {
-        return finalize_events(state);
+        return end_stream_events(state);
     }
 
     if payload.trim().is_empty() {
@@ -2257,7 +2389,12 @@ pub fn chat_sse_to_responses_sse_with_meta(
             let chunk = match chunk {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    yield Err(std::io::Error::other(err));
+                    // 半路截断：不要 yield Err 让客户端只看到连接断开；
+                    // 未完成时发一段 Responses failed，工具环才能感知失败。
+                    if !state.completed {
+                        let msg = err.to_string();
+                        yield Ok(Bytes::from(failed_events(&mut state, &msg)));
+                    }
                     return;
                 }
             };
@@ -2275,7 +2412,7 @@ pub fn chat_sse_to_responses_sse_with_meta(
         }
 
         if !state.completed {
-            let tail = finalize_events(&mut state);
+            let tail = end_stream_events(&mut state);
             if !tail.is_empty() {
                 yield Ok(Bytes::from(tail));
             }

@@ -28,7 +28,8 @@
     "check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test:themes": "node src/theme/validate-themes.mjs",
     "test:theme-pack": "node tests/theme-pack-smoke.mjs",
-    "test": "npm run test:themes && npm run test:theme-pack && npm run check",
+    "test:pet-state": "node tests/pet-state-smoke.mjs",
+    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run check",
     "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
     "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"
   },

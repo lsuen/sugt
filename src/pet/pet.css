@@ -1,0 +1,569 @@
+/* ===== 桌面精灵（小su）v1.1 =====
+   与流量 HUD 共用 overlay 入口窗口，但舞台本身全透明、无描边框、无底色面板。
+   主题 token 在独立入口不可用；颜色用局部变量。
+   结构：
+     舞台（视线 3D 变换 / 靠近度变量）—— background 必须保持 transparent
+       ├ 环境层：靠近光晕、地面投影、漂浮粒子、完成火花（纯装饰，不拦点击）
+       ├ 信息层：左上气泡 + 脚底状态胶囊 + 思考云（pointer-events: none）
+       ├ 角色层：头部为轴 → 呼吸 → 单层动画 WebP → 眼睑 / 眼神
+       └ 右键菜单：仅菜单命中框可点；空白侧栏永远穿透到桌面
+   连续缓动由 JS rAF 写变量；每个姿势只挂一张素材。 */
+.pet-stage {
+  --pet-accent: #4ade80;
+  --pet-glow: rgba(74, 222, 128, 0.22);
+  --pet-ink: #eaf6ff;
+  --pet-panel: rgba(8, 16, 28, 0.9);
+  --pet-line: rgba(140, 200, 232, 0.28);
+  /* 窄侧栏：气泡叠在立绘左侧空隙；此区域必须保持穿透，不可整窗解穿透 */
+  --pet-side-w: 28%;
+  --gaze-x: 0;
+  --gaze-y: 0;
+  --near: 0;
+  --drag-tilt: 0;
+  /* 左右朝向：1 正向 / -1 镜像；走左时翻立绘，不新增素材 */
+  --face-x: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  color: var(--pet-ink);
+  background: transparent;
+  user-select: none;
+  overflow: hidden;
+  pointer-events: none;
+  perspective: 640px;
+}
+.pet-stage[data-facing="left"] { --face-x: -1; }
+.pet-stage[data-state="offline"] { --pet-accent: #8fa3b8; --pet-glow: rgba(143,163,184,.16); }
+.pet-stage[data-state="idle"] { --pet-accent: #4ade80; --pet-glow: rgba(74,222,128,.22); }
+.pet-stage[data-state="typing"] { --pet-accent: #5ec8ff; --pet-glow: rgba(94,200,255,.24); }
+.pet-stage[data-state="done"] { --pet-accent: #4ade80; --pet-glow: rgba(120,235,170,.26); }
+.pet-stage[data-state="error"] { --pet-accent: #f87171; --pet-glow: rgba(248,113,113,.24); }
+.pet-stage[data-state="sleep"] { --pet-accent: #8fa3b8; --pet-glow: rgba(143,163,184,.12); }
+
+/* ---- 环境层：全部纯装饰，不拦截事件 ---- */
+.pet-ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pet-halo {
+  position: absolute;
+  left: var(--pet-side-w);
+  right: 0;
+  top: 0;
+  height: 72%;
+  background: radial-gradient(ellipse at 55% 40%, var(--pet-glow) 0%, transparent 66%);
+  opacity: var(--near);
+  transition: opacity 0.4s ease;
+}
+.pet-ground {
+  position: absolute;
+  left: var(--pet-side-w);
+  right: 0;
+  bottom: 0.5%;
+  height: 8%;
+  background: radial-gradient(ellipse at 55% 50%, rgba(3, 8, 18, 0.46) 0%, rgba(3, 8, 18, 0) 70%);
+  opacity: calc(0.7 - var(--near) * 0.18);
+  transition: opacity 0.3s ease;
+}
+.pet-mote {
+  position: absolute;
+  /* 固定 px：vw 在悬浮窗里是窗口视口宽（148~220px），搬进同文档演示页后会
+     变成整页视口宽，粒子会被放大近 8 倍。2px 与真实窗口 1.1vw 等价。 */
+  width: 2px;
+  height: 2px;
+  background: var(--pet-accent);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  opacity: 0;
+  animation: pet-mote 7.5s ease-in-out infinite;
+}
+.pet-mote:nth-child(1) { left: 48%; top: 16%; animation-delay: 0s; }
+.pet-mote:nth-child(2) { left: 86%; top: 26%; animation-delay: 1.3s; }
+.pet-mote:nth-child(3) { left: 54%; top: 60%; animation-delay: 2.6s; }
+.pet-mote:nth-child(4) { left: 92%; top: 54%; animation-delay: 3.9s; }
+.pet-mote:nth-child(5) { left: 45%; top: 38%; animation-delay: 5.2s; }
+.pet-mote:nth-child(6) { left: 78%; top: 12%; animation-delay: 6.3s; }
+.pet-spark {
+  position: absolute;
+  left: 72%;
+  top: 34%;
+  width: 1.6px;
+  height: 1.6px;
+  border-radius: 50%;
+  background: #eafff3;
+  box-shadow: 0 0 6px var(--pet-accent);
+  opacity: 0;
+}
+.pet-stage[data-state="done"] .pet-spark { animation: pet-spark 0.7s ease-out 1; }
+.pet-stage[data-state="done"] .pet-spark.s2 { left: 60%; top: 22%; animation-delay: 0.08s; }
+.pet-stage[data-state="done"] .pet-spark.s3 { left: 88%; top: 46%; animation-delay: 0.16s; }
+
+/* ---- 信息层：气泡在左上自适应，状态胶囊挪到角色脚底 ---- */
+.pet-side {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.pet-bubble {
+  position: absolute;
+  left: 3px;
+  top: 3%;
+  z-index: 5;
+  width: max-content;
+  max-width: calc(var(--pet-side-w) + 52px);
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--pet-line) 85%, #fff 15%);
+  border-right: 2px solid var(--pet-accent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--pet-panel) 88%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  backdrop-filter: blur(10px) saturate(1.15);
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+  box-shadow:
+    0 10px 24px rgba(2, 8, 18, 0.48),
+    0 0 18px var(--pet-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  animation: pet-bubble-in 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.pet-bubble::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  background: var(--pet-panel);
+  border-top: 1px solid var(--pet-line);
+  border-right: 1px solid var(--pet-line);
+  transform: rotate(45deg);
+}
+.pet-bubble-ok { border-right-color: #4ade80; }
+.pet-bubble-error { border-right-color: #f87171; }
+.pet-bubble-info { border-right-color: #5ec8ff; }
+
+/* 脚底居中：left = 侧栏宽 + 角色区一半，正好对上立绘的脚 */
+.pet-status-bar {
+  position: absolute;
+  left: calc(50% + var(--pet-side-w) / 2);
+  bottom: 2px;
+  transform: translateX(-50%);
+  z-index: 4;
+  max-width: calc(100% - var(--pet-side-w) - 8px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--pet-line);
+  border-radius: 999px;
+  background: rgba(8, 16, 28, 0.78);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(2, 8, 18, 0.4);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.pet-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 7px;
+  background: var(--pet-accent);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  filter: drop-shadow(0 0 3px var(--pet-accent));
+  transition: background 0.35s ease;
+  animation: pet-dot 3.2s ease-in-out infinite;
+}
+.pet-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.3s ease;
+}
+
+/* ---- 角色层：以头部为轴转向，呼吸/动效在各自子层 ---- */
+.pet-figure {
+  position: absolute;
+  left: var(--pet-side-w);
+  right: 0;
+  top: 0;
+  bottom: 0;
+  transform-style: preserve-3d;
+  transform-origin: 55% 32%;
+  transform:
+    scaleX(var(--face-x))
+    translate3d(calc(var(--gaze-x) * 2.5px), calc(var(--gaze-y) * 1.5px), 0)
+    rotateY(calc(var(--gaze-x) * 9deg))
+    rotateX(calc(var(--gaze-y) * -5deg))
+    rotate(calc(var(--drag-tilt) * 1.2deg));
+  transition: filter 0.25s ease;
+  filter: drop-shadow(0 4px 10px rgba(4, 10, 20, 0.4));
+  will-change: transform;
+}
+.pet-stage.interactive .pet-figure { pointer-events: auto; cursor: grab; }
+.pet-stage.interactive .pet-figure:hover {
+  filter: brightness(1.07) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.5));
+}
+.pet-stage.interactive .pet-figure:active,
+.pet-figure.dragging { cursor: grabbing; }
+.pet-figure.dragging {
+  filter: brightness(1.12) drop-shadow(0 14px 24px rgba(4, 10, 20, 0.62));
+}
+.pet-stage[data-state="offline"] .pet-figure {
+  filter: grayscale(0.55) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.3));
+}
+.pet-stage[data-state="sleep"] .pet-figure {
+  filter: saturate(0.72) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.3));
+}
+
+.pet-motion {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  animation: pet-breathe 3.8s ease-in-out infinite;
+}
+.pet-stage[data-state="typing"] .pet-motion { animation-duration: 2.7s; }
+.pet-stage[data-state="sleep"] .pet-motion { animation-duration: 5.6s; }
+
+.pet-loops {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+}
+/* 10 个动画 WebP 常驻并各自持续播放，切状态只做透明度交叉淡入 */
+.pet-loop,
+.pet-poster {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: contain;
+  pointer-events: none;
+}
+.pet-loop { opacity: 0; transition: opacity 0.3s ease; }
+.pet-loop.is-active { opacity: 1; }
+.pet-poster { opacity: 0; transition: opacity 0.2s ease; }
+.pet-loop[data-loop="idle"] { background-image: url('../assets/pet/su-idle-loop.webp'); }
+.pet-loop[data-loop="typing"] { background-image: url('../assets/pet/su-typing-loop.webp'); }
+.pet-loop[data-loop="done"] { background-image: url('../assets/pet/su-done-loop.webp'); }
+.pet-loop[data-loop="error"] { background-image: url('../assets/pet/su-error-loop.webp'); }
+.pet-loop[data-loop="sleep"] { background-image: url('../assets/pet/su-sleep-loop.webp'); }
+/* 交互/表情差分：素材已全部落包，一层即可。 */
+.pet-loop[data-loop="wave"] { background-image: url('../assets/pet/su-wave-loop.webp'); }
+.pet-loop[data-loop="peek"] { background-image: url('../assets/pet/su-peek-loop.webp'); }
+.pet-loop[data-loop="shy"] { background-image: url('../assets/pet/su-shy-loop.webp'); }
+.pet-loop[data-loop="celebrate"] { background-image: url('../assets/pet/su-celebrate-loop.webp'); }
+.pet-loop[data-loop="walk"] { background-image: url('../assets/pet/su-walk-loop.webp'); }
+.pet-poster[data-frame="idle"] { background-image: url('../assets/pet/su-idle.webp'); }
+.pet-poster[data-frame="typing"] { background-image: url('../assets/pet/su-typing.webp'); }
+.pet-poster[data-frame="done"] { background-image: url('../assets/pet/su-done.webp'); }
+.pet-poster[data-frame="error"] { background-image: url('../assets/pet/su-error.webp'); }
+.pet-poster[data-frame="sleep"] { background-image: url('../assets/pet/su-sleep.webp'); }
+.pet-poster[data-frame="wave"] { background-image: url('../assets/pet/su-wave.webp'); }
+.pet-poster[data-frame="peek"] { background-image: url('../assets/pet/su-peek.webp'); }
+.pet-poster[data-frame="shy"] { background-image: url('../assets/pet/su-shy.webp'); }
+.pet-poster[data-frame="celebrate"] { background-image: url('../assets/pet/su-celebrate.webp'); }
+.pet-poster[data-frame="walk"] { background-image: url('../assets/pet/su-walk.webp'); }
+
+/* 非激活循环跳过合成；sleep/offline 时彻底藏起非当前帧以省解码 */
+.pet-loop:not(.is-active) {
+  content-visibility: hidden;
+  pointer-events: none;
+}
+.pet-loop.is-active {
+  content-visibility: visible;
+}
+.pet-stage[data-state="sleep"] .pet-loop:not(.is-active),
+.pet-stage[data-state="offline"] .pet-loop:not(.is-active) {
+  visibility: hidden;
+}
+
+/* 隐藏窗口 / 减少动效时暂停动画层，只留静态海报 */
+.pet-stage.still .pet-loop { display: none; }
+.pet-stage.still .pet-poster.is-active { opacity: 1; }
+.pet-stage.still .pet-motion,
+.pet-stage.still .pet-mote { animation-play-state: paused; }
+
+/* listening：靠近 idle 时侧耳提亮，不切换真实 typing 状态 */
+.pet-stage.pet-listening .pet-figure {
+  filter: brightness(1.08) saturate(1.06) drop-shadow(0 6px 14px rgba(4, 10, 20, 0.48));
+  transform:
+    translate3d(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.8px), 0)
+    rotateY(calc(var(--gaze-x) * 11deg))
+    rotateX(calc(var(--gaze-y) * -6deg))
+    rotate(calc(var(--drag-tilt) * 1.2deg))
+    scale(1.015);
+}
+.pet-stage.pet-listening .pet-halo {
+  opacity: 1;
+  filter: brightness(1.25);
+}
+.pet-stage.pet-listening .pet-motion {
+  animation-duration: 2.9s;
+}
+.pet-stage.pet-walking .pet-figure {
+  transform:
+    translate3d(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.6px), 0)
+    rotateY(calc(var(--gaze-x) * 10deg))
+    rotateX(calc(var(--gaze-y) * -5.5deg))
+    rotate(calc(var(--drag-tilt) * 1.2deg));
+}
+.pet-stage.pet-walking .pet-motion {
+  animation-duration: 2.4s;
+}
+
+/* ---- 互动反馈层：一次性或低频动画，不与逐帧 WebP 抢资源 ---- */
+/* 请求级思考云：只有装饰点、没有文案 */
+.pet-thought {
+  position: absolute;
+  right: 4%;
+  top: 6%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 7px;
+  border: 1px solid var(--pet-line);
+  border-radius: 999px;
+  background: rgba(8, 16, 28, 0.72);
+  pointer-events: none;
+  animation: pet-thought-in 0.3s ease-out 1;
+}
+.pet-thought i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--pet-accent);
+  animation: pet-thought-dot 1.2s ease-in-out infinite;
+}
+.pet-thought i:nth-child(2) { animation-delay: 0.16s; }
+.pet-thought i:nth-child(3) { animation-delay: 0.32s; }
+
+/* 摸头：一次上浮的赛璐璐色块心形 */
+.pet-stage.petted .pet-figure::after {
+  content: '';
+  position: absolute;
+  left: 62%;
+  top: 21%;
+  width: 11px;
+  height: 11px;
+  background: #ff8fae;
+  clip-path: polygon(50% 100%, 8% 56%, 8% 32%, 24% 10%, 50% 24%, 76% 10%, 92% 32%, 92% 56%);
+  filter: drop-shadow(0 0 4px rgba(255, 143, 174, 0.7));
+  pointer-events: none;
+  animation: pet-heart 0.72s ease-out 1;
+}
+/* 自主走动：窗口位置由 Rust 夹边移动；左右朝向见 --face-x */
+.pet-stage.roaming .pet-loops {
+  animation: pet-roam-step 1.5s ease-in-out infinite;
+}
+/* 松手落地：一次性轻微回弹 */
+.pet-stage.pet-landed .pet-motion {
+  animation: pet-land 0.32s ease-out 1;
+}
+
+/* 一次性反馈：只在状态跃迁/交互时播一次 */
+.pet-stage[data-state="done"] .pet-loops { animation: pet-hop 0.62s ease-out 1; }
+.pet-stage[data-state="error"] .pet-loops { animation: pet-shiver 0.34s ease-out 1; }
+.pet-figure.poked .pet-loops { animation: pet-poke 0.46s ease-out 1; }
+.pet-figure.dragging .pet-motion { animation-duration: 0s; }
+
+/* ---- 闭眼帧：程序化闭眼立绘，眨眼时瞬时叠加 ---- */
+.pet-blink {
+  position: absolute;
+  inset: 0;
+  background-image: url('../assets/pet/su-blink.webp');
+  background-repeat: no-repeat;
+  background-position: right bottom;
+  background-size: contain;
+  opacity: 0;
+  pointer-events: none;
+}
+.pet-stage.blinking .pet-blink { opacity: 1; }
+.pet-stage[data-state="sleep"] .pet-blink,
+.pet-stage[data-state="offline"] .pet-blink,
+.pet-stage.no-blink .pet-blink {
+  display: none;
+}
+.pet-stage.no-gaze .pet-gaze {
+  display: none;
+}
+
+/* 眼神高光：随视线轻微移动，让「转头看你」更可信 */
+.pet-gaze {
+  position: absolute;
+  left: 43%;
+  top: 19%;
+  width: 22%;
+  height: 12%;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 50% 45%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 62%);
+  mix-blend-mode: screen;
+  opacity: calc(0.14 + var(--near) * 0.42);
+  transform: translate(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.8px));
+  transition: opacity 0.35s ease, transform 0.3s cubic-bezier(0.2, 0.8, 0.25, 1);
+  pointer-events: none;
+}
+
+/* ---- 右键快捷菜单：覆盖立绘浮出，菜单自身可点击 ---- */
+.pet-menu {
+  position: absolute;
+  inset: 4px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--pet-line) 85%, #fff 15%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pet-panel) 94%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  backdrop-filter: blur(12px) saturate(1.15);
+  box-shadow: 0 10px 24px rgba(2, 8, 18, 0.5), 0 0 18px var(--pet-glow);
+  pointer-events: auto;
+  animation: pet-menu-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.pet-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--pet-ink);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.pet-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.pet-menu-item--danger { color: #f87171; }
+.pet-menu-item--danger:hover { background: rgba(248, 113, 113, 0.14); color: #ff9b9b; }
+.pet-menu-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+}
+.pet-menu-label {
+  flex: 0 0 auto;
+  color: #8fa3b8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pet-menu-size-btns {
+  display: flex;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pet-menu-size-btn {
+  flex: 1;
+  text-align: center;
+  padding: 4px 2px;
+}
+.pet-menu-size-btn.is-active {
+  background: rgba(94, 200, 255, 0.16);
+  color: #5ec8ff;
+}
+
+/* 编辑态按钮/拖柄必须显式恢复命中：父级 .pet-stage 是 pointer-events:none */
+.pet-edit-bar {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--pet-line);
+  border-radius: 7px;
+  background: rgba(8, 16, 28, 0.86);
+}
+.pet-stage.interactive .pet-edit-bar { pointer-events: auto; }
+
+@keyframes pet-breathe {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-2px) scaleY(1.008); }
+}
+@keyframes pet-hop {
+  0% { transform: translateY(0) scale(1); }
+  38% { transform: translateY(-7px) scale(1.018); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes pet-shiver {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-2px); }
+  65% { transform: translateX(1.5px); }
+}
+@keyframes pet-poke {
+  0% { transform: scale(1); }
+  35% { transform: scale(0.96, 1.05) translateY(2px); }
+  70% { transform: scale(1.03, 0.97) translateY(-4px); }
+  100% { transform: scale(1); }
+}
+@keyframes pet-dot {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
+@keyframes pet-mote {
+  0%, 100% { transform: translateY(0) scale(0.7); opacity: 0; }
+  35% { opacity: 0.35; }
+  70% { transform: translateY(-14px) scale(1); opacity: 0; }
+}
+@keyframes pet-spark {
+  0% { opacity: 0; transform: scale(0.4); }
+  35% { opacity: 0.9; transform: scale(1.2); }
+  100% { opacity: 0; transform: scale(0.5) translateY(-10px); }
+}
+@keyframes pet-bubble-in {
+  from { opacity: 0; transform: translateX(-6px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes pet-thought-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.9); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pet-thought-dot {
+  0%, 100% { opacity: 0.35; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-2px); }
+}
+@keyframes pet-heart {
+  0% { opacity: 0; transform: translateY(4px) scale(0.6) rotate(-8deg); }
+  35% { opacity: 1; transform: translateY(-4px) scale(1.1) rotate(4deg); }
+  100% { opacity: 0; transform: translateY(-18px) scale(0.85) rotate(-4deg); }
+}
+@keyframes pet-roam-step {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25% { transform: translateY(-1.5px) rotate(-0.5deg); }
+  75% { transform: translateY(-1.5px) rotate(0.5deg); }
+}
+@keyframes pet-land {
+  0% { transform: translateY(0) scaleY(1); }
+  40% { transform: translateY(2px) scaleY(0.97); }
+  100% { transform: translateY(0) scaleY(1); }
+}
+@keyframes pet-menu-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-motion, .pet-loops, .pet-mote, .pet-spark, .pet-bubble, .pet-status-dot,
+  .pet-thought, .pet-thought i, .pet-stage.petted .pet-figure::after,
+  .pet-stage.roaming .pet-loops, .pet-stage.pet-landed .pet-motion,
+  .pet-menu {
+    animation: none !important;
+  }
+  .pet-figure { transform: none; }
+  .pet-halo, .pet-gaze, .pet-stage.petted .pet-figure::after { display: none; }
+}

@@ -912,6 +912,9 @@ pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
     if let Err(err) = migrate_claude_only_defaults(runtime).await {
         warn!(error = %err, "claude-only migration failed");
     }
+    if let Err(err) = crate::pet::migrate_pet_full_defaults(runtime).await {
+        warn!(error = %err, "pet full-defaults migration failed");
+    }
     {
         let mut config = runtime.config.write().await;
         migrate_legacy_flags_into_ids(&mut config);
@@ -1330,26 +1333,6 @@ pub fn focus_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 桌面精灵拖动结束：贴边吸附 + 持久化新位置 + 通知悬浮窗刷新配置。
-/// 前端只需监听窗口 onMoved 防抖后调用一次，不需要再走一遍 set_overlay_config。
-#[tauri::command]
-pub async fn pet_finish_drag(
-    runtime: State<'_, AppRuntime>,
-    app: tauri::AppHandle,
-    snap: bool,
-) -> Result<[i32; 2], String> {
-    let (x, y) = crate::overlay::snap_position(&app, snap)?;
-    let cfg = {
-        let mut guard = runtime.config.write().await;
-        guard.overlay.x = x;
-        guard.overlay.y = y;
-        guard.overlay.clone()
-    };
-    let _ = app.emit("sugt://overlay-config-changed", &cfg);
-    runtime.persist().await.map_err(|err| err.to_string())?;
-    Ok([x, y])
-}
-
 /// 悬浮窗开始拖动：Rust 直调 window.start_dragging()。
 /// 前端 IPC 的 startDragging 受 ACL（core:window:allow-start-dragging）限制，后端直调不受影响。
 #[tauri::command]
@@ -1649,7 +1632,7 @@ pub async fn quick_gateway_chat(
         crate::experimental_free::apply_route(&mut provider);
     }
 
-    let client = gateway::build_upstream_client(std::time::Duration::from_secs(60))
+    let client = gateway::build_upstream_client_with_timeout(std::time::Duration::from_secs(60))
         .map_err(|e| e.to_string())?;
 
     let prior = history.unwrap_or_default();

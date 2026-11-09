@@ -1,6 +1,6 @@
-# 小su 桌面精灵 · 进包素材留痕（v4 / v0.7 真实逐帧动画版）
+# 小酥桌面精灵 · 进包素材留痕（v4 / v0.9 素材 + v1.0 互动层）
 
-生成日期：2026-11-08　|　编写：孙测测　|　生成方式：**全部本地 ComfyUI，零云端额度**
+生成日期：2026-11-08（v0.8 / v0.9 / v1.0 增补 2026-11-09）　|　编写：孙测测　|　生成方式：**全部本地 ComfyUI，零云端额度**
 
 > v4 修订（对应「头发没抠干净 / 在想时奇怪摇晃 / 别只是图片叠加」三轮反馈）：
 > - **放弃白底泛洪**：改 Qwen-Edit 均匀洋红纯色底 + 色度空间软色键，发丝缝隙是纯背景色，必然 `alpha=0`；深/浅桌面下无白块、无粉边，白鞋白袜无破洞。因色键已能干净处理发丝，**未改白头发**，保持雾蓝短发设定。
@@ -23,11 +23,23 @@
 | `su-done-loop.webp` | 动画 WebP | done 循环，6 帧 / 8fps / alpha | 66.18 KB |
 | `su-error-loop.webp` | 动画 WebP | error 循环，6 帧 / 8fps / alpha | 69.21 KB |
 | `su-sleep-loop.webp` | 动画 WebP | sleep 循环，6 帧 / 8fps / alpha（闭眼） | 67.74 KB |
+| `su-wave.webp` | 静态海报 | 轻碰招手姿（v0.8） | ~9–11 KB |
+| `su-peek.webp` | 静态海报 | 靠近倾听姿（v0.8） | ~9–11 KB |
+| `su-shy.webp` | 静态海报 | 害羞姿（v0.9） | ~10 KB |
+| `su-celebrate.webp` | 静态海报 | 庆祝姿（v0.9） | ~9 KB |
+| `su-walk.webp` | 静态海报 | 轻步靠近姿（v0.9） | ~9 KB |
+| `su-wave-loop.webp` | 动画 WebP | wave 循环 | ~73 KB |
+| `su-peek-loop.webp` | 动画 WebP | peek 循环 | ~72 KB |
+| `su-shy-loop.webp` | 动画 WebP | shy 循环 | ~74 KB |
+| `su-celebrate-loop.webp` | 动画 WebP | celebrate 循环 | ~68 KB |
+| `su-walk-loop.webp` | 动画 WebP | walk 循环 | ~69 KB |
 
-- **合计 11 张 / 404.23 KB**；`dist` 内 11 张同源，契约检查 D04 复核一致。
-- 尺寸 240×360（@2x），CSS `background-size: contain`；5 个状态先按 alpha 包围盒对齐，切换不漂移。
-- 每个 loop 由 RIFF 校验：`ANMF >= 2`、`VP8X` 的 `0x10`（alpha）与 `0x02`（animation）均置位；契约检查 D06 复核。
-- 落包留痕：`docs/孙测测/traces/桌面精灵v0.7色键落包-*.md`；预览页生成留痕：`桌面精灵预览页生成-*.md`。
+- **v0.7 基线 + v0.8 wave/peek + v0.9 shy/celebrate/walk；v1.0 未新增任何素材**，21 张清单保持不变。尺寸 240×360（@2x），切换前按 alpha 包围盒对齐。
+- 每个 loop 由 RIFF 校验：`ANMF >= 2`、`VP8X` alpha + animation 置位。
+- 落包留痕：`docs/孙测测/traces/桌面精灵v0.7色键落包-*.md`（含 20261109 表情库）。
+- **交互**：穿透模式下靠 `pet_global_cursor` 轮询全局光标驱动视线/靠近；勿再假设 document `pointermove` 在 ignore_cursor_events 下可用。
+- **元素级穿透**：只有光标落在立绘或右键菜单命中框内（或正在拖动）才 `pet_set_clickable(true)`；空白侧栏与透明边距永远穿透到桌面。禁止「菜单一开就整窗解穿透」——那会把透明窗矩形变成挡点击的透明墙。
+- **v1.0 互动层映射**：开场招呼 / 轻碰 → `wave`，靠近倾听 → `peek`，摸头 → `shy`，连点三下 / 完成态 → `celebrate`，自主走动 → `walk`，闲置差分从上述五种随机取一。新增的心形、思考云、落地回弹、步态起伏全部由 CSS/JS 生成，**不新增素材、不新增动画层**。
 
 ## 二、生成链路（可复现）
 
@@ -73,9 +85,22 @@ python3 docs/孙测测/scripts/check_pet_overlay.py
 | 动态载体 | 透明序列帧进包 | **带 alpha 的动画 WebP 进包**，CSS 只做交叉淡入与交互叠加 | 用户明确要求「不是图片叠加」；动画 WebP 由 ComfyUI 原生编码 |
 | 闭眼 | Qwen-Edit 出 sleep 帧 | 程序化闭眼帧 + sleep loop 重编码 | Qwen-Edit 两轮闭眼指令均未生效 |
 | 抠图 | rembg / 白底泛洪 | 洋红纯色底 + 色度空间软色键 | 本机缺 BiRefNet `Matting-HR.safetensors` 等权重；白底泛洪会留发丝缝隙白块、误伤白鞋白袜 |
-| 互动 | 一期零互动 | 视线跟随、靠近光晕、随机眨眼、自主张望、轻碰回应、拖动倾斜 | v0.7 打磨项；写操作仍不进气泡，走确定性命令 + 后果预览 |
+| 互动 | 一期零互动 | v1.0：头转向鼠标（rAF 插值）、开场招呼、闲置差分、唤醒、摸头、连点庆祝、屏幕内自主走动、落地回弹、脚底状态胶囊 | 复用 v0.9 十姿势素材，纯前端状态机 + 后端夹边；写操作仍不进气泡，走确定性命令 + 后果预览 |
 
-## 五、授权与合规
+## 五、v1.0 互动层验收红线（2026-11-09）
+
+| 红线 | 落地位置 | 验收方式 |
+| --- | --- | --- |
+| 素材仍为 21 张，零新增、零云端 | 本目录 + `ASSETS.md` 清单 | `check_pet_overlay.py` C17 / D04 / D06 |
+| 每个姿势只挂一张背景（透明区不叠第二个人影） | `src/pet/pet.css` 单层规则 | C17 逐条断言 urls 恰为单元素 |
+| 请求级只播角色动作，不出泡；失败必切 error | `src/pet/PetStage.tsx` 状态跃迁 | C05 / C19 + 契约留痕 |
+| 走动只在 idle 且久无操作时，在当前显示器可用区内随机落点缓动；左右朝向 CSS 镜像，不新增四向素材 | `src/pet/hooks/usePetBehaviors.ts` + `src-tauri/src/overlay.rs::roam_to` | C20 / C20b / C20c + `cargo test --lib` 夹边单测 |
+| 免打扰只静音气泡，动作与状态仍可切换 | `pushBubble` 统一收口 | 设置页 `set.petQuiet` + 预览页气泡开关 |
+| 预览页与源 CSS 同源、含 v1.0 互动演示 | `docs/design/pet-v07-preview.html` | D05 / D07 / D08 + 浏览器冒烟 12 项 |
+
+> 2026-11-09 追加：演示页去掉 srcdoc iframe，精灵 DOM 与按钮在同一文档，避免预览面板给 iframe 分配 opaque origin 时 `contentDocument` 不可用导致「按钮只亮一下、角色没反应」。互动按钮改为触发式动作（1.5~2.6s：换姿势 + 气泡 + 脚底状态文字 + 位移），播完自动复位、连点可重播，另提供自动演示与点角色本体；旧版 0.3~0.7s 一次性动画播完即静止是这次缺陷的根因。为同文档渲染，`.pet-mote` / `.pet-spark` 从 `vw` 改为固定 `2px` / `1.6px`（与真实 148~220px 悬浮窗等价），避免粒子被整页视口放大近 8 倍。
+
+## 六、授权与合规
 
 - 素材**全部由本地 ComfyUI 生成**，无云端图、无水印、无第三方素材混入，未消耗任何积分。
 - 概念稿 `docs/design/assets/su-cel-*-concept.png` 为云端生成、带水印、无 alpha，**仅作画风参考，禁止入包**（本目录未引用）。
