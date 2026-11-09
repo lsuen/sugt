@@ -71,3 +71,7 @@ scripts/.notify-*.json
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)
+
+# Local test caches & tool temp dirs
+src-tauri/target-agent-test/
+.commandcode/

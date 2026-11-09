@@ -10,6 +10,19 @@ use tracing::{info, warn};
 
 const CUSTOM_TOOL_INPUT_FIELD: &str = "input";
 
+/// Codex Responses API 默认 max_output_tokens 是 32768。当 Codex 请求体未指定任何
+/// 输出长度限制时，我们给 Chat 上游一个安全默认，否则上游（OpenRouter / 火山等）
+/// 会用自己的小默认值（常 4096），导致 tool_call arguments 被 `finish_reason: length`
+/// 截断。可通过环境变量 SUGT_DEFAULT_MAX_TOKENS 覆盖。
+pub const DEFAULT_CODEX_MAX_TOKENS: u64 = 32768;
+
+fn default_codex_max_tokens() -> u64 {
+    std::env::var("SUGT_DEFAULT_MAX_TOKENS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CODEX_MAX_TOKENS)
+}
+
 /// Responses 标准字段中，无状态网关无法透传给 Chat 上游的部分。
 /// 这些字段不再静默丢弃：统一记录到 ChatToolMeta 并打日志，真机抓包时可直接
 /// 看出「客户端要了哪些能力、网关降级了哪些」，而不是面对一个无法解释的黑洞。
@@ -119,11 +132,22 @@ pub fn responses_to_chat_with_meta(
             // Responses 用 max_output_tokens 控制输出长度；Chat 上游只认 max_tokens。
             // 之前这个字段被白名单静默丢掉，长任务会被上游默认上限截断。
             if !out_obj.contains_key("max_tokens") {
-                if let Some(v) = obj
+                // Codex 可能显式传 null（"让上游决定"），要当成未指定处理。
+                let explicit_max = obj
                     .get("max_completion_tokens")
                     .or_else(|| obj.get("max_output_tokens"))
-                {
+                    .filter(|v| !v.is_null());
+                if let Some(v) = explicit_max {
                     out_obj.insert("max_tokens".to_string(), v.clone());
+                } else {
+                    // Codex 没指定任何输出长度限制时，给 Chat 上游一个安全默认，
+                    // 避免上游用自己的小默认值（常 4096）截断 tool_call arguments。
+                    let default_max = default_codex_max_tokens();
+                    out_obj.insert("max_tokens".to_string(), json!(default_max));
+                    warn!(
+                        default_max,
+                        "Codex 请求未指定 max_output_tokens，网关填充 Chat 默认值以防上游截断"
+                    );
                 }
             }
 
@@ -606,7 +630,8 @@ fn rewrite_history_tool_names(messages: &mut [Value], meta: &ChatToolMeta) {
 
 pub use crate::responses_upstream::{
     is_volcengine_coding_model, native_responses_base_url, provider_supports_native_responses,
-    rewrite_responses_upstream_model, should_try_native_responses,
+    responses_body_declares_tools, rewrite_responses_upstream_model, should_try_native_responses,
+    should_try_native_responses_for_body,
 };
 
 fn output_value_to_string(output: &Value) -> String {

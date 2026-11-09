@@ -43,6 +43,27 @@ fn volcengine_plan_and_coding_keep_configured_base() {
 }
 
 #[test]
+fn native_responses_skipped_when_tools_declared() {
+    let plain = Bytes::from(r#"{"model":"ark-code-latest","input":"hi","stream":true}"#);
+    let with_tools = Bytes::from(
+        r#"{"model":"ark-code-latest","input":"hi","stream":true,"tools":[{"type":"function","name":"shell"}]}"#,
+    );
+    let base = "https://ark.cn-beijing.volces.com/api/plan/v3";
+    assert!(!responses_body_declares_tools(&plain));
+    assert!(responses_body_declares_tools(&with_tools));
+    assert!(should_try_native_responses_for_body(
+        base,
+        "ark-code-latest",
+        &plain
+    ));
+    assert!(!should_try_native_responses_for_body(
+        base,
+        "ark-code-latest",
+        &with_tools
+    ));
+}
+
+#[test]
 fn converts_string_input() {
     let body = Bytes::from(r#"{"model":"gpt-4","input":"hi","stream":false}"#);
     let out = responses_to_chat(&body, "upstream-model").unwrap();
@@ -646,4 +667,55 @@ fn command_mode_synthesizes_function_call_from_markers() {
         "应提示已切换命令模式：{text}"
     );
     assert!(!text.contains("[[SUGT_CMD]]"), "可见正文应去掉标记：{text}");
+}
+
+/// Codex 请求未指定任何 max_output_tokens / max_completion_tokens 时，
+/// Chat Completions 转发体应有安全默认，避免上游用小默认截断 tool_call。
+#[test]
+fn fills_default_max_tokens_when_omitted() {
+    let body = Bytes::from(
+        r#"{"model":"codex","stream":true,"input":[{"type":"input_text","text":"run a long shell command"}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]}"#,
+    );
+    let (chat_body, _) = responses_to_chat_with_meta(&body, "upstream-model").unwrap();
+    let v: Value = serde_json::from_slice(&chat_body).unwrap();
+    // 必须带上我们的安全默认值
+    assert_eq!(v["max_tokens"], super::DEFAULT_CODEX_MAX_TOKENS,
+        "Codex 未指定 max 时应填充安全默认值 {}，实际 {:?}",
+        super::DEFAULT_CODEX_MAX_TOKENS, v["max_tokens"]);
+}
+
+/// Codex 显式传了 max_output_tokens 时，应原样映射到 Chat max_tokens。
+#[test]
+fn respects_explicit_max_output_tokens() {
+    let body = Bytes::from(
+        r#"{"model":"codex","stream":true,"max_output_tokens":12000,"input":[{"type":"input_text","text":"hi"}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]}"#,
+    );
+    let (chat_body, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+    let v: Value = serde_json::from_slice(&chat_body).unwrap();
+    assert_eq!(v["max_tokens"], 12000,
+        "应透传 Codex 指定的 max_output_tokens");
+}
+
+/// Codex 显式传了更小的 max_completion_tokens 时，应优先尊重它。
+#[test]
+fn respects_smaller_max_completion_tokens_over_default() {
+    let body = Bytes::from(
+        r#"{"model":"codex","stream":true,"max_completion_tokens":500,"input":[{"type":"input_text","text":"hi"}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]}"#,
+    );
+    let (chat_body, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+    let v: Value = serde_json::from_slice(&chat_body).unwrap();
+    assert_eq!(v["max_tokens"], 500,
+        "应尊重 Codex 显式指定的小值，不要用默认值覆盖");
+}
+
+/// Codex 显式传 null ("让上游决定") 时，视为未指定，填安全默认。
+#[test]
+fn treats_null_max_output_tokens_as_unspecified() {
+    let body = Bytes::from(
+        r#"{"model":"codex","stream":true,"max_output_tokens":null,"input":[{"type":"input_text","text":"hi"}],"tools":[{"type":"function","name":"shell_command","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}]}"#,
+    );
+    let (chat_body, _) = responses_to_chat_with_meta(&body, "upstream").unwrap();
+    let v: Value = serde_json::from_slice(&chat_body).unwrap();
+    assert_eq!(v["max_tokens"], super::DEFAULT_CODEX_MAX_TOKENS,
+        "null 应视为未指定，填充安全默认而非透传 null");
 }
