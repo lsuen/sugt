@@ -284,8 +284,9 @@ async fn write_back(app: &AppHandle, cfg: &OverlayConfig) {
 /// 依据配置创建/更新/销毁悬浮窗；可能改写 cfg.x/y（首次右上角、副屏回退），调用方负责持久化。
 pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
     // HUD：仅编辑态解除穿透。
-    // 精灵：创建即穿透；之后的更新不要再写 ignore_cursor_events（交给前端按立绘/
-    // 菜单命中框动态 pet_set_clickable）。配置热更若整窗解穿透，空白侧栏会变透明墙。
+    // 精灵：默认不穿透（整窗可交互，拖拽/右键可用）；仅 pet_click_through 开启时才
+    // 走元素级动态穿透。配置热更不要再写 ignore_cursor_events，交给前端按立绘/
+    // 菜单命中框动态 pet_set_clickable，避免空白侧栏变成透明墙。
     let hud_interactive = cfg.edit && !cfg.pet_enabled;
     match app.get_webview_window(LABEL) {
         Some(w) if !cfg.enabled => {
@@ -330,9 +331,10 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
             let _ = w.set_shadow(false);
-            // 新建窗口：精灵默认穿透；HUD 按编辑态
+            // 新建窗口：默认不穿透；只有显式开启 pet_click_through 才穿透。
+            // 编辑态强制可点击（保存按钮 / 拖柄需要接收事件）。
             let ignore = if cfg.pet_enabled {
-                !cfg.edit
+                cfg.pet_click_through && !cfg.edit
             } else {
                 !hud_interactive
             };

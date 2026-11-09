@@ -33,7 +33,7 @@ SOURCE_CHECKS = [
     ("C02", "编辑态显式恢复 pointer-events", "src/pet/pet.css",
      [".pet-stage.interactive .pet-edit-bar { pointer-events: auto; }"]),
     ("C03", "呼吸与状态一次性动效分层", "src/pet/pet.css",
-     ["animation: pet-breathe 3.8s", "[data-state=\"done\"] .pet-loops",
+     ["animation: pet-breathe var(--pet-breath-ms)", "[data-state=\"done\"] .pet-loops",
       "[data-state=\"error\"] .pet-loops", "pet-hop 0.62s ease-out 1"]),
     ("C03b", "已移除思考态无限高频摇晃", "src/pet/pet.css", ["@keyframes pet-breathe"]),
     ("C03c", "带 alpha 动画 WebP 五个状态全覆盖", "src/pet/pet.css",
@@ -75,7 +75,7 @@ SOURCE_CHECKS = [
     ("C20c", "走动命令注册与 ACL 放行", "src-tauri/src/app.rs",
      ["pet::pet_roam_to", "pet::pet_global_cursor", "pet::pet_set_clickable"]),
     ("C21", "视线以头部为轴且移动中关掉 3D/滤镜", "src/pet/pet.css",
-     ["transform-origin: 55% 32%", "rotateY(calc(var(--gaze-x) * 9deg))",
+     ["transform-origin: 55% 32%", "rotateY(calc(var(--head-x) * 9deg))",
       "filter: none", "transform: scaleX(var(--face-x))",
       "@keyframes pet-heart", "@keyframes pet-roam-step", "@keyframes pet-land"]),
     ("C22", "气泡不裁字 / 状态胶囊在脚底 / 思考云与摸头反馈", "src/pet/pet.css",
@@ -92,11 +92,19 @@ SOURCE_CHECKS = [
      ["'set.petRoam'", "pet_roam: e.target.checked", "cfg.pet_roam !== false"]),
     ("C24c", "后端配置字段与默认值", "src-tauri/src/model.rs",
      ["pub pet_roam: bool", "pet_roam: true"]),
-    ("C25", "状态机新增差分源只在 idle 生效", "src/pet/petState.ts",
-     ["greeting?: boolean", "idlePose?: PetPose | null", "roaming?: boolean",
-      "if (greeting && state === 'idle') return 'wave';",
-      "if (idlePose && state === 'idle') return idlePose;",
-      "if (roaming && state === 'idle') return 'walk';"]),
+    ("C25", "状态机声明式优先级表 + 自动交互节奏器 + 纯 reducer", "src/pet/petState.ts",
+     ["export const PET_STATE_TABLE", "export const PET_POSE_TABLE",
+      "export function reducePetState", "export function rhythmDelay",
+      "export function shouldWake", "export function pickIdleVariant",
+      "waking?: boolean", "dragging?: boolean", "disappointed?: boolean",
+      "state === 'idle' && Boolean(i.idlePose)", "Boolean(i.dragging)"]),
+    ("C34", "前端姿势清单与 motion 来自 manifest 生成物", "src/pet/PetStage.tsx",
+     ["import { PET_MOTION, PET_POSE_NAMES } from './petManifest.generated';",
+      "const PET_LOOPS = PET_POSE_NAMES;", "reducePetState(",
+      "data-motion={activeMotion}"]),
+    ("C35", "穿透命中区按姿势 alpha 包围盒收紧", "src/pet/hooks/usePetGaze.ts",
+     ["figureHitRect(", "PET_HITBOXES", "PET_IMAGE_SIZE",
+      "overFigure || overMenu || dragActive.current"]),
     ("C26", "右键菜单 Esc 关闭且不整窗解穿透", "src/pet/PetStage.tsx",
      ["setMenuOpen(false)", "Escape", "onMenuDismiss"]),
     ("C27", "舞台写死零底色", "src/pet/pet.css",
@@ -116,26 +124,111 @@ SOURCE_CHECKS = [
      [".shadow(false)", "set_shadow(false)"]),
     ("C32", "立绘禁止 drop-shadow 拖影底板", "src/pet/pet.css",
      ["禁止 drop-shadow", "filter: none"]),
+    # ---- v1.1：尺寸档位 / 穿透设置项 / 自动交互动作 / manifest v2 ----
+    ("C36", "鼠标穿透为设置项且默认关闭", "src-tauri/src/model.rs",
+     ["pub pet_click_through: bool", "pet_click_through: false", "#[serde(default)]"]),
+    ("C36b", "新建窗口按穿透开关决定初始穿透", "src-tauri/src/overlay.rs",
+     ["cfg.pet_click_through && !cfg.edit"]),
+    ("C36c", "默认不穿透时整窗常驻可交互", "src/pet/hooks/usePetGaze.ts",
+     ["clickThrough: boolean",
+      "const passthrough = clickThrough && interactive && !edit",
+      "if (!passthrough) setClickable(true)"]),
+    ("C36d", "设置页穿透开关与前端字段接线", "src/PetSettingsSection.tsx",
+     ["set.petClickThrough", "pet_click_through: e.target.checked"]),
+    ("C36e", "穿透设置 zh/en 文案同步", "src/i18n.ts",
+     ["'set.petClickThrough': '鼠标穿透（默认关）'",
+      "'set.petClickThrough': 'Mouse click-through (off by default)'"]),
+    ("C37", "尺寸档位整体下移：旧大档废弃 + 新增更小的小档", "src/pet/config.ts",
+     ["width: 120,", "height: 136,", "width: 180,", "height: 204", "PET_SIZES"]),
+    ("C37b", "后端默认尺寸与前端最小档一致", "src-tauri/src/model.rs",
+     ["120.0", "136.0", "default_pet_width"]),
+    ("C38", "自动交互动作接入舞台（庆祝 / 睡醒 / 失落 / 拖拽）", "src/pet/PetStage.tsx",
+     ["welcoming: greeting", "shouldWake(", "AUTO.celebrate.holdMs",
+      "setDisappointed(", "waking,", "disappointed,", "dragging,"]),
+    ("C38b", "行为钩子按 manifest 节奏调度并支持随机转身", "src/pet/hooks/usePetBehaviors.ts",
+     ["nextBlinkAt(", "nextFacingAt(", "nextIdleVariantAt(", "nextWanderAt(",
+      "pickIdleVariant()", "setFacing((prev)"]),
+    ("C39", "manifest v2：裁剪 / 逐帧时长 / 帧序 / 编码 / 自动动作", "src/assets/pet/manifest.json",
+     ['"formatVersion": 2', '"cropBox"', '"frameOrder"',
+      '"palette-lossless"', '"autoActions"', '"posePriority"']),
+    ("C40", "素材重编码脚本与产物校验接线", "docs/孙测测/scripts/pet_reencode_assets.py",
+     ["def probe_webp(", "def encode_products(", "def check_products(",
+      "palette-lossless"]),
+    ("C41", "活感层语义常量进 manifest（互质周期 + 递减 lerp）", "src/assets/pet/manifest.json",
+     ['"liveliness"', '"breathMs": 3100', '"secondaryMs": 5300',
+      '"weightMs": 7900', '"eyeLerp": 0.32', '"headLerp": 0.13',
+      '"bodyLerp": 0.055']),
+    ("C42", "舞台四层分层渲染 + 周期变量由 manifest 注入", "src/pet/PetStage.tsx",
+     ['className="pet-weight"', 'className="pet-secondary"',
+      "AUTO.liveliness.cycles.breathMs", "--pet-breath-ms",
+      "--pet-secondary-deg", "--pet-weight-ms"]),
+    ("C43", "视线跟随眼→头→身三层递减延迟", "src/pet/hooks/usePetGaze.ts",
+     ["GAZE_LERP.eyeLerp", "GAZE_LERP.headLerp", "GAZE_LERP.bodyLerp",
+      "'--head-x'", "'--body-x'", "bodyLayer.x"]),
+    ("C44", "CSS 三层互质周期 / 独立 translate / 降级同步", "src/pet/pet.css",
+     ["pet-weight-sway", "pet-secondary-sway",
+      "animation: pet-breathe var(--pet-breath-ms)",
+      "translate: calc(var(--body-x)",
+      ".pet-stage.still .pet-weight",
+      ".pet-weight { translate: none; }"]),
+    ("C45", "ComfyUI 脚本统一走 curl 传输适配器", "docs/孙测测/scripts/comfyui_curl_http.py",
+     ["def curl_urlopen(", "def install(", "class CurlResponse",
+      "subprocess.run(", "--noproxy", "urllib.request.urlopen = curl_urlopen"]),
 ]
 
-DIST_CSS_SELECTORS = [".pet-side", ".pet-figure", ".pet-motion", ".pet-loops",
-                     ".pet-blink", ".pet-status-bar", ".pet-edit-bar",
-                     ".pet-thought", "pet-heart", "pet-roam-step"]
-# v1.0 素材清单未变：10 张姿势静态海报（offline 复用 idle）+ 1 张闭眼帧 + 10 个动画 WebP
-PET_POSES = ("idle", "typing", "done", "error", "sleep",
-             "wave", "peek", "shy", "celebrate", "walk")
-PET_ASSET_NAMES = (
-    "su-idle", "su-typing", "su-done", "su-error", "su-sleep", "su-blink",
-    "su-wave", "su-peek", "su-shy", "su-celebrate", "su-walk",
-    "su-idle-loop", "su-typing-loop", "su-done-loop", "su-error-loop", "su-sleep-loop",
-    "su-wave-loop", "su-peek-loop", "su-shy-loop", "su-celebrate-loop", "su-walk-loop",
-)
-LOOP_ASSET_NAMES = tuple(f"su-{pose}-loop" for pose in PET_POSES)
+DIST_CSS_SELECTORS = [".pet-side", ".pet-figure", ".pet-weight", ".pet-motion",
+                     ".pet-secondary", ".pet-loops", ".pet-blink",
+                     ".pet-status-bar", ".pet-edit-bar",
+                     ".pet-thought", "pet-heart", "pet-roam-step",
+                     "pet-weight-sway", "pet-secondary-sway"]
+MANIFEST_REL = Path("src") / "assets" / "pet" / "manifest.json"
+
+
+def load_pet_manifest(root: Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """从 manifest 取姿势清单与素材清单，消灭四处硬编码的第二份真相源。
+
+    返回 (姿势名, 全部素材名, 动画素材名)；素材名均不含 `.webp` 扩展名。
+    """
+    data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
+    poses = tuple(pose["name"] for pose in data["poses"])
+    posters = tuple(Path(pose["poster"]).stem for pose in data["poses"])
+    extras = tuple(Path(name).stem for name in data.get("extraFrames", []))
+    loops = tuple(Path(pose["loop"]).stem for pose in data["poses"])
+    return poses, posters + extras + loops, loops
+
+
+def check_manifest_source(root: Path) -> tuple[str, str, bool, str]:
+    """C33：manifest 必须是唯一真相源，生成段与前端常量都必须由它派生。"""
+    problems: list[str] = []
+    try:
+        data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return "C33", "manifest 单一真相源接线", False, f"读取失败: {exc}"
+    if data.get("formatVersion") != 2:
+        problems.append("formatVersion 非 2")
+    css = read(root, "src/pet/pet.css")
+    if "@generated:pet-assets begin" not in css or "@generated:pet-assets end" not in css:
+        problems.append("pet.css 缺生成标记")
+    generated = read(root, "src/pet/petManifest.generated.ts")
+    if "PET_HITBOXES" not in generated:
+        problems.append("前端常量缺 PET_HITBOXES")
+    for pose in data["poses"]:
+        if f'{pose["name"]}: [' not in generated:
+            problems.append(f'前端常量缺姿势 {pose["name"]}')
+    for rel in ("docs/孙测测/scripts/gen_pet_from_manifest.py",
+                "docs/孙测测/scripts/build_pet_preview.py"):
+        if rel.endswith("gen_pet_from_manifest.py") and "build_css_block" not in read(root, rel):
+            problems.append("生成器缺 CSS 段构建函数")
+        if not rel.endswith("gen_pet_from_manifest.py") and "load_pet_manifest" not in read(root, rel):
+            problems.append(f"{rel} 未读 manifest")
+    return ("C33", "manifest 单一真相源接线", not problems,
+            "、".join(problems[:4]) if problems
+            else f"{len(data['poses'])} 个姿势、生成段与前端常量齐全")
 
 
 def parse_args() -> argparse.Namespace:
     """解析参数，默认项目根由脚本位置推导。"""
-    default_root = Path(__file__).resolve().parents[2]
+    default_root = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(description="桌面精灵链路契约检查")
     parser.add_argument("--root", type=Path, default=default_root, help="项目根目录")
     parser.add_argument("--out", type=Path, default=None, help="自定留痕路径")
@@ -246,8 +339,9 @@ def check_pose_layers(root: Path) -> tuple[str, str, bool, str]:
     """
     css = read(root, "src/pet/pet.css")
     asset_dir = root / "src" / "assets" / "pet"
+    poses, _, _ = load_pet_manifest(root)
     problems: list[str] = []
-    for pose in PET_POSES:
+    for pose in poses:
         for selector, kind, expected in (
             (rf'\.pet-loop\[data-loop="{pose}"\]', "动画层", f"su-{pose}-loop.webp"),
             (rf'\.pet-poster\[data-frame="{pose}"\]', "静态帧", f"su-{pose}.webp"),
@@ -262,8 +356,8 @@ def check_pose_layers(root: Path) -> tuple[str, str, bool, str]:
         for name in (f"su-{pose}.webp", f"su-{pose}-loop.webp"):
             if not (asset_dir / name).is_file():
                 problems.append(f"缺素材 {name}")
-    return ("C17", "v0.9 十姿势单层背景与素材齐全", not problems,
-            "、".join(problems[:4]) if problems else f"{len(PET_POSES)}/{len(PET_POSES)} 命中")
+    return ("C17", "全部姿势单层背景与素材齐全", not problems,
+            "、".join(problems[:4]) if problems else f"{len(poses)}/{len(poses)} 命中")
 
 
 def read_pet_runtime(root: Path) -> str:
@@ -284,8 +378,8 @@ def check_runtime_wiring(root: Path) -> tuple[str, str, bool, str]:
     text = read_pet_runtime(root)
     needles = (
         "--gaze-x", "setBlinking", "setPoked", "setStill", "PET_LOOPS", "--drag-tilt",
-        "let cancelled = false", "document.hidden", "const LERP = 0.18",
-        "PET_IDLE_POSES", "easeInOut", "setPetted", "setRoaming",
+        "let cancelled = false", "document.hidden", "GAZE_LERP.eyeLerp",
+        "pickIdleVariant", "easeInOut", "setPetted", "setRoaming",
         "removeEventListener('resize', refreshScale)", "pet_set_clickable",
         # 元素级穿透：禁止 menuOpen 单独把整窗解穿透（透明墙回归）
         "overFigure || overMenu || dragActive.current",
@@ -358,10 +452,15 @@ def check_dist(root: Path) -> list[tuple[str, str, bool, str]]:
 
     assets = sorted((root / "dist" / "assets").glob("su-*.webp"))
     total = sum(p.stat().st_size for p in assets)
-    names_ok = all(any(p.name.startswith(name + "-") for p in assets) for name in PET_ASSET_NAMES)
-    results.append(("D04", f"dist 内含 {len(PET_ASSET_NAMES)} 张精灵 WebP（11 静态 + 10 动画）",
-                    len(assets) == len(PET_ASSET_NAMES) and names_ok,
-                    f"{len(assets)} 张 / {total / 1024:.2f} KB"))
+    _, asset_names, loops = load_pet_manifest(root)
+    names_ok = all(any(p.name.startswith(name + "-") for p in assets)
+                   for name in asset_names)
+    results.append((
+        "D04",
+        f"dist 内含 {len(asset_names)} 张精灵 WebP"
+        f"（{len(asset_names) - len(loops)} 静态 + {len(loops)} 动画）",
+        len(assets) == len(asset_names) and names_ok,
+        f"{len(assets)} 张 / {total / 1024:.2f} KB"))
     return results
 
 
@@ -419,23 +518,27 @@ def check_preview_v10(root: Path) -> tuple[str, str, bool, str]:
     """预览页必须同步 v1.0 互动演示，否则新加的动作没有任何可视化验收入口。"""
     html = read(root, "docs/design/pet-v07-preview.html")
     needles = (
-        ("v1.0", "标题版本"), ("helloBtn", "开场招呼按钮"),
-        ("patBtn", "摸头按钮"), ("roamBtn", "自主走动按钮"),
-        ("landBtn", "落地按钮"), ("thinkBtn", "思考云按钮"),
-        ("pet-thought", "思考云 DOM"), ("pet-landed", "落地反馈类"),
-        ("petted", "摸头反馈类"), ("roaming", "走动反馈类"),
-        ("脚底", "状态胶囊位置说明"),
+        ("v1.1", "标题版本"),
+        ('data-action="cheer"', "请求完成庆祝按钮"),
+        ('data-action="failed"', "失败失落按钮"),
+        ('data-action="wake"', "睡醒过渡按钮"),
+        ('data-action="drag"', "拖拽中按钮"),
+        ('data-action="turn"', "转身张望按钮"),
+        ("105×297", "裁剪后画布说明"), ("[120, 136", "新小档尺寸"),
+        ("helloBtn", "开场招呼按钮"), ("roamBtn", "自主走动按钮"),
+        ("pet-thought", "思考云 DOM"), ("roaming", "走动反馈类"),
     )
     missing = [label for needle, label in needles if needle not in html]
-    return ("D08", "预览页含 v1.0 互动演示", not missing,
+    return ("D08", "预览页含 v1.1 自动交互与尺寸演示", not missing,
             "、".join(missing) if missing else f"{len(needles)}/{len(needles)} 命中")
 
 
 def check_animated_webp(root: Path) -> tuple[str, str, bool, str]:
     """10 个进包动画 WebP 必须同时有 ANIM/ANMF 帧、alpha 标志位与多帧差异。"""
     asset_dir = root / "src" / "assets" / "pet"
+    _, _, loop_names = load_pet_manifest(root)
     rows = []
-    for name in LOOP_ASSET_NAMES:
+    for name in loop_names:
         path = asset_dir / f"{name}.webp"
         data = path.read_bytes()
         flags = 0
@@ -500,6 +603,7 @@ def main() -> int:
         rows.append(check_no_stage_backdrop(root))
         rows.append(check_pet_sizes(root))
         rows.append(check_pose_layers(root))
+        rows.append(check_manifest_source(root))
         rows.append(check_v09_wiring(root))
         rows += check_v10_behaviors(root)
         rows += check_dist(root)

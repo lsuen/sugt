@@ -366,6 +366,9 @@ pub struct OverlayConfig {
     /// 允许在当前显示器可用区内自主走动；关闭后精灵只在原地播动作
     #[serde(default = "default_true")]
     pub pet_roam: bool,
+    /// 鼠标穿透：默认关闭（整窗可交互，拖拽/右键可用）；开启后由前端按立绘命中框动态切换
+    #[serde(default)]
+    pub pet_click_through: bool,
 }
 
 impl Default for OverlayConfig {
@@ -395,6 +398,7 @@ impl Default for OverlayConfig {
             pet_quiet: false,
             pet_always_interactive: true,
             pet_roam: true,
+            pet_click_through: false,
         }
     }
 }
@@ -429,12 +433,13 @@ fn default_overlay_height() -> f64 {
 }
 
 fn default_pet_width() -> f64 {
-    // 立绘偏右贴边 + 窄侧栏；比旧 200×160 更贴身，减少透明空框
-    148.0
+    // v1.1 档位整体下移：旧小档 148 升为新中，新增 120 的小档；
+    // 素材已裁剪透明边，窗口更小但人物视觉不缩小。
+    120.0
 }
 
 fn default_pet_height() -> f64 {
-    168.0
+    136.0
 }
 
 fn default_pet_sleep_after_secs() -> u32 {

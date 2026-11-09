@@ -1,18 +1,26 @@
-// 桌面精灵行为：随机眨眼、开场招呼、闲置差分、自主走动。
+// 桌面精灵行为：随机眨眼、开场招呼、闲置差分、自主走动、随机转身。
 // 这些低频行为共享同一批 refs（petStateRef / dragActive / lastUserTouch / gazeRef），
 // 合并在一个 hook 内维护，避免拆散强耦合的状态机。
+// v1.1：间隔/姿势池/时长全部来自 manifest.autoActions 的纯节奏器，语义层常量不进设置页。
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import type { TKey } from '../../i18n';
 import { clamp, easeInOut, type Bubble } from '../config';
-import type { PetPose, PetState } from '../petState';
+import {
+  AUTO,
+  nextBlinkAt,
+  nextFacingAt,
+  nextIdleVariantAt,
+  nextWanderAt,
+  pickIdleVariant,
+  type PetPose,
+  type PetState,
+} from '../petState';
 
 /** 走动朝向：复用现有 walk 素材，左右用 CSS 镜像，不新增四向立绘。 */
 export type PetFacing = 'left' | 'right';
-
-const PET_IDLE_POSES: PetPose[] = ['peek', 'wave', 'shy', 'celebrate', 'walk'];
 const PET_IDLE_BUBBLES: TKey[] = [
   'pet.bubble.idle1', 'pet.bubble.idle2', 'pet.bubble.idle3',
 ];
@@ -83,7 +91,7 @@ export function usePetBehaviors({
           }
           schedule();
         }, 125);
-      }, 2600 + Math.random() * 4200);
+      }, nextBlinkAt({ now: 0 }));
     schedule();
     return () => {
       cancelled = true;
@@ -129,17 +137,15 @@ export function usePetBehaviors({
         !document.hidden && !still && petStateRef.current === 'idle'
         && !dragActive.current && quietFor > 6_000
       ) {
-        playIdlePose(
-          PET_IDLE_POSES[Math.floor(Math.random() * PET_IDLE_POSES.length)],
-          1500 + Math.random() * 900,
-        );
+        // 姿势池与时长都来自 manifest.autoActions，加动作只改清单。
+        playIdlePose(pickIdleVariant(), AUTO.idleVariant.holdMs);
         if (Math.random() < 0.34 && Date.now() - lastIdleBubble.current > 90_000) {
           lastIdleBubble.current = Date.now();
           const key = PET_IDLE_BUBBLES[Math.floor(Math.random() * PET_IDLE_BUBBLES.length)];
           pushBubble(t(key), 'info');
         }
       }
-      later(tick, 22_000 + Math.random() * 26_000);
+      later(tick, nextIdleVariantAt({ now: 0 }));
     };
     later(tick, 6_000 + Math.random() * 5_000);
     return () => {
@@ -161,7 +167,7 @@ export function usePetBehaviors({
     const finish = () => {
       setRoaming(false);
       void invoke('pet_finish_drag', { snap: false }).catch(() => undefined);
-      schedule(28_000 + Math.random() * 24_000);
+      schedule(nextWanderAt({ now: 0 }));
     };
     const pickTarget = (
       start: { x: number; y: number },
@@ -280,12 +286,32 @@ export function usePetBehaviors({
         void step();
       })();
     };
-    schedule(12_000 + Math.random() * 8_000);
+    schedule(nextWanderAt({ now: 0 }));
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
   }, [roamEnabled, still, petStateRef, dragActive, lastUserTouch, gazeRef]);
+
+  // 随机转身（参考 whale-girl nextFacingAt）：静态陪伴态偶尔换个朝向，
+  // 走动期间让位给移动方向，动作间朝向保持连续、不无谓跳回默认。
+  useEffect(() => {
+    if (still || roaming) return;
+    let cancelled = false;
+    let timer = 0;
+    const tick = () => {
+      if (cancelled) return;
+      if (!document.hidden && !dragActive.current && petStateRef.current === 'idle') {
+        setFacing((prev) => (prev === 'left' ? 'right' : 'left'));
+      }
+      timer = window.setTimeout(tick, nextFacingAt({ now: 0 }));
+    };
+    timer = window.setTimeout(tick, nextFacingAt({ now: 0 }));
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [still, roaming, dragActive, petStateRef]);
 
   return { blinking, greeting, roaming, facing };
 }

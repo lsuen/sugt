@@ -17,9 +17,20 @@
   --pet-line: rgba(140, 200, 232, 0.28);
   /* 窄侧栏：气泡叠在立绘左侧空隙；此区域必须保持穿透，不可整窗解穿透 */
   --pet-side-w: 28%;
+  /* 眼→头→身分级跟随变量：usePetGaze 按递减 lerp 分别写入 */
   --gaze-x: 0;
   --gaze-y: 0;
+  --head-x: 0;
+  --head-y: 0;
+  --body-x: 0;
+  --body-y: 0;
   --near: 0;
+  /* 活感层周期与幅度：由 manifest.autoActions.liveliness 注入，此处仅兜底 */
+  --pet-breath-ms: 3100ms;
+  --pet-secondary-ms: 5300ms;
+  --pet-weight-ms: 7900ms;
+  --pet-secondary-deg: 1.5;
+  --pet-secondary-shift: 1.2;
   --drag-tilt: 0;
   /* 左右朝向：1 正向 / -1 镜像；走左时翻立绘，不新增素材 */
   --face-x: 1;
@@ -73,7 +84,7 @@
   background: var(--pet-accent);
   clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
   opacity: 0;
-  animation: pet-mote 7.5s ease-in-out infinite;
+  animation: pet-mote 11.3s ease-in-out infinite;
 }
 .pet-mote:nth-child(1) { left: 48%; top: 16%; animation-delay: 0s; }
 .pet-mote:nth-child(2) { left: 86%; top: 26%; animation-delay: 1.3s; }
@@ -172,7 +183,7 @@
   background: var(--pet-accent);
   clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
   transition: background 0.35s ease;
-  animation: pet-dot 3.2s ease-in-out infinite;
+  animation: pet-dot 4.7s ease-in-out infinite;
 }
 .pet-stage.dragging .pet-status-bar,
 .pet-stage.roaming .pet-status-bar,
@@ -186,9 +197,12 @@
   transition: opacity 0.3s ease;
 }
 
-/* ---- 角色层：以头部为轴转向，呼吸/动效在各自子层 ----
+/* ---- 角色层：四层互不覆盖，每层只挂一张素材 ----
    铁律：禁止 drop-shadow / box-shadow。透明窗里阴影会被 overflow 裁成矩形底板，
-   拖动/漫游时必出重影与「背景边框」。色调只用 brightness/grayscale/saturate。 */
+   拖动/漫游时必出重影与「背景边框」。色调只用 brightness/grayscale/saturate。
+   活感分层：figure(朝向 + 头跟随) → weight(重心 7.9s + 身延迟)
+             → motion(呼吸 3.1s) → secondary(发梢 5.3s) → loops(逐帧/一次性动效)。
+   3.1 / 5.3 / 7.9s 按 0.1s 为单位两两互质，合成周期约 3.6 小时，盯不出循环点。 */
 .pet-figure {
   position: absolute;
   left: var(--pet-side-w);
@@ -199,9 +213,9 @@
   transform-origin: 55% 32%;
   transform:
     scaleX(var(--face-x))
-    translate3d(calc(var(--gaze-x) * 2.5px), calc(var(--gaze-y) * 1.5px), 0)
-    rotateY(calc(var(--gaze-x) * 9deg))
-    rotateX(calc(var(--gaze-y) * -5deg))
+    translate3d(calc(var(--head-x) * 2.5px), calc(var(--head-y) * 1.5px), 0)
+    rotateY(calc(var(--head-x) * 9deg))
+    rotateX(calc(var(--head-y) * -5deg))
     rotate(calc(var(--drag-tilt) * 1.2deg));
   filter: none;
 }
@@ -218,14 +232,47 @@
   filter: saturate(0.72);
 }
 
+/* 重心层：身延迟用独立 translate 属性，与 animation 的 transform 叠加而不互相覆盖 */
+.pet-weight {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  translate: calc(var(--body-x) * 1.6px) calc(var(--body-y) * 1px);
+  animation: pet-weight-sway var(--pet-weight-ms) ease-in-out infinite;
+}
+@keyframes pet-weight-sway {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  35% { transform: translateX(-1.2px) rotate(-0.5deg); }
+  70% { transform: translateX(1.2px) rotate(0.5deg); }
+}
+
 .pet-motion {
   position: absolute;
   inset: 0;
   transform-origin: 50% 100%;
-  animation: pet-breathe 3.8s ease-in-out infinite;
+  animation: pet-breathe var(--pet-breath-ms) ease-in-out infinite;
 }
-.pet-stage[data-state="typing"] .pet-motion { animation-duration: 2.7s; }
-.pet-stage[data-state="sleep"] .pet-motion { animation-duration: 5.6s; }
+.pet-stage[data-state="typing"] .pet-motion { animation-duration: 2.9s; }
+.pet-stage[data-state="sleep"] .pet-motion { animation-duration: 6.1s; }
+
+/* 发梢二次动作：以头顶为轴极小倾斜，周期与呼吸/重心错开 */
+.pet-secondary {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 14%;
+  animation: pet-secondary-sway var(--pet-secondary-ms) ease-in-out infinite;
+}
+@keyframes pet-secondary-sway {
+  0%, 100% { transform: rotate(0deg) translateX(0); }
+  30% {
+    transform: rotate(calc(var(--pet-secondary-deg) * -1deg))
+               translateX(calc(var(--pet-secondary-shift) * -1px));
+  }
+  70% {
+    transform: rotate(calc(var(--pet-secondary-deg) * 1deg))
+               translateX(calc(var(--pet-secondary-shift) * 1px));
+  }
+}
 
 .pet-loops {
   position: absolute;
@@ -254,12 +301,15 @@
 }
 .pet-poster { opacity: 0; visibility: hidden; transition: none; }
 .pet-poster.is-active { opacity: 1; visibility: visible; }
+/* 交互/表情差分：素材已全部落包，一层即可。
+   以下规则由 gen_pet_from_manifest.py 从 src/assets/pet/manifest.json 生成；
+   新增姿势只改 manifest，不要手工加 url（C17 要求每条规则恰好一个 url）。 */
+/* @generated:pet-assets begin —— 由 gen_pet_from_manifest.py 生成，勿手工编辑 */
 .pet-loop[data-loop="idle"] { background-image: url('../assets/pet/su-idle-loop.webp'); }
 .pet-loop[data-loop="typing"] { background-image: url('../assets/pet/su-typing-loop.webp'); }
 .pet-loop[data-loop="done"] { background-image: url('../assets/pet/su-done-loop.webp'); }
 .pet-loop[data-loop="error"] { background-image: url('../assets/pet/su-error-loop.webp'); }
 .pet-loop[data-loop="sleep"] { background-image: url('../assets/pet/su-sleep-loop.webp'); }
-/* 交互/表情差分：素材已全部落包，一层即可。 */
 .pet-loop[data-loop="wave"] { background-image: url('../assets/pet/su-wave-loop.webp'); }
 .pet-loop[data-loop="peek"] { background-image: url('../assets/pet/su-peek-loop.webp'); }
 .pet-loop[data-loop="shy"] { background-image: url('../assets/pet/su-shy-loop.webp'); }
@@ -275,6 +325,7 @@
 .pet-poster[data-frame="shy"] { background-image: url('../assets/pet/su-shy.webp'); }
 .pet-poster[data-frame="celebrate"] { background-image: url('../assets/pet/su-celebrate.webp'); }
 .pet-poster[data-frame="walk"] { background-image: url('../assets/pet/su-walk.webp'); }
+/* @generated:pet-assets end */
 
 /* 非激活循环跳过合成；sleep/offline 时彻底藏起非当前帧以省解码 */
 .pet-loop:not(.is-active) {
@@ -289,10 +340,36 @@
   visibility: hidden;
 }
 
+/* ---- v1.1 自动交互 motion：manifest.motion → PetStage data-motion ----
+   只在 idle、非走动、非拖拽、非静态降级时叠加，
+   不抢 done/error 的一次性动效，也不与 --face-x 镜像冲突（施加在不同层）。 */
+.pet-stage:not(.still)[data-state="idle"]:not(.roaming):not(.dragging)[data-motion="tilt"] .pet-loops {
+  animation: pet-tilt 3.4s ease-in-out infinite;
+}
+.pet-stage:not(.still)[data-state="idle"]:not(.roaming):not(.dragging)[data-motion="wiggle"] .pet-loops {
+  animation: pet-wiggle 2.8s ease-in-out infinite;
+}
+.pet-stage:not(.still)[data-state="idle"]:not(.roaming):not(.dragging)[data-motion="float"] .pet-loops {
+  animation: pet-float 4.2s ease-in-out infinite;
+}
+.pet-stage:not(.still)[data-state="idle"]:not(.roaming):not(.dragging)[data-motion="wave"] .pet-loops {
+  animation: pet-wave 2.4s ease-in-out infinite;
+}
+.pet-stage:not(.still)[data-state="idle"]:not(.roaming):not(.dragging)[data-motion="bob"] .pet-loops {
+  animation: pet-bob 2.6s ease-in-out infinite;
+}
+@keyframes pet-tilt { 0%, 100% { transform: rotate(0deg); } 30% { transform: rotate(-2.4deg); } 70% { transform: rotate(2.4deg); } }
+@keyframes pet-wiggle { 0%, 100% { transform: translateX(0); } 35% { transform: translateX(-2px); } 70% { transform: translateX(2px); } }
+@keyframes pet-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes pet-wave { 0%, 100% { transform: rotate(0deg) translateY(0); } 40% { transform: rotate(2deg) translateY(-2px); } 75% { transform: rotate(-2deg) translateY(0); } }
+@keyframes pet-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2px); } }
+
 /* 隐藏窗口 / 减少动效时暂停动画层，只留静态海报 */
 .pet-stage.still .pet-loop { display: none; }
 .pet-stage.still .pet-poster.is-active { opacity: 1; visibility: visible; }
 .pet-stage.still .pet-motion,
+.pet-stage.still .pet-weight,
+.pet-stage.still .pet-secondary,
 .pet-stage.still .pet-mote { animation-play-state: paused; }
 
 /* listening：靠近 idle 时侧耳提亮，不切换真实 typing 状态 */
@@ -300,9 +377,9 @@
   filter: brightness(1.08) saturate(1.06);
   transform:
     scaleX(var(--face-x))
-    translate3d(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.8px), 0)
-    rotateY(calc(var(--gaze-x) * 11deg))
-    rotateX(calc(var(--gaze-y) * -6deg))
+    translate3d(calc(var(--head-x) * 3px), calc(var(--head-y) * 1.8px), 0)
+    rotateY(calc(var(--head-x) * 11deg))
+    rotateX(calc(var(--head-y) * -6deg))
     rotate(calc(var(--drag-tilt) * 1.2deg))
     scale(1.015);
 }
@@ -312,9 +389,9 @@
 .pet-stage.pet-walking .pet-figure {
   transform:
     scaleX(var(--face-x))
-    translate3d(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.6px), 0)
-    rotateY(calc(var(--gaze-x) * 10deg))
-    rotateX(calc(var(--gaze-y) * -5.5deg))
+    translate3d(calc(var(--head-x) * 3px), calc(var(--head-y) * 1.6px), 0)
+    rotateY(calc(var(--head-x) * 10deg))
+    rotateX(calc(var(--head-y) * -5.5deg))
     rotate(calc(var(--drag-tilt) * 1.2deg));
 }
 .pet-stage.pet-walking .pet-motion {
@@ -329,7 +406,11 @@
   transform-style: flat;
 }
 .pet-stage.dragging .pet-motion,
-.pet-stage.roaming .pet-motion {
+.pet-stage.roaming .pet-motion,
+.pet-stage.dragging .pet-weight,
+.pet-stage.roaming .pet-weight,
+.pet-stage.dragging .pet-secondary,
+.pet-stage.roaming .pet-secondary {
   animation: none;
 }
 .pet-stage.dragging .pet-loops,
@@ -591,12 +672,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pet-motion, .pet-loops, .pet-mote, .pet-spark, .pet-bubble, .pet-status-dot,
+  .pet-motion, .pet-weight, .pet-secondary, .pet-loops, .pet-mote,
+  .pet-spark, .pet-bubble, .pet-status-dot,
   .pet-thought, .pet-thought i, .pet-stage.petted .pet-figure::after,
   .pet-stage.roaming .pet-loops, .pet-stage.pet-landed .pet-motion,
   .pet-menu {
     animation: none !important;
   }
   .pet-figure { transform: none; }
+  .pet-weight { translate: none; }
   .pet-gaze, .pet-stage.petted .pet-figure::after { display: none; }
 }

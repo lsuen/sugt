@@ -1461,7 +1461,7 @@ pub async fn set_overlay_config(
     if !matches!(cfg.layout.as_str(), "column" | "row") {
         return Err("悬浮窗布局方向需为 column 或 row".to_string());
     }
-    // 精灵模式最大档 400x320（右侧立绘 + 左侧通知栏），高度上限放宽到 420
+    // v1.1 三档 120×136 / 148×168 / 180×204；下限 120 对应新增的小档，上限留给自定义窗口
     if !(120.0..=800.0).contains(&cfg.width) || !(40.0..=420.0).contains(&cfg.height) {
         return Err("悬浮窗尺寸超出合理范围".to_string());
     }

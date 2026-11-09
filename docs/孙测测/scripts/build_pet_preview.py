@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import re
 import sys
 from datetime import datetime
@@ -41,13 +42,7 @@ REQUIRED_SELECTORS = (
     ".pet-stage.roaming .pet-loops",
     ".pet-stage.pet-landed .pet-motion",
 )
-# v1.0 素材清单未变：10 张静态海报 + 1 张程序化闭眼帧 + 10 个带 alpha 的动画 WebP
-FRAME_NAMES = (
-    "su-idle", "su-typing", "su-done", "su-error", "su-sleep", "su-blink",
-    "su-wave", "su-peek", "su-shy", "su-celebrate", "su-walk",
-    "su-idle-loop", "su-typing-loop", "su-done-loop", "su-error-loop", "su-sleep-loop",
-    "su-wave-loop", "su-peek-loop", "su-shy-loop", "su-celebrate-loop", "su-walk-loop",
-)
+MANIFEST_REL = Path("src") / "assets" / "pet" / "manifest.json"
 CSS_ANCHOR = "/* ===== 桌面精灵"
 # pet.css 相对路径为 ../assets/pet/；兼容旧版 overlay.css 的 ./assets/pet/
 URL_PATTERN = re.compile(r"url\('(?:\.\./)*assets/pet/([a-z0-9-]+)\.webp'\)")
@@ -78,7 +73,7 @@ button:hover{color:var(--text);border-color:var(--accent)}
 button.on{color:#0E1220;background:var(--accent);border-color:var(--accent);font-weight:600}
 .hint{font-size:11.5px;color:var(--dim);margin:10px 0 0;line-height:1.6}
 .now{margin-top:14px;padding:9px 11px;border:1px solid rgba(93,217,168,.35);border-radius:9px;background:rgba(93,217,168,.08);font-size:12.5px;color:var(--accent)}
-/* 580px：最小档 148×168 放大 3.2× 后高 537px。棋盘格=模拟壁纸，不是产品窗背景。 */
+/* 580px：最小档 120×136 放大 4.0× 后高 544px。棋盘格=模拟壁纸，不是产品窗背景。 */
 .desktop{background-color:#1a2030;background-image:linear-gradient(45deg,#243044 25%,transparent 25%),linear-gradient(-45deg,#243044 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#243044 75%),linear-gradient(-45deg,transparent 75%,#243044 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0;border:1px solid var(--border);border-radius:14px;height:580px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
 .desktop.light{background-color:#c5d0de;background-image:linear-gradient(45deg,#b0bec9 25%,transparent 25%),linear-gradient(-45deg,#b0bec9 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#b0bec9 75%),linear-gradient(-45deg,transparent 75%,#b0bec9 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}
 .desktop::before{content:"棋盘格=模拟壁纸 · 虚线框内产品窗必须全透明（零底色）";position:absolute;left:14px;top:12px;font-size:11px;color:#8494AE;z-index:2}
@@ -98,10 +93,10 @@ __PET_CSS_RAW__
 <body>
 <div class="wrap">
 <h1>小su 桌面精灵 v1.0 · 互动演示</h1>
-<p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。11 张静态 + 10 个带 alpha 动画 WebP 内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
+<p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。静态海报 + 带 alpha 的逐帧动画 WebP 全部内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
 <span class="badge">生成时间 __GENERATED_AT__</span>
 <span class="badge">源 CSS sha256 __CSS_HASH__</span>
-<span class="badge">素材 __ASSET_COUNT__ 张 / __ASSET_KB__ KB（含 10 个带 alpha 动画 WebP）</span>
+<span class="badge">素材 __ASSET_COUNT__ 张 / __ASSET_KB__ KB（含 __POSE_COUNT__ 个带 alpha 动画 WebP）</span>
 
 <div class="layout">
   <div class="card">
@@ -133,6 +128,18 @@ __PET_CSS_RAW__
         <button type="button" id="thinkBtn" data-action="think">思考云</button>
         <button type="button" id="roamBtn" data-action="roam">自主走动</button>
         <button type="button" id="landBtn" data-action="land">落地回弹</button>
+      </div>
+    </div>
+    <div class="group">
+      <label>v1.1 自动交互动作（参考鲸鱼娘 · 零打扰）</label>
+      <div class="btnrow">
+        <button type="button" data-action="cheer">请求完成庆祝</button>
+        <button type="button" data-action="failed">失败失落</button>
+        <button type="button" data-action="wake">睡醒过渡</button>
+        <button type="button" data-action="wait">等待批准</button>
+        <button type="button" data-action="drag">拖拽中</button>
+        <button type="button" data-action="idle">闲置差分</button>
+        <button type="button" data-action="turn">转身张望</button>
       </div>
     </div>
     <div class="group">
@@ -189,9 +196,12 @@ __PET_CSS_RAW__
 </div>
 
 <table>
-<tr><th>v1.0 互动</th><th>演示中可验证</th></tr>
+<tr><th>v1.1 互动</th><th>演示中可验证</th></tr>
 <tr><td>触发式动作</td><td>每个按钮点一次播 1.5~2.6s：换姿势 + 气泡 + 脚底状态文字 + 一次性动效，播完自动复位；再点可重播，不会「闪一下就没了」</td></tr>
-<tr><td>自动演示</td><td>「▶ 自动演示全部」依次播放招呼 → 摸头 → 轻碰 → 眨眼 → 思考云 → 散步 → 落地，无需逐个点</td></tr>
+<tr><td>素材与尺寸</td><td>画布由 240×360 裁到 105×297（人物占比 38% → 87%）；动画由 6 帧硬循环改为 10 帧往返 + 非匀速逐帧时长；三档窗口整体下移，新增更小的「小」档</td></tr>
+<tr><td>自动交互动作</td><td>请求完成庆祝、失败失落尾段、睡醒过渡、等待批准、拖拽中、闲置差分、转身张望；间隔/姿势池来自 manifest.autoActions，零负反馈</td></tr>
+<tr><td>鼠标穿透</td><td>产品侧默认关闭（整窗可交互，可拖动/右键）；开启后按立绘 alpha 命中框动态穿透，本预览页不模拟 OS 层穿透</td></tr>
+<tr><td>自动演示</td><td>「▶ 自动演示全部」依次播放招呼 → 轻碰 → 庆祝 → 失落 → 睡醒 → 等待 → 转身 → 闲置 → 拖拽 → 散步，无需逐个点</td></tr>
 <tr><td>点角色本体</td><td>点头部害羞并冒心形，点身体招手；与产品侧轻碰/摸头同一套差分素材</td></tr>
 <tr><td>头转向鼠标</td><td>transform-origin 在脸中心（55% / 32%），幅度 9deg；rAF 插值，鼠标停下不会出现「人还在慢慢追」的双重缓动</td></tr>
 <tr><td>气泡与状态胶囊</td><td>气泡左上 <code>max-content</code> 自适应、长文案自然换行；状态胶囊居中固定在角色脚底</td></tr>
@@ -210,7 +220,8 @@ const STATES = [
   ['wave', '轻碰招手', 'wave'], ['peek', '靠近倾听', 'peek'], ['shy', '害羞', 'shy'],
   ['celebrate', '庆祝', 'celebrate'], ['walk', '走近', 'walk'],
 ];
-const SIZES = { small: [148, 168, 3.2], medium: [180, 204, 2.6], large: [220, 250, 2.1] };
+// v1.1 三档：旧大档废弃、档位整体下移；素材已裁掉透明边，同档人物视觉不缩小。
+const SIZES = { small: [120, 136, 4.0], medium: [148, 168, 3.2], large: [180, 204, 2.6] };
 const BUBBLES = {
   idle: ['网关已就绪', 'ok'], typing: ['上游已切换', 'info'], done: ['完成 3 次请求', 'ok'],
   error: ['有请求失败', 'error'], sleep: ['小su 只播报真实状态', 'info'], offline: ['网关未运行', 'info'],
@@ -220,6 +231,9 @@ const BUBBLES = {
   idle1: ['在呢，陪着你', 'info'], idle2: ['要不要摸摸头？', 'info'],
   idle3: ['伸个懒腰～', 'info'], pat: ['嘿嘿…', 'info'],
   land: ['放好啦', 'info'], roam: ['出去溜达一圈～', 'info'],
+  disappointed: ['下次一定…', 'info'], wait: ['等你确认～', 'info'],
+  drag: ['哎、轻点～', 'info'], idleVariant: ['在呢，陪着你', 'info'],
+  turn: ['（悄悄转个身）', 'info'],
 };
 // 每个动作都是「一段可观察的表演」，不是常驻开关：pose / 气泡 / 状态文字 / CSS 反馈类
 // / 持续时间 / 是否真的移动窗口。pose 为 null 表示沿用当前状态的立绘。
@@ -231,6 +245,14 @@ const ACTIONS = {
   think: { label: '在想事情…', pose: null, bubble: null, thought: true, ms: 2200 },
   roam:  { label: '散步中', pose: 'walk', bubble: 'roam', cls: 'roaming', ms: 2600, move: true },
   land:  { label: '放下啦', pose: null, bubble: 'land', cls: 'pet-landed', ms: 1500 },
+  // v1.1 自动交互动作（参考 whale-girl）：事件反馈 / 陪伴 / 用户互动，零负反馈。
+  cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: 2600 },
+  wake:  { label: '睡醒过渡', pose: 'peek', bubble: 'wake', ms: 1600 },
+  failed:{ label: '失败失落尾段', pose: 'shy', bubble: 'disappointed', ms: 2200 },
+  wait:  { label: '等待批准', pose: 'peek', bubble: 'wait', cls: 'pet-walking', ms: 2000 },
+  drag:  { label: '拖拽中', pose: 'walk', bubble: 'drag', cls: 'dragging', ms: 1800 },
+  idle:  { label: '闲置小动作', pose: 'wave', bubble: 'idleVariant', ms: 2200 },
+  turn:  { label: '转身张望', pose: null, bubble: 'turn', cls: 'pet-listening', ms: 1800 },
 };
 
 let currentState = 'idle';
@@ -295,7 +317,7 @@ function setBubble(key) {
 function updateNow(text) {
   const [w, h, s] = SIZES[currentSize];
   now.textContent = text || ('当前：' + stateEntry()[1]);
-  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 240×360 @2x';
+  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 105×297（裁剪后）@2x';
 }
 
 function syncButtons() {
@@ -385,7 +407,8 @@ function playAction(name, fromDemo, hold) {
 function playAll() {
   stopDemo();
   resetAction();
-  const sequence = ['hello', 'pat', 'poke', 'blink', 'think', 'roam', 'land'];
+  const sequence = ['hello', 'poke', 'cheer', 'failed', 'wake', 'wait',
+                    'turn', 'idle', 'drag', 'roam'];
   sequence.forEach((name, i) => {
     demoTimers.push(window.setTimeout(() => playAction(name, true), i * 2400));
   });
@@ -393,7 +416,7 @@ function playAll() {
     demoTimers = [];
     syncButtons();
   }, sequence.length * 2400));
-  updateNow('自动演示中：依次播放 7 段互动…');
+  updateNow('自动演示中：依次播放 10 段互动与自动动作…');
   syncButtons();
 }
 
@@ -466,7 +489,8 @@ function buildButtons() {
   Object.keys(SIZES).forEach((key, i) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = ['小 148×168', '中 180×204', '大 220×250'][i];
+    const dims = SIZES[key];
+    b.textContent = ['小', '中', '大'][i] + ' ' + dims[0] + '×' + dims[1];
     b.dataset.key = key;
     b.onclick = () => { currentSize = key; resetAction(); renderFrame(); };
     zb.appendChild(b);
@@ -513,9 +537,26 @@ if (initialAction && ACTIONS[initialAction]) playAction(initialAction, false, tr
 """
 
 
+def load_pet_manifest(root: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """从 manifest 取姿势名与素材清单，不再在脚本里维护第二份硬编码。
+
+    返回 (姿势名元组, 不带扩展名的素材名元组)。素材名顺序为
+    静态海报 → 附加帧（闭眼） → 动画 WebP，与 CSS 内联顺序无关。
+    """
+    data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
+    poses = tuple(pose["name"] for pose in data["poses"])
+    files = (
+        [pose["poster"] for pose in data["poses"]]
+        + list(data.get("extraFrames", []))
+        + [pose["loop"] for pose in data["poses"]]
+    )
+    assets = tuple(Path(name).stem for name in files)
+    return poses, assets
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数，默认路径全部由脚本位置推导，不硬编码本机绝对路径。"""
-    default_root = Path(__file__).resolve().parents[2]
+    default_root = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(description="生成桌面精灵同源 CSS 离线互动演示页")
     parser.add_argument("--root", type=Path, default=default_root, help="项目根目录")
     parser.add_argument("--out", type=Path, default=None, help="输出 HTML 路径")
@@ -552,6 +593,7 @@ def build_preview(root: Path, out: Path) -> dict:
     """抽取精灵 CSS、内联素材、渲染演示页，返回本次生成的可核查信息。"""
     css_path = root / "src" / "pet" / "pet.css"
     pet_dir = root / "src" / "assets" / "pet"
+    poses, frame_names = load_pet_manifest(root)
     css = css_path.read_text(encoding="utf-8")
 
     anchor = css.find(CSS_ANCHOR)
@@ -583,7 +625,7 @@ def build_preview(root: Path, out: Path) -> dict:
     if leftover:
         raise ValueError("仍有未内联的素材路径: " + ", ".join(leftover[:3]))
     names = {item.split(" ")[0] for item in replaced}
-    expected = {f"{name}.webp" for name in FRAME_NAMES}
+    expected = {f"{name}.webp" for name in frame_names}
     if names != expected:
         raise ValueError(f"素材集合异常: 缺 {sorted(expected - names)} / 多 {sorted(names - expected)}")
 
@@ -593,8 +635,9 @@ def build_preview(root: Path, out: Path) -> dict:
         TEMPLATE.replace("__PET_CSS_RAW__", pet_css)
         .replace("__GENERATED_AT__", generated_at)
         .replace("__CSS_HASH__", css_hash)
-        .replace("__ASSET_COUNT__", str(len(FRAME_NAMES)))
+        .replace("__ASSET_COUNT__", str(len(frame_names)))
         .replace("__ASSET_KB__", f"{total_kb:.1f}")
+        .replace("__POSE_COUNT__", str(len(poses)))
     )
     validate_interaction(html)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -607,6 +650,7 @@ def build_preview(root: Path, out: Path) -> dict:
         "selectors": list(REQUIRED_SELECTORS),
         "assets": replaced,
         "asset_kb": total_kb,
+        "pose_count": len(poses),
         "output": out.relative_to(root).as_posix() if out.is_relative_to(root) else str(out),
         "bytes": out.stat().st_size,
     }
@@ -625,7 +669,8 @@ def write_trace(trace_dir: Path, info: dict) -> Path:
         f"- 输出：`{info['output']}`（{info['bytes']} B）",
         "- 关键选择器校验：" + "、".join(f"`{s}`" for s in info["selectors"]) + " → 全部存在",
         "- 互动链路校验：同文档渲染（无 iframe）、触发式动作引擎、重播/复位、自动演示、走动位移、点击角色 → 全部存在",
-        f"- 内联素材 {len(info['assets'])} 张 / {info['asset_kb']:.1f} KB（含 10 个带 alpha 的动画 WebP）：",
+        f"- 内联素材 {len(info['assets'])} 张 / {info['asset_kb']:.1f} KB"
+        f"（含 {info['pose_count']} 个带 alpha 的动画 WebP）：",
     ]
     lines.extend(f"  - `{name}`" for name in info["assets"])
     lines += ["", "结论：演示页与产品精灵 v1.0 CSS 同源，按钮点一次播一段动作并自动复位，素材全部内联，单文件离线可用。", ""]

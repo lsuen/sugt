@@ -29,7 +29,10 @@
     "test:themes": "node src/theme/validate-themes.mjs",
     "test:theme-pack": "node tests/theme-pack-smoke.mjs",
     "test:pet-state": "node tests/pet-state-smoke.mjs",
-    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run check",
+    "test:pet-manifest": "node tests/pet-manifest-smoke.mjs",
+    "pet:check-generated": "python3 docs/孙测测/scripts/gen_pet_from_manifest.py --check",
+    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run test:pet-manifest && npm run check",
+    "clean:cache": "cd src-tauri && cargo clean && echo target cleared",
     "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
     "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"
   },

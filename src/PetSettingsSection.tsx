@@ -123,6 +123,16 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
         </label>
         <p className="hint compact">{t('set.petInteractiveHint')}</p>
 
+        <label className="switch-line">
+          <span>{t('set.petClickThrough')}</span>
+          <input
+            type="checkbox"
+            checked={Boolean(cfg.pet_click_through)}
+            onChange={(e) => onPatch({ pet_click_through: e.target.checked })}
+          />
+        </label>
+        <p className="hint compact">{t('set.petClickThroughHint')}</p>
+
         <div className="switch-line">
           <span>{t('set.petSize')}</span>
           <div className="overlay-layout-switch">

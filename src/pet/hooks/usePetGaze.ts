@@ -1,19 +1,32 @@
-// 桌面精灵视线跟随 + 元素级鼠标穿透。
+// 桌面精灵视线跟随 + 可选元素级鼠标穿透。
 // 穿透模式下 WebView 收不到 pointermove，因此统一轮询后端 pet_global_cursor；
 // 视线与「光标是否落在立绘/菜单上」共用同一份光标样本，避免重复 IPC。
 //
-// 铁律：只有立绘 / 右键菜单 / 拖动中才 pet_set_clickable(true)。
+// 默认（pet_click_through=false）整窗常驻可交互：拖拽、右键菜单都不受阻。
+// 显式开启穿透后，铁律是只有立绘 / 右键菜单 / 拖动中才 pet_set_clickable(true)；
 // 绝不能因 menuOpen 就把整窗解穿透——那会把侧栏空白与透明边距变成「透明墙」。
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { clamp, pointInsideFigure } from '../config';
+import { clamp, figureHitRect, FULL_HITBOX, pointInsideFigure } from '../config';
+import {
+  PET_AUTO_ACTIONS,
+  PET_HITBOXES,
+  PET_IMAGE_SIZE,
+  type PetPoseName,
+} from '../petManifest.generated';
+
+// 眼→头→身分级跟随：三层 lerp 递减，慢层永远追不上快层，形成自然的惯性延迟。
+// 参数由 manifest.autoActions.liveliness.gaze 单一真相源注入。
+const GAZE_LERP = PET_AUTO_ACTIONS.liveliness.gaze;
 
 type Props = {
   gazeEnabled: boolean;
   interactive: boolean;
   edit: boolean;
+  /** 鼠标穿透设置项：默认 false，整窗可交互；true 时启用元素级动态穿透 */
+  clickThrough: boolean;
   figureRef: RefObject<HTMLDivElement>;
   stageRef: RefObject<HTMLDivElement>;
   dragActive: MutableRefObject<boolean>;
@@ -28,6 +41,7 @@ export function usePetGaze({
   gazeEnabled,
   interactive,
   edit,
+  clickThrough,
   figureRef,
   stageRef,
   dragActive,
@@ -47,12 +61,26 @@ export function usePetGaze({
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    // 视线与穿透都关闭时无需轮询，整窗保持穿透。
+    // 穿透是设置项且默认关闭：关闭时整窗常驻可交互，拖拽/右键菜单不受影响；
+    // 只有显式开启时才切回「按立绘 alpha 命中框」的元素级穿透。
+    const passthrough = clickThrough && interactive && !edit;
+
+    const setClickable = (next: boolean) => {
+      if (clickableRef.current === next) return;
+      clickableRef.current = next;
+      void invoke('pet_set_clickable', { enabled: next }).catch(() => undefined);
+    };
+    if (!passthrough) setClickable(true);
+    // 视线与穿透都关闭时无需轮询，整窗保持可交互。
     if (!gazeEnabled && !interactive) return;
 
     if (!gazeEnabled) {
       stage.style.setProperty('--gaze-x', '0');
       stage.style.setProperty('--gaze-y', '0');
+      stage.style.setProperty('--head-x', '0');
+      stage.style.setProperty('--head-y', '0');
+      stage.style.setProperty('--body-x', '0');
+      stage.style.setProperty('--body-y', '0');
       stage.style.setProperty('--near', '0');
       stage.classList.remove('nearby', 'pet-listening', 'pet-walking');
       setNearListening(false);
@@ -67,32 +95,34 @@ export function usePetGaze({
     let lastLocalMove = 0;
     let cancelled = false;
     const target = { x: 0, y: 0, near: 0 };
-    const current = { x: 0, y: 0, near: 0 };
-    const LERP = 0.18;
-
-    const setClickable = (next: boolean) => {
-      if (clickableRef.current === next) return;
-      clickableRef.current = next;
-      void invoke('pet_set_clickable', { enabled: next }).catch(() => undefined);
-    };
+    // 三层独立状态：眼最快、头居中、身最慢；用最慢层判定动画是否收敛。
+    const eye = { x: 0, y: 0 };
+    const head = { x: 0, y: 0 };
+    const bodyLayer = { x: 0, y: 0 };
+    const current = { near: 0 };
 
     function paint() {
       raf = 0;
-      const { x, y, near } = current;
-      stage!.style.setProperty('--gaze-x', x.toFixed(3));
-      stage!.style.setProperty('--gaze-y', y.toFixed(3));
-      stage!.style.setProperty('--near', near.toFixed(3));
-      stage!.classList.toggle('nearby', near > 0.12);
-      const listening = stage!.dataset.state === 'idle' && near > 0.45;
-      const walking = stage!.dataset.state === 'idle' && near > 0.18 && near <= 0.45;
-      stage!.classList.toggle('pet-listening', listening);
-      stage!.classList.toggle('pet-walking', walking);
+      const el = stage!;
+      el.style.setProperty('--gaze-x', eye.x.toFixed(3));
+      el.style.setProperty('--gaze-y', eye.y.toFixed(3));
+      el.style.setProperty('--head-x', head.x.toFixed(3));
+      el.style.setProperty('--head-y', head.y.toFixed(3));
+      el.style.setProperty('--body-x', bodyLayer.x.toFixed(3));
+      el.style.setProperty('--body-y', bodyLayer.y.toFixed(3));
+      el.style.setProperty('--near', current.near.toFixed(3));
+      const near = current.near;
+      el.classList.toggle('nearby', near > 0.12);
+      const listening = el.dataset.state === 'idle' && near > 0.45;
+      const walking = el.dataset.state === 'idle' && near > 0.18 && near <= 0.45;
+      el.classList.toggle('pet-listening', listening);
+      el.classList.toggle('pet-walking', walking);
       setNearListening((prev) => (prev === listening ? prev : listening));
       setNearWalking((prev) => (prev === walking ? prev : walking));
       if (near > 0.3) onNear();
       if (
-        Math.abs(target.x - x) > 0.004
-        || Math.abs(target.y - y) > 0.004
+        Math.abs(target.x - bodyLayer.x) > 0.004
+        || Math.abs(target.y - bodyLayer.y) > 0.004
         || Math.abs(target.near - near) > 0.004
       ) {
         raf = requestAnimationFrame(tick);
@@ -101,9 +131,13 @@ export function usePetGaze({
 
     function tick() {
       if (cancelled) return;
-      current.x += (target.x - current.x) * LERP;
-      current.y += (target.y - current.y) * LERP;
-      current.near += (target.near - current.near) * LERP;
+      eye.x += (target.x - eye.x) * GAZE_LERP.eyeLerp;
+      eye.y += (target.y - eye.y) * GAZE_LERP.eyeLerp;
+      head.x += (target.x - head.x) * GAZE_LERP.headLerp;
+      head.y += (target.y - head.y) * GAZE_LERP.headLerp;
+      bodyLayer.x += (target.x - bodyLayer.x) * GAZE_LERP.bodyLerp;
+      bodyLayer.y += (target.y - bodyLayer.y) * GAZE_LERP.bodyLerp;
+      current.near += (target.near - current.near) * GAZE_LERP.eyeLerp;
       paint();
     }
 
@@ -112,8 +146,8 @@ export function usePetGaze({
       target.y = y;
       target.near = near;
       gazeRef.current = { x, y, near };
-      const needs = Math.abs(target.x - current.x) > 0.004
-        || Math.abs(target.y - current.y) > 0.004
+      const needs = Math.abs(target.x - bodyLayer.x) > 0.004
+        || Math.abs(target.y - bodyLayer.y) > 0.004
         || Math.abs(target.near - current.near) > 0.004;
       if (needs && !raf && !cancelled) raf = requestAnimationFrame(tick);
     };
@@ -137,6 +171,11 @@ export function usePetGaze({
     };
 
     const updateClickThrough = (clientX: number, clientY: number) => {
+      // 默认不穿透：整窗常驻可交互，无需再做立绘命中框判定。
+      if (!passthrough) {
+        setClickable(true);
+        return;
+      }
       // 编辑态始终可点击（保存按钮 / 拖柄不在立绘命中框内）
       if (edit) {
         setClickable(true);
@@ -147,8 +186,19 @@ export function usePetGaze({
         return;
       }
       const rect = figureRef.current?.getBoundingClientRect();
-      // 外扩 14px：右键落点更容易命中，避免「看着在人上却仍穿透」
-      const overFigure = rect ? pointInsideFigure(clientX, clientY, rect, 14) : false;
+      // 按当前姿势的 alpha 包围盒收紧命中区：透明边距不再变成「透明点击墙」。
+      // 外扩 14px：右键落点更容易命中，避免「看着在人上却仍穿透」。
+      const pose = stage!.querySelector<HTMLElement>('.pet-loop.is-active')
+        ?.dataset.loop as PetPoseName | undefined;
+      const hitBox = pose && pose in PET_HITBOXES
+        ? PET_HITBOXES[pose]
+        : FULL_HITBOX;
+      const figureBox = rect
+        ? figureHitRect(rect, hitBox, PET_IMAGE_SIZE, 14)
+        : undefined;
+      const overFigure = figureBox
+        ? pointInsideFigure(clientX, clientY, figureBox)
+        : false;
       const overMenu = hitMenu(clientX, clientY);
       // 贴脸时提前解穿透，否则右键按下瞬间窗口还是穿透，contextmenu 进不来
       const approaching = !menuOpen.current && gazeRef.current.near > 0.4;
@@ -198,7 +248,7 @@ export function usePetGaze({
           const clientX = cursor[0] / factor;
           const clientY = cursor[1] / factor;
           if (gazeEnabled) applyFromClient(clientX, clientY);
-          if (interactive) updateClickThrough(clientX, clientY);
+          if (passthrough) updateClickThrough(clientX, clientY);
         })
         .catch(() => undefined)
         .finally(schedulePoll);
@@ -208,13 +258,13 @@ export function usePetGaze({
       lastLocalMove = Date.now();
       onNearTouch();
       if (gazeEnabled) applyFromClient(event.clientX, event.clientY);
-      if (interactive) updateClickThrough(event.clientX, event.clientY);
+      if (passthrough) updateClickThrough(event.clientX, event.clientY);
     };
 
     const onLeave = () => {
       if (gazeEnabled && Date.now() - lastLocalMove < 120) return;
       if (gazeEnabled) aim(0, 0, 0);
-      if (interactive && !dragActive.current) setClickable(false);
+      if (passthrough && !dragActive.current) setClickable(false);
       if (menuOpen.current) onMenuDismissRef.current?.();
     };
 
@@ -243,9 +293,10 @@ export function usePetGaze({
       window.clearTimeout(resetTimer);
       window.clearTimeout(menuLeaveTimer);
       stage.classList.remove('nearby', 'pet-listening', 'pet-walking');
-      setClickable(false);
+      setClickable(!passthrough);
     };
-  }, [gazeEnabled, interactive, edit, figureRef, stageRef, dragActive, menuOpen, onNearTouch, onNear]);
+  }, [gazeEnabled, interactive, edit, clickThrough, figureRef, stageRef,
+      dragActive, menuOpen, onNearTouch, onNear]);
 
   return { gazeRef, nearListening, nearWalking };
 }

@@ -1,0 +1,533 @@
+{
+  "formatVersion": 2,
+  "characterId": "xiaosu",
+  "baseSize": {
+    "w": 105,
+    "h": 297,
+    "dpr": 2
+  },
+  "sourceCanvas": {
+    "w": 240,
+    "h": 360
+  },
+  "cropBox": [
+    68,
+    34,
+    173,
+    331
+  ],
+  "cropNote": "全部 21 张素材的 alpha 并集 (74,40,167,325) 外扩 6px；人物占比由 38% 宽提升到约 88%，透明点击墙消失。",
+  "encoding": {
+    "mode": "palette-lossless",
+    "colors": 96,
+    "dither": "none",
+    "method": 4,
+    "note": "赛璐璐平涂色块量化到 96 色 + lossless WebP；实测独立帧约 6.5KB，1000 帧约 6.5MB。p64 约 4.6MB，p128 约 7.1MB。"
+  },
+  "assetSource": {
+    "pipeline": "comfyui-local",
+    "models": [
+      "qwen_image_edit_2509_fp8_e4m3fn",
+      "Qwen-Image-Edit-Lightning-4steps"
+    ],
+    "cloudAssets": false,
+    "license": "待核实：见 src/assets/pet/ASSETS.md 第六节，未取得随包分发的明确许可前不得扩充素材"
+  },
+  "extraFrames": [
+    "su-blink.webp"
+  ],
+  "poses": [
+    {
+      "name": "idle",
+      "poster": "su-idle.webp",
+      "loop": "su-idle-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "breathe",
+      "hitBox": [
+        0.0667,
+        0.0202,
+        0.9333,
+        0.9697
+      ]
+    },
+    {
+      "name": "typing",
+      "poster": "su-typing.webp",
+      "loop": "su-typing-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "bob",
+      "hitBox": [
+        0.0667,
+        0.0236,
+        0.9333,
+        0.9697
+      ]
+    },
+    {
+      "name": "done",
+      "poster": "su-done.webp",
+      "loop": "su-done-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "hop",
+      "hitBox": [
+        0.1333,
+        0.0471,
+        0.9333,
+        0.9697
+      ]
+    },
+    {
+      "name": "error",
+      "poster": "su-error.webp",
+      "loop": "su-error-loop.webp",
+      "sourceFrames": 6,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frames": 10,
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "shake",
+      "hitBox": [
+        0.0667,
+        0.0269,
+        0.9429,
+        0.9731
+      ]
+    },
+    {
+      "name": "sleep",
+      "poster": "su-sleep.webp",
+      "loop": "su-sleep-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "float",
+      "hitBox": [
+        0.0667,
+        0.0236,
+        0.9333,
+        0.9663
+      ]
+    },
+    {
+      "name": "wave",
+      "poster": "su-wave.webp",
+      "loop": "su-wave-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "wave",
+      "hitBox": [
+        0.0762,
+        0.0236,
+        0.9333,
+        0.9764
+      ]
+    },
+    {
+      "name": "peek",
+      "poster": "su-peek.webp",
+      "loop": "su-peek-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "tilt",
+      "hitBox": [
+        0.0762,
+        0.0236,
+        0.9333,
+        0.9764
+      ]
+    },
+    {
+      "name": "shy",
+      "poster": "su-shy.webp",
+      "loop": "su-shy-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "wiggle",
+      "hitBox": [
+        0.0667,
+        0.0236,
+        0.9429,
+        0.9798
+      ]
+    },
+    {
+      "name": "celebrate",
+      "poster": "su-celebrate.webp",
+      "loop": "su-celebrate-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "hop",
+      "hitBox": [
+        0.0667,
+        0.0236,
+        0.9333,
+        0.9798
+      ]
+    },
+    {
+      "name": "walk",
+      "poster": "su-walk.webp",
+      "loop": "su-walk-loop.webp",
+      "sourceFrames": 6,
+      "frames": 10,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "frameMs": [
+        150,
+        120,
+        100,
+        100,
+        120,
+        150,
+        120,
+        100,
+        100,
+        120
+      ],
+      "playback": "loop",
+      "motion": "bob",
+      "hitBox": [
+        0.0762,
+        0.0236,
+        0.9333,
+        0.9798
+      ]
+    }
+  ],
+  "statePriority": [
+    "offline",
+    "typing",
+    "error",
+    "done",
+    "sleep",
+    "idle"
+  ],
+  "posePriority": [
+    "drag",
+    "wake",
+    "welcome",
+    "celebrate",
+    "disappointed",
+    "shy",
+    "wave",
+    "greeting",
+    "wait",
+    "idleVariant",
+    "roaming",
+    "peek",
+    "walk",
+    "base"
+  ],
+  "autoActions": {
+    "blink": {
+      "minMs": 3000,
+      "maxMs": 9000
+    },
+    "facing": {
+      "minMs": 10000,
+      "maxMs": 25000
+    },
+    "idleVariant": {
+      "minMs": 12000,
+      "maxMs": 30000,
+      "holdMs": 2200,
+      "poses": [
+        "peek",
+        "wave",
+        "shy",
+        "walk"
+      ]
+    },
+    "wander": {
+      "minMs": 18000,
+      "maxMs": 40000
+    },
+    "welcome": {
+      "holdMs": 6000,
+      "pose": "wave"
+    },
+    "celebrate": {
+      "holdMs": 3500,
+      "pose": "celebrate"
+    },
+    "disappointed": {
+      "holdMs": 3000,
+      "pose": "shy"
+    },
+    "wake": {
+      "holdMs": 1600,
+      "pose": "peek"
+    },
+    "wait": {
+      "pose": "peek"
+    },
+    "drag": {
+      "pose": "walk"
+    },
+    "zeroNegativeFeedback": true,
+    "liveliness": {
+      "cycles": {
+        "breathMs": 3100,
+        "secondaryMs": 5300,
+        "weightMs": 7900
+      },
+      "gaze": {
+        "eyeLerp": 0.32,
+        "headLerp": 0.13,
+        "bodyLerp": 0.055
+      },
+      "secondary": {
+        "maxDeg": 1.5,
+        "maxShiftPx": 1.2
+      },
+      "note": "三层周期按 0.1s 为单位两两互质（31/53/79），合成周期约 3.6 小时，人眼读不出循环点；眼/头/身用递减 lerp 形成跟随延迟。纯 CSS 层，零素材。"
+    },
+    "note": "参考 whale-girl 的自动交互节奏；间隔与时长属语义层常量，代码级固定，不进设置页。"
+  },
+  "bursts": {
+    "done": {
+      "holdMs": 3500
+    },
+    "error": {
+      "holdMs": 6000
+    }
+  },
+  "interaction": {
+    "cooldownMs": 1200,
+    "reducedMotionFallback": "poster"
+  }
+}

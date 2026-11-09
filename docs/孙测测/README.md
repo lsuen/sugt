@@ -22,7 +22,12 @@ docs/孙测测/
 │   ├── check_pet_overlay.py           ← SCR-006 精灵链路契约检查
 │   ├── comfyui_pet_v07.py             ← SCR-007 v0.7 ComfyUI 状态帧 / 动画 WebP 编码
 │   ├── pet_v07_frames.py              ← SCR-008 洋红底色键 / 闭眼帧 / 差异序列落包
-│   └── pet_v07_browser_smoke.py       ← SCR-009 真实时间浏览器冒烟
+│   ├── pet_v07_browser_smoke.py       ← SCR-009 真实时间浏览器冒烟
+│   ├── gen_pet_from_manifest.py       ← SCR-010 素材契约生成 / alpha 包围盒 / 生成物门禁
+│   ├── pet_reencode_assets.py         ← SCR-011 素材裁剪 / 往返帧 / 调色板 lossless 重编码 + RIFF 校验
+│   ├── comfyui_curl_http.py           ← SCR-012 共用 curl 传输适配器（本机 Python socket 被拦）
+│   ├── comfyui_pet_keyposes_trial.py  ← SCR-013 关键姿态能力核实试片（不进包）
+│   └── comfyui_pet_palette_trial.py   ← SCR-014 发色 / 下装形象候选试片（不进包）
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论

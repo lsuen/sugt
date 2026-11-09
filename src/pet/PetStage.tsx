@@ -5,13 +5,16 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { t, type TKey } from '../i18n';
 import {
-  derivePetState,
+  AUTO,
   petBubbleMs,
   petSleepAfterMs,
+  reducePetState,
   resolvePetPose,
+  shouldWake,
   type PetPose,
   type PetState,
 } from './petState';
+import { PET_MOTION, PET_POSE_NAMES } from './petManifest.generated';
 import {
   type Bubble,
   type OverlayConfigView,
@@ -32,12 +35,9 @@ const PET_LABEL: Record<PetState, TKey> = {
   sleep: 'pet.sleep',
 };
 
-// v0.9：网关五态 + 交互/表情差分；offline 视觉复用 idle。
-// 动画 WebP 交叉淡入；reduced-motion / 窗口隐藏时切静态海报。
-const PET_LOOPS = [
-  'idle', 'typing', 'done', 'error', 'sleep',
-  'wave', 'peek', 'shy', 'celebrate', 'walk',
-] as const;
+// 姿势清单唯一真相源：src/assets/pet/manifest.json（经生成器产出 TS）。
+// offline 视觉复用 idle；reduced-motion / 窗口隐藏时切静态海报。
+const PET_LOOPS = PET_POSE_NAMES;
 
 type PetStageProps = {
   cfg: OverlayConfigView;
@@ -52,6 +52,9 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const [bubble, setBubble] = useState<Bubble | null>(null);
   const [shyPose, setShyPose] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
+  // v1.1 自动交互：睡醒过渡 / 失败失落尾段
+  const [waking, setWaking] = useState(false);
+  const [disappointed, setDisappointed] = useState(false);
   const [poked, setPoked] = useState(false);
   const [still, setStill] = useState(false);
   const [hopKey, setHopKey] = useState(0);
@@ -90,6 +93,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const pokeCount = useRef(0);
   const pokeResetTimer = useRef(0);
   const idlePoseTimer = useRef(0);
+  const wakeTimer = useRef(0);
 
   petStateRef.current = petState;
 
@@ -168,6 +172,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     gazeEnabled,
     interactive,
     edit: cfg.edit,
+    clickThrough: Boolean(cfg.pet_click_through),
     figureRef,
     stageRef,
     dragActive,
@@ -294,15 +299,32 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     }
     wasActive.current = active > 0;
 
-    setPetState(derivePetState({
-      running,
-      active,
-      hold: hold.current,
-      typingUntil: typingUntil.current,
-      lastActivity: lastActivity.current,
-      sleepAfterMs,
+    const reduced = reducePetState({
+      gateway: {
+        running,
+        active,
+        hold: hold.current,
+        typingUntil: typingUntil.current,
+        lastActivity: lastActivity.current,
+        sleepAfterMs,
+        now,
+      },
       now,
-    }));
+    });
+    // 睡醒边沿：从 sleep 离开时播一次 wake 过渡（拖拽打断不播）。
+    if (shouldWake(prevVisual.current, reduced.state, { dragging: dragActive.current })) {
+      window.clearTimeout(wakeTimer.current);
+      setWaking(true);
+      wakeTimer.current = window.setTimeout(() => setWaking(false), AUTO.wake.holdMs);
+    }
+    prevVisual.current = reduced.state;
+    // error hold 尾段切「失落」姿：短暂、不惩罚、不扣资历（零负反馈）。
+    setDisappointed(
+      hold.current.state === 'error'
+      && hold.current.until > now
+      && hold.current.until - now <= AUTO.disappointed.holdMs,
+    );
+    setPetState(reduced.state);
 
     baseline.current = { running, success, failed, failover };
   }, [status, pushBubble, cfg.pet_sleep_after_secs]);
@@ -314,14 +336,15 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     [],
   );
 
-  // 完成态闪一下庆祝姿，再回到 done 立绘
+  // 请求完成：整个结果窗口都播庆祝姿（whale-girl 的 turn-completed burst 对齐），
+  // 不再只闪 1.4s 就退回 done 立绘。
   useEffect(() => {
     if (petState !== 'done') {
       setCelebrating(false);
       return;
     }
     setCelebrating(true);
-    const timer = window.setTimeout(() => setCelebrating(false), 1400);
+    const timer = window.setTimeout(() => setCelebrating(false), AUTO.celebrate.holdMs);
     return () => window.clearTimeout(timer);
   }, [petState, hopKey]);
 
@@ -332,6 +355,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       window.clearTimeout(idlePoseTimer.current);
       window.clearTimeout(pettedTimer.current);
       window.clearTimeout(pokeResetTimer.current);
+      window.clearTimeout(wakeTimer.current);
     },
     [],
   );
@@ -409,9 +433,16 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     walking: nearWalking,
     celebrating,
     greeting,
+    welcoming: greeting,
     idlePose,
     roaming,
+    dragging,
+    waking,
+    disappointed,
+    // 网关当前没有「等待批准」事件，P1 事件化后从这里接入 wait 动作。
+    waiting: false,
   });
+  const activeMotion = (PET_MOTION as Record<string, string>)[activeFrame] ?? 'breathe';
   const classNames = [
     'pet-stage',
     interactive ? 'interactive' : '',
@@ -433,7 +464,17 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       className={classNames}
       data-state={petState}
       data-facing={facing}
-      style={{ ['--pet-opacity' as string]: String(petOpacity) }}
+      data-motion={activeMotion}
+      style={{
+        ['--pet-opacity' as string]: String(petOpacity),
+        // 活感层的周期与幅度全部来自 manifest.autoActions.liveliness，
+        // 改节奏只改 manifest，不散落硬编码在 CSS/TS 里。
+        ['--pet-breath-ms' as string]: `${AUTO.liveliness.cycles.breathMs}ms`,
+        ['--pet-secondary-ms' as string]: `${AUTO.liveliness.cycles.secondaryMs}ms`,
+        ['--pet-weight-ms' as string]: `${AUTO.liveliness.cycles.weightMs}ms`,
+        ['--pet-secondary-deg' as string]: String(AUTO.liveliness.secondary.maxDeg),
+        ['--pet-secondary-shift' as string]: String(AUTO.liveliness.secondary.maxShiftPx),
+      }}
     >
       {/* 环境层：禁止底板；只留粒子与完成火花（零光晕 / 零地面阴影） */}
       <div className="pet-ambient" aria-hidden="true">
@@ -461,7 +502,9 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         <div className="pet-thought" aria-hidden="true"><i /><i /><i /></div>
       )}
 
-      {/* 角色分层：头轴转向 → 呼吸 → 逐帧动画 → 眼睑/眼神 */}
+      {/* 角色分层：朝向/头跟随 → 重心(慢) → 呼吸(快) → 发梢二次动作(中) → 逐帧动画。
+          四层 transform 互不覆盖，且每层只挂一张素材，避免 alpha 叠出双重影像。
+          眼睑跟呼吸层，眼神高光跟头层，形成「眼→头→身」分级延迟。 */}
       <div
         ref={figureRef}
         className={`pet-figure${dragging ? ' dragging' : ''}${poked ? ' poked' : ''}`}
@@ -472,24 +515,28 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         role={interactive ? 'button' : undefined}
         aria-label={interactive ? t(PET_LABEL[petState]) : undefined}
       >
-        <div className="pet-motion">
-          <div key={hopKey} className="pet-loops">
-            {PET_LOOPS.map((loop) => (
-              <span
-                key={loop}
-                className={`pet-loop${activeFrame === loop ? ' is-active' : ''}`}
-                data-loop={loop}
-                aria-hidden="true"
-              />
-            ))}
-            <span
-              className={`pet-poster${still ? ' is-active' : ''}`}
-              data-frame={activeFrame}
-              aria-hidden="true"
-            />
+        <div className="pet-weight">
+          <div className="pet-motion">
+            <div className="pet-secondary">
+              <div key={hopKey} className="pet-loops">
+                {PET_LOOPS.map((loop) => (
+                  <span
+                    key={loop}
+                    className={`pet-loop${activeFrame === loop ? ' is-active' : ''}`}
+                    data-loop={loop}
+                    aria-hidden="true"
+                  />
+                ))}
+                <span
+                  className={`pet-poster${still ? ' is-active' : ''}`}
+                  data-frame={activeFrame}
+                  aria-hidden="true"
+                />
+              </div>
+              {gazeEnabled && <span className="pet-gaze" aria-hidden="true" />}
+            </div>
+            {blinkEnabled && <span className="pet-blink" aria-hidden="true" />}
           </div>
-          {blinkEnabled && <span className="pet-blink" aria-hidden="true" />}
-          {gazeEnabled && <span className="pet-gaze" aria-hidden="true" />}
         </div>
       </div>
 
