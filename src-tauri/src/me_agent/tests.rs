@@ -62,6 +62,19 @@ fn confirm_heuristic_pauses_writes_and_lets_reads_through() {
     assert!(command_needs_confirm("git commit -m \"x\""));
     assert!(command_needs_confirm("sed -i 's/a/b/' f"));
     assert!(command_needs_confirm("echo $(pwd)"));
+    assert!(command_needs_confirm("find . -delete"));
+    assert!(command_needs_confirm("env rm -rf tmp"));
+    assert!(command_needs_confirm("sort -o out.txt in.txt"));
+    assert!(!command_needs_confirm("find . -name '*.rs'"));
+}
+
+#[test]
+fn auth_modes_gate_auto_run() {
+    assert!(should_auto_run(MeAuthMode::Auto, "mkdir notes"));
+    assert!(!should_auto_run(MeAuthMode::Ask, "mkdir notes"));
+    assert!(!should_auto_run(MeAuthMode::Auto, "rm -rf tmp"));
+    assert!(should_auto_run(MeAuthMode::Trusted, "rm -rf tmp"));
+    assert!(!should_auto_run(MeAuthMode::Trusted, "rm -rf /"));
 }
 
 #[test]
@@ -90,6 +103,39 @@ fn stream_delta_reads_openai_content_and_text_parts() {
     assert_eq!(extract_stream_delta(&anth).as_deref(), Some("流"));
 }
 
+#[test]
+fn stream_delta_ignores_reasoning_so_thinking_stays_out_of_bubble() {
+    let reasoning = json!({"choices":[{"delta":{"reasoning_content":"先想一步再答"}}]});
+    assert!(extract_stream_delta(&reasoning).is_none());
+    assert_eq!(
+        extract_stream_reasoning_delta(&reasoning).as_deref(),
+        Some("先想一步再答")
+    );
+    let both = json!({"choices":[{"delta":{"content":"北京晴。","reasoning_content":"内部推理"}}]});
+    assert_eq!(extract_stream_delta(&both).as_deref(), Some("北京晴。"));
+    let thinking_delta = json!({
+        "type":"content_block_delta",
+        "delta":{"type":"thinking_delta","text":"secret thought"}
+    });
+    assert!(extract_stream_delta(&thinking_delta).is_none());
+}
+
+#[test]
+fn strip_thinking_blocks_removes_tags_and_headers() {
+    let tagged = "<think>\n内部推理英文 English\n</think>\n北京今天 4°C。";
+    assert_eq!(strip_thinking_blocks(tagged), "北京今天 4°C。");
+    let headed = "Thinking:\nI should fetch weather first.\n\n回答：\n这周偏凉。";
+    assert_eq!(strip_thinking_blocks(headed), "这周偏凉。");
+}
+
+#[test]
+fn mixed_language_detection_flags_bilingual_draft() {
+    let mixed = "北京最近一周偏凉，Based on the recent weather data I fetched \
+for Beijing the observations cover several mild days with light wind.";
+    assert!(looks_like_mixed_language(mixed));
+    assert!(!looks_like_mixed_language("北京最近几天偏凉，有雨。"));
+}
+
 #[tokio::test]
 async fn auto_write_keeps_running_a_second_write_in_the_same_loop() {
     let dir = temp_dir("loop-auto-multi");
@@ -115,7 +161,7 @@ async fn auto_write_keeps_running_a_second_write_in_the_same_loop() {
         "",
         "system",
         LoopLimits::default(),
-        true,
+        MeAuthMode::Auto,
         &AtomicBool::new(false),
     )
     .await
@@ -133,6 +179,72 @@ fn phrases_confirm_or_dismiss_only_when_exact() {
     assert!(matches!(intake("Go ahead"), Intake::Confirm));
     assert!(matches!(intake("先别写"), Intake::Dismiss));
     assert!(matches!(intake("写吧，但是换个名字"), Intake::Talk(_)));
+}
+
+#[test]
+fn model_messages_compresses_history_steps_and_merges_corrections() {
+    let mut big = String::new();
+    for i in 0..200 {
+        big.push_str(&format!("LINE-{i:03}-ABCDEFGHIJKLMNOPQRSTUVWXYZ\n"));
+    }
+    let history = vec![
+        MeMessage {
+            id: "u1".into(),
+            role: "user".into(),
+            content: "查一下".into(),
+            images: Vec::new(),
+            steps: Vec::new(),
+            created_at: 1,
+        },
+        MeMessage {
+            id: "a1".into(),
+            role: "assistant".into(),
+            content: "查到了".into(),
+            images: Vec::new(),
+            steps: vec![MeStep {
+                command: "curl example".into(),
+                output: big.clone(),
+                exit_code: Some(0),
+                truncated: false,
+                timed_out: false,
+                note: "取数".into(),
+            }],
+            created_at: 2,
+        },
+        MeMessage {
+            id: "u2".into(),
+            role: "user".into(),
+            content: "再说一次".into(),
+            images: Vec::new(),
+            steps: Vec::new(),
+            created_at: 3,
+        },
+    ];
+    let msgs = model_messages(
+        "system",
+        &history,
+        &[],
+        &["催一下格式".into(), "请用中文".into()],
+        true,
+    );
+    let assistant = msgs
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("assistant history");
+    let content = assistant["content"].as_str().unwrap();
+    assert!(content.contains("omitted") || content.chars().count() < big.chars().count());
+    assert!(!content.contains("LINE-100-"));
+    let correction_users: Vec<_> = msgs
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .map(|s| s.contains("催一下格式") && s.contains("请用中文"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(correction_users.len(), 1, "corrections must merge into one user turn");
 }
 
 #[test]
@@ -212,6 +324,122 @@ fn plan_only_replies_are_rejected() {
 I'll create a single self-contained HTML file.";
     assert!(looks_like_plan_without_command(long_plan));
     assert!(parse_model_action(long_plan).is_err());
+}
+
+#[test]
+fn hollow_ack_and_withheld_answers_are_rejected() {
+    let remember = "收到！我记住了：接下来有什么事儿，直接说，我随时准备动手。";
+    assert!(looks_like_hollow_ack(remember));
+    assert!(parse_model_action(remember).is_err());
+    let withhold = "Based on the recent weather data I fetched for Beijing \
+(covering the past few days the API returned), here's the gist: \
+If you'd like a full 7-day breakdown or a table, just say the word.";
+    assert!(looks_like_hollow_ack(withhold));
+    assert!(parse_model_action(withhold).is_err());
+    assert!(!looks_like_hollow_ack("北京今天 4°C，东北风 11 km/h。"));
+    assert!(matches!(
+        parse_model_action("北京今天 4°C，东北风 11 km/h。"),
+        Ok(ModelAction::Say(_))
+    ));
+}
+
+#[test]
+fn wrong_language_detects_english_wall_for_zh_ui() {
+    let english = "Based on the recent weather data I fetched for Beijing, \
+the API returned a few days of observations with mild temperatures \
+and light wind across the metro area overall.";
+    assert!(looks_like_wrong_language(english, true));
+    assert!(!looks_like_wrong_language(english, false));
+    assert!(!looks_like_wrong_language("北京最近几天偏凉，有雨。", true));
+    assert!(!looks_like_wrong_language("ok", true));
+}
+
+#[test]
+fn prompt_requires_deliver_and_matching_language() {
+    let dir = temp_dir("prompt-deliver");
+    let prompt = system_prompt(true, &dir, &dir.join("projects"), &dir, "项目里");
+    assert!(prompt.contains("用户用中文就用中文答"));
+    assert!(prompt.contains("禁止假装"));
+    assert!(prompt.contains("联网查询"));
+    assert!(prompt.contains("答完"));
+}
+
+#[tokio::test]
+async fn loop_retries_hollow_ack_then_answers() {
+    let dir = temp_dir("loop-hollow");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_ask = calls.clone();
+    let ask = move |_messages: Vec<Value>| {
+        let n = calls_ask.fetch_add(1, Ordering::SeqCst);
+        async move {
+            match n {
+                0 => Ok("```bash\necho week-forecast\n```".to_string()),
+                1 => Ok(
+                    "收到！我记住了：接下来有什么事儿，直接说，我随时准备动手。".to_string(),
+                ),
+                _ => Ok("最近一周偏凉，周三有雨。".to_string()),
+            }
+        }
+    };
+    let result = run_loop(
+        ask,
+        |_| {},
+        true,
+        &dir,
+        &[],
+        None,
+        "",
+        "system",
+        LoopLimits::default(),
+        MeAuthMode::Ask,
+        &AtomicBool::new(false),
+    )
+    .await
+    .unwrap();
+    assert!(result.content.contains("周三有雨"), "{}", result.content);
+    assert!(!result.content.contains("我记住了"));
+    assert_eq!(result.steps.len(), 1);
+    assert!(calls.load(Ordering::SeqCst) >= 3);
+}
+
+#[tokio::test]
+async fn loop_retries_english_answer_after_steps_when_zh() {
+    let dir = temp_dir("loop-lang");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_ask = calls.clone();
+    let ask = move |_messages: Vec<Value>| {
+        let n = calls_ask.fetch_add(1, Ordering::SeqCst);
+        async move {
+            match n {
+                0 => Ok("```bash\necho temps\n```".to_string()),
+                1 => Ok(
+                    "Based on the recent weather data I fetched for Beijing, \
+the observations cover several mild days with light wind across the city \
+and no major storm systems in the metro forecast window overall."
+                        .to_string(),
+                ),
+                _ => Ok("北京这几天偏凉，风力不大。".to_string()),
+            }
+        }
+    };
+    let result = run_loop(
+        ask,
+        |_| {},
+        true,
+        &dir,
+        &[],
+        None,
+        "",
+        "system",
+        LoopLimits::default(),
+        MeAuthMode::Ask,
+        &AtomicBool::new(false),
+    )
+    .await
+    .unwrap();
+    assert!(result.content.contains("偏凉"), "{}", result.content);
+    assert!(!result.content.contains("Based on"));
+    assert!(calls.load(Ordering::SeqCst) >= 3);
 }
 
 #[test]
@@ -396,7 +624,7 @@ async fn loop_runs_a_read_then_stops_on_prose() {
         "",
         "system",
         LoopLimits::default(),
-        false,
+        MeAuthMode::Ask,
         &AtomicBool::new(false),
     )
     .await
@@ -424,7 +652,7 @@ async fn loop_holds_a_write_until_a_later_confirm_runs_it() {
         "",
         "system",
         LoopLimits::default(),
-        false,
+        MeAuthMode::Ask,
         &AtomicBool::new(false),
     )
     .await
@@ -455,7 +683,7 @@ async fn loop_holds_a_write_until_a_later_confirm_runs_it() {
         "",
         "system",
         LoopLimits::default(),
-        true,
+        MeAuthMode::Auto,
         &AtomicBool::new(false),
     )
     .await
@@ -479,7 +707,7 @@ async fn loop_holds_a_write_until_a_later_confirm_runs_it() {
         "建一个目录",
         "system",
         LoopLimits::default(),
-        false,
+        MeAuthMode::Ask,
         &AtomicBool::new(false),
     )
     .await
@@ -525,7 +753,7 @@ async fn empty_model_text_is_retried_then_accepted() {
         "",
         "system",
         LoopLimits::default(),
-        false,
+        MeAuthMode::Ask,
         &AtomicBool::new(false),
     )
     .await
@@ -550,7 +778,7 @@ async fn step_limit_stops_a_loop_that_never_talks() {
         "",
         "system",
         limits,
-        false,
+        MeAuthMode::Ask,
         &AtomicBool::new(false),
     )
     .await
@@ -632,7 +860,7 @@ async fn cancel_stops_the_loop_between_steps() {
         "",
         "system",
         LoopLimits::default(),
-        false,
+        MeAuthMode::Ask,
         &cancel,
     )
     .await

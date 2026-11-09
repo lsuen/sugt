@@ -627,6 +627,15 @@ pub fn list_profile_views(config_dir: &Path, config: &AppConfig) -> Vec<Takeover
         .collect()
 }
 
+/// 是否应写入/清理 Codex `config.toml`：以 agent_adapters 的 ConfigKind 为准，
+/// 避免 `id.contains("codex")` 误伤自定义模板；未知 id 仅在 launch_command=codex 时兜底。
+fn profile_writes_codex_toml(profile: &TakeoverProfile) -> bool {
+    if let Some(adapter) = agent_adapters::by_id(&profile.id) {
+        return adapter.config.kind == agent_adapters::ConfigKind::CodexToml;
+    }
+    profile.launch_command.as_deref() == Some("codex")
+}
+
 pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<TakeoverProfileView> {
     let profile = find_profile(config_dir, id).ok_or_else(|| anyhow!("未找到接管模板：{}", id))?;
     let env = resolve_env(config, &profile);
@@ -636,7 +645,7 @@ pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
     for (name, value) in env {
         crate::clients::set_user_env_public(&name, &value)?;
     }
-    if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
+    if profile_writes_codex_toml(&profile) {
         crate::codex_config::apply_codex_config(config)?;
     }
     // 注入 SUGT 自带 skill，让 Agent 能调用 sugt-cli
@@ -654,7 +663,7 @@ pub fn release_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Resul
     for name in &profile.clear_vars {
         let _ = crate::clients::unset_user_env_public(name);
     }
-    if profile.id.contains("codex") || profile.launch_command.as_deref() == Some("codex") {
+    if profile_writes_codex_toml(&profile) {
         crate::codex_config::clear_sugt_codex_overrides(config)?;
     }
     // 清理 SUGT skill（仅在没有任何其他 active 接管时才完全移除）

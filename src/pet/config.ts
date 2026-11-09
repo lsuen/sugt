@@ -32,7 +32,8 @@ export type OverlayConfigView = {
 // 产品默认：开悬浮窗 + 开小酥 + 全功能互动
 export const DEFAULT_OVERLAY: OverlayConfigView = {
   enabled: true,
-  opacity: 0.72,
+  // 精灵默认不透明；关精灵回退 HUD 时仍可读此字段，HUD 可再调低
+  opacity: 1,
   edit: false,
   show_tokens: true,
   show_client: true,
@@ -107,11 +108,12 @@ export function pointInsideFigure(
   clientX: number,
   clientY: number,
   rect: DOMRect,
+  pad = 0,
 ): boolean {
   return (
-    clientX >= rect.left
-    && clientX <= rect.right
-    && clientY >= rect.top
-    && clientY <= rect.bottom
+    clientX >= rect.left - pad
+    && clientX <= rect.right + pad
+    && clientY >= rect.top - pad
+    && clientY <= rect.bottom + pad
   );
 }

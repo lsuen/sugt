@@ -78,13 +78,13 @@ button:hover{color:var(--text);border-color:var(--accent)}
 button.on{color:#0E1220;background:var(--accent);border-color:var(--accent);font-weight:600}
 .hint{font-size:11.5px;color:var(--dim);margin:10px 0 0;line-height:1.6}
 .now{margin-top:14px;padding:9px 11px;border:1px solid rgba(93,217,168,.35);border-radius:9px;background:rgba(93,217,168,.08);font-size:12.5px;color:var(--accent)}
-/* 580px：最小档 148×168 放大 3.2× 后高 537px，旧值 460px 会裁掉脚底状态胶囊。 */
-.desktop{background:radial-gradient(circle at 25% 18%,#243450 0%,#141B2C 55%,#0C111D 100%);border:1px solid var(--border);border-radius:14px;height:580px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;transition:background .3s}
-.desktop.light{background:linear-gradient(135deg,#DCE6F2 0%,#B9CBDD 55%,#8FA6BF 100%)}
-.desktop::before{content:"移动鼠标：小su 会转头看你 · 点角色头部/身体也有反应 · 虚线为透明窗口边界";position:absolute;left:14px;top:12px;font-size:11px;color:#8494AE}
+/* 580px：最小档 148×168 放大 3.2× 后高 537px。棋盘格=模拟壁纸，不是产品窗背景。 */
+.desktop{background-color:#1a2030;background-image:linear-gradient(45deg,#243044 25%,transparent 25%),linear-gradient(-45deg,#243044 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#243044 75%),linear-gradient(-45deg,transparent 75%,#243044 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0;border:1px solid var(--border);border-radius:14px;height:580px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.desktop.light{background-color:#c5d0de;background-image:linear-gradient(45deg,#b0bec9 25%,transparent 25%),linear-gradient(-45deg,#b0bec9 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#b0bec9 75%),linear-gradient(-45deg,transparent 75%,#b0bec9 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}
+.desktop::before{content:"棋盘格=模拟壁纸 · 虚线框内产品窗必须全透明（零底色）";position:absolute;left:14px;top:12px;font-size:11px;color:#8494AE;z-index:2}
 .desktop.light::before{color:#4C5C72}
-.win{border:1px dashed rgba(140,200,232,.35);border-radius:4px;position:relative;transform-origin:center center;transition:transform .42s cubic-bezier(.22,.8,.3,1)}
-.win .pet-stage{width:100%;height:100%}
+.win{border:1px dashed rgba(140,200,232,.55);border-radius:4px;position:relative;transform-origin:center center;transition:transform .42s cubic-bezier(.22,.8,.3,1);background:transparent!important;background-color:transparent!important;background-image:none!important}
+.win .pet-stage{width:100%;height:100%;background:transparent!important}
 .readout{font-size:11.5px;color:var(--dim);margin-top:10px;text-align:right}
 table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:24px}
 th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
@@ -98,7 +98,7 @@ __PET_CSS_RAW__
 <body>
 <div class="wrap">
 <h1>小su 桌面精灵 v1.0 · 互动演示</h1>
-<p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>：11 张静态海报 + 10 个带透明通道的动画 WebP 全部内联，单文件离线可用。v1.0 演示页与产品精灵在<strong>同一文档</strong>中渲染（不再用 srcdoc iframe），每个互动按钮点一次就播一段 1.5~2.6s 的完整动作：换姿势、出气泡、改脚底状态文字，走动还会真的位移，播完自动回到当前状态；再点一次可重播。「自动演示」会依次播放全部动作。</p>
+<p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。11 张静态 + 10 个带 alpha 动画 WebP 内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
 <span class="badge">生成时间 __GENERATED_AT__</span>
 <span class="badge">源 CSS sha256 __CSS_HASH__</span>
 <span class="badge">素材 __ASSET_COUNT__ 张 / __ASSET_KB__ KB（含 10 个带 alpha 动画 WebP）</span>

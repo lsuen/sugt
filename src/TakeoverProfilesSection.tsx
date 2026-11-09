@@ -45,6 +45,9 @@ type Props = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onClientsChange?: (next: any) => void;
   onOpenSkills?: (agentId: string) => void;
+  /** SOUL `preview` 路由：挂载后自动打开首个已配置或第一个 profile 的影响预览 */
+  openPreviewRequest?: boolean;
+  onOpenPreviewRequestHandled?: () => void;
 };
 
 function isDiscovered(p: TakeoverProfileView) {
@@ -52,7 +55,15 @@ function isDiscovered(p: TakeoverProfileView) {
   return Boolean(p.cli_detected || p.settings_detected);
 }
 
-export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange, onOpenSkills }: Props) {
+export function TakeoverProfilesSection({
+  busy,
+  run,
+  pushToast,
+  onClientsChange,
+  onOpenSkills,
+  openPreviewRequest,
+  onOpenPreviewRequestHandled,
+}: Props) {
   const [profiles, setProfiles] = useState<TakeoverProfileView[]>([]);
   const [aiEnabled, setAiEnabled] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -72,6 +83,14 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
     reload();
     invoke<boolean>('can_ai_parse_takeover').then(setAiEnabled).catch(() => undefined);
   }, []);
+
+  // SOUL preview 路由：列表就绪后自动打开影响预览（优先已接管，否则第一个）
+  useEffect(() => {
+    if (!openPreviewRequest || profiles.length === 0) return;
+    const preferred = profiles.find((p) => p.configured) ?? profiles[0];
+    if (preferred) setPreviewTarget(preferred);
+    onOpenPreviewRequestHandled?.();
+  }, [openPreviewRequest, profiles, onOpenPreviewRequestHandled]);
 
   const openAdd = () => {
     setEditing(null);
@@ -205,7 +224,6 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
             key={p.id}
             profile={p}
             busy={busy}
-            onApply={() => apply(p.id, p.name)}
             onRelease={() => release(p.id, p.name)}
             onEdit={() => openEdit(p)}
             onDelete={() => remove(p)}
@@ -348,7 +366,6 @@ export function TakeoverProfilesSection({ busy, run, pushToast, onClientsChange,
 function TakeoverProfileRow({
   profile: p,
   busy,
-  onApply,
   onRelease,
   onEdit,
   onDelete,
@@ -358,7 +375,6 @@ function TakeoverProfileRow({
 }: {
   profile: TakeoverProfileView;
   busy: boolean;
-  onApply: () => void;
   onRelease: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -386,16 +402,19 @@ function TakeoverProfileRow({
         <span className="hint compact takeover-profile-row-meta">{metaParts.join(' · ')}</span>
       </div>
       <div className="takeover-profile-row-actions">
-        <button
-          type="button"
-          className="tiny ghost"
-          disabled={busy}
-          title={t('client.previewTitle')}
-          aria-haspopup="dialog"
-          onClick={onPreview}
-        >
-          <ShieldCheck size={14} />{t('client.previewBtn')}
-        </button>
+        {/* 已接管时保留旁路预览（可在模态内确认释放）；未接管时主按钮即预览，避免两套入口 */}
+        {p.configured && (
+          <button
+            type="button"
+            className="tiny ghost"
+            disabled={busy}
+            title={t('client.previewTitle')}
+            aria-haspopup="dialog"
+            onClick={onPreview}
+          >
+            <ShieldCheck size={14} />{t('client.previewBtn')}
+          </button>
+        )}
         <button
           type="button"
           className={`tiny ghost takeover-env-btn${discovered ? ' detected' : ''}`}
@@ -419,8 +438,15 @@ function TakeoverProfileRow({
             <Unplug size={14} />{t('client.cancelTakeover')}
           </button>
         ) : (
-          <button type="button" className="tiny primary takeover-enable-btn" disabled={busy} onClick={() => onApply()}>
-            <PlugZap size={14} />{t('client.takeover')}
+          <button
+            type="button"
+            className="tiny primary takeover-enable-btn"
+            disabled={busy}
+            title={t('client.previewTitle')}
+            aria-haspopup="dialog"
+            onClick={onPreview}
+          >
+            <PlugZap size={14} />{t('client.takeoverWithPreview')}
           </button>
         )}
       </div>

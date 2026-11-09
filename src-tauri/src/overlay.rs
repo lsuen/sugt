@@ -302,6 +302,8 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             }
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
+            // 透明窗关掉系统阴影，否则移动时整窗矩形阴影拖成「背景边框」重影
+            let _ = w.set_shadow(false);
             w.set_size(LogicalSize::new(cfg.width, cfg.height))
                 .map_err(|e| format!("调整悬浮窗尺寸失败: {e}"))?;
             let prev = (cfg.x, cfg.y);
@@ -318,6 +320,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .title(if cfg.pet_enabled { "SUGT 小su" } else { "SUGT 流量" })
                 .decorations(false)
                 .transparent(true)
+                .shadow(false)
                 .always_on_top(true)
                 .skip_taskbar(true)
                 .resizable(false)
@@ -326,6 +329,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
+            let _ = w.set_shadow(false);
             // 新建窗口：精灵默认穿透；HUD 按编辑态
             let ignore = if cfg.pet_enabled {
                 !cfg.edit

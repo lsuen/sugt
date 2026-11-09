@@ -39,6 +39,7 @@
 - 落包留痕：`docs/孙测测/traces/桌面精灵v0.7色键落包-*.md`（含 20261109 表情库）。
 - **交互**：穿透模式下靠 `pet_global_cursor` 轮询全局光标驱动视线/靠近；勿再假设 document `pointermove` 在 ignore_cursor_events 下可用。
 - **元素级穿透**：只有光标落在立绘或右键菜单命中框内（或正在拖动）才 `pet_set_clickable(true)`；空白侧栏与透明边距永远穿透到桌面。禁止「菜单一开就整窗解穿透」——那会把透明窗矩形变成挡点击的透明墙。
+- **零底色铁律**：产品窗禁止任何舞台底板（无 `.pet-halo` / `.pet-ground`、无 `.pet-stage` 纯色/径向铺底）。`overlay.html` 的 `html,body,#root` 与 `.pet-stage` 必须 `background: transparent !important`。演示页可用棋盘格模拟壁纸，但虚线框内仍须透明。
 - **v1.0 互动层映射**：开场招呼 / 轻碰 → `wave`，靠近倾听 → `peek`，摸头 → `shy`，连点三下 / 完成态 → `celebrate`，自主走动 → `walk`，闲置差分从上述五种随机取一。新增的心形、思考云、落地回弹、步态起伏全部由 CSS/JS 生成，**不新增素材、不新增动画层**。
 
 ## 二、生成链路（可复现）

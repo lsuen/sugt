@@ -171,6 +171,7 @@ export function SettingsOverview({
           <button type="button" className="ghost tiny-btn" onClick={() => onSubTab('logs')}>{t('set.ovGoLogs')}</button>
           <button type="button" className="ghost tiny-btn" onClick={() => onSubTab('about')}>{t('set.ovGoAbout')}</button>
           <button type="button" className="ghost tiny-btn" onClick={() => onSubTab('general')}>{t('set.ovGoGeneral')}</button>
+          <button type="button" className="ghost tiny-btn" onClick={() => onSubTab('pet')}>{t('set.ovGoPet')}</button>
           <button type="button" className="ghost tiny-btn" onClick={() => onNavigate?.('clients')}>{t('set.goClients')}</button>
           <button type="button" className="ghost tiny-btn" onClick={() => onNavigate?.('skills')}>{t('set.openSkills')}</button>
         </div>

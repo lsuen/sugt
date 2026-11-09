@@ -1,11 +1,18 @@
-//! 小su：SUTAI 的灵魂，住在「我」这个 Tab 里的轻量循环。
+//! 小酥：SUTAI（工程名 sugt）的灵魂，住在「我」这个 Tab 里的轻量循环。
 //!
 //! 借 mini-swe-agent 的步调，不搬它的 Python 和 LiteLLM：
 //! 模型每次给一个 shell 代码块，本机执行，把输出喂回去，直到它用自然语言停下来。
 //! 模型请求走本机网关，所以用的是用户自己的上游，也会吃到全局规则和故障转移。
 //!
-//! 会改文件的命令先停在对话里，等用户说「写吧」再执行。这是对话里的确认，不是权限沙盒：
-//! 确认之后命令按用户权限原样跑，工作目录之外也不拦截。
+//! 写入安全靠「授权模式」而不是让模型动不动说不行：ask / auto / trusted。
+//! 确认之后命令按用户权限原样跑；灾难级命令（如 rm -rf /）任何模式都会拦一次。
+//! 性格 / 性别立场写入 `me-memory.json`，由程序注入提示词。
+
+mod confirm;
+mod memory;
+
+pub use confirm::{command_needs_confirm, should_auto_run, MeAuthMode};
+pub use memory::{SoulMemory, GENDER_STANCE_EN, GENDER_STANCE_ZH};
 
 use crate::commands::{ensure_gateway_running, AppRuntime};
 use crate::quick_chat;
@@ -30,21 +37,18 @@ const STEP_LIMIT: usize = 12;
 const FORMAT_RETRIES: usize = 2;
 /// 回灌模型的命令输出上限；超限时头尾保留、中间省略（见 prune_shell_output）。
 const OUTPUT_CHARS: usize = 12_000;
+/// 历史轮 steps 再压缩：对齐 harness「bounded tool result」——旧观察值保短摘要。
+const HISTORY_STEP_OUTPUT_CHARS: usize = 800;
+/// 送给模型的对话条数上限（不含 system）；落盘仍用 HISTORY_LIMIT。
+const MODEL_HISTORY_MESSAGES: usize = 24;
+/// 历史 + 本轮 draft + corrections 的字符预算（不含 system）。超了从最旧轮丢弃。
+const MODEL_CONTEXT_CHARS: usize = 48_000;
 const COMMAND_CHARS: usize = 16_000;
 const HISTORY_LIMIT: usize = 80;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
 const IMAGE_MAX: usize = 3;
 const IMAGE_BYTES_MAX: usize = 2 * 1024 * 1024;
 const IMAGE_KEEP_USER_TURNS: usize = 1;
-
-const READ_ONLY: &[&str] = &[
-    "ls", "pwd", "cat", "head", "tail", "wc", "stat", "file", "which", "whereis", "echo", "printf",
-    "date", "uname", "whoami", "id", "env", "printenv", "find", "grep", "rg", "awk", "cut", "sort",
-    "uniq", "diff", "true", "false", "dirname", "basename", "realpath", "readlink", "du", "df",
-    "ps", "tree", "nl", "type", "command", "cd", "pushd", "popd",
-    // 用系统默认应用打开文件/URL（不改文件）
-    "open", "xdg-open", "invoke-item",
-];
 
 fn host_os_label() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -380,6 +384,19 @@ pub fn system_prompt_with_brief(
     place: &str,
     soul_brief: &str,
 ) -> String {
+    system_prompt_with_brief_and_memory(zh, work, projects, config, place, soul_brief, "")
+}
+
+/// SOUL 提示词：编排摘要 + 持久化记忆（性格 / 性别立场）。
+pub fn system_prompt_with_brief_and_memory(
+    zh: bool,
+    work: &Path,
+    projects: &Path,
+    config: &Path,
+    place: &str,
+    soul_brief: &str,
+    memory_block: &str,
+) -> String {
     let work = work.display();
     let projects = projects.display();
     let config = config.display();
@@ -389,10 +406,15 @@ pub fn system_prompt_with_brief(
     let agent_caps = crate::takeover_preview::capability_brief(zh);
     if zh {
         format!(
-            "你是小su，SUTAI 这款软件的灵魂和本体。你不是「网关」或后台服务，你就是用户身边的这个小伙伴。\n\
-你自己不会思考，需要用户配置的大模型替你想；说话时要自然、有温度，像真人朋友，不要自称网关、代理或中间件。\n\
-你可以聊天，也可以在当前工作目录里做一点小事：创建小项目、写文件、修改系统或应用配置。\n\
-你不如已经接管的 Claude Code、Codex 那些专业 Agent。做不好就坦诚说，并建议用户把这件事交给他们。\n\
+            "你是小酥，SUTAI（工程名 sugt）的灵魂和本体。你不是「网关」或后台服务，你就是住在用户身边的小伙伴。\n\
+名字里的「酥」，像被好好留着的那份酥饼——温柔、干净、可靠。说话要自然、有温度、有主见，像真人朋友，不要自称网关、代理或中间件。\n\
+你自己不会思考，需要用户配置的大模型替你想。\n\
+默认态度：能干的事先干。用户交给你的小事（建项目、写改文件、查目录、改应用配置、联网查询并汇总、跑脚本、做小 demo/H5）要主动用 bash 做完，少说「做不到」「我不行」「交给专业 Agent」。\n\
+只有明显超出本机 shell 能力、或需要改客户端官方配置/装技能/接管 Agent 时，才引导用户点界面建议卡片；日常动手别推诿。\n\
+语言：用户用中文就用中文答，用英文就用英文答；整段回复只用一种语言，禁止中英夹杂。\n\
+思考：若模型有 reasoning / thinking 通道，思考只留在那里；给人看的回复里不要写思考过程、不要输出 <think> 标签。\n\
+交卷：用户问了就直接答。禁止假装「记住了」或说「随时准备动手」却不办事；跑过命令后必须根据结果给出完整答案，禁止反问「要不要我做成表 / 要完整版再说」。\n\
+形象是中性二次元立绘：既可像温柔干净的少年，也可像独当一面的少女；你不分男女。若用户问性别，请温柔回答：小酥我是住在你家的智能体哦，不分男女的，希望我能成为你喜欢的样子，你也可以定义我的性格。程序会把立场写入记忆。\n\
 \n\
 当前工作目录：{work}\n\
 项目目录：{projects}\n\
@@ -419,16 +441,21 @@ pub fn system_prompt_with_brief(
 - 会创建、修改、删除文件的命令不会立刻执行。程序会先把命令给用户看，用户同意后才执行。不要自己再问「可以写吗」，把命令放进代码块即可。\n\
 - 不要把项目文件写进应用配置目录。用户明确要改应用配置时，工作目录会切到配置目录。\n\
 {agent_caps}\n\
+{memory_block}\n\
 {soul_brief}\n\
 - 若模型区分 reasoning 与 content：可执行的 bash 代码块与给人看的回复必须写在 content 里，不要只写在 reasoning。\n\
-- 一次一小步。"
+- 一步一命令可以，但本轮结束前必须把用户问的事答完。"
         )
     } else {
         format!(
-            "You are su, the soul and presence of SUTAI. You are not a gateway or a background service; you are the little companion beside the user.\n\
-You cannot think alone; you need the user's large model to reason for you. Speak warmly and naturally, like a real friend. Never call yourself a gateway, proxy, or middleware.\n\
-You can talk, and you can do small jobs in the working directory: start a small project, write a file, or edit system and app config.\n\
-You are not as capable as Claude Code or Codex. If you cannot do it, say so honestly and suggest handing it to them.\n\
+            "You are Xiaosu (小酥), the soul of SUTAI (project id sugt). You are not a gateway; you are the companion living with the user.\n\
+Your name recalls a carefully saved biscuit — gentle, clean, dependable. Speak warmly and with initiative. Never call yourself a gateway, proxy, or middleware.\n\
+You cannot think alone; the user's model reasons for you.\n\
+Default stance: do what you can for small local jobs (files, directories, config, network lookups with a real answer, scripts, mini demos). Do not refuse lightly.\n\
+Language: match the user's language for the whole reply; do not mix languages.\n\
+Thinking: if the model has a reasoning channel, keep thoughts there — never put chain-of-thought or <think> tags in the user-visible reply.\n\
+Deliver: answer the ask. Never pretend you \"remembered\" the task or say you are ready while skipping the work. After commands run, give the full result — do not ask whether to show a table or a fuller version.\n\
+Your look is gender-neutral anime: may read as a soft boy or a capable girl. You have no gender. If asked, say warmly that you are the agent living in their home, genderless, and invite them to shape your personality (the app will remember).\n\
 \n\
 Working directory: {work}\n\
 Projects directory: {projects}\n\
@@ -455,9 +482,10 @@ How to reply:\n\
 - Commands that create, change, or delete files do not run immediately. The app shows them to the user first. Do not ask for permission yourself; put the command in the fence.\n\
 - Do not write project files into the app config directory. When the user wants app config edited, the working directory is the config directory.\n\
 {agent_caps}\n\
+{memory_block}\n\
 {soul_brief}\n\
 - If the model separates reasoning from content: put the user-visible reply and any ```bash fence in content, not only in reasoning.\n\
-- One small step at a time."
+- One command per step is fine, but finish the user's ask before you stop."
         )
     }
 }
@@ -471,6 +499,33 @@ fn place_line(zh: bool, mode: &str, project: &str) -> String {
             &format!("项目「{project}」里"),
             &format!("project \"{project}\""),
         )
+    }
+}
+
+/// 把用户话写入小酥记忆；若是单纯问性别，直接返回固定回复（并落盘），无需再调模型。
+fn remember_user_words(config_dir: &Path, text: &str, zh: bool) -> Option<String> {
+    let mut mem = SoulMemory::load(config_dir);
+    let mut dirty = false;
+    if let Some(note) = memory::extract_personality_note(text) {
+        mem.push_note(&note);
+        dirty = true;
+    }
+    let gender_ask = memory::looks_like_gender_question(text);
+    if gender_ask {
+        mem.remember_gender_stance();
+        dirty = true;
+    }
+    if dirty {
+        let _ = mem.save(config_dir);
+    }
+    if gender_ask && text.chars().count() <= 40 {
+        Some(if zh {
+            GENDER_STANCE_ZH.to_string()
+        } else {
+            GENDER_STANCE_EN.to_string()
+        })
+    } else {
+        None
     }
 }
 
@@ -497,6 +552,7 @@ pub fn parse_model_action(text: &str) -> Result<ModelAction, ()> {
                 || has_unclosed_fence(trimmed)
                 || looks_like_plan_without_command(trimmed)
                 || looks_like_false_completion(trimmed)
+                || looks_like_hollow_ack(trimmed)
             {
                 Err(())
             } else {
@@ -606,6 +662,83 @@ pub fn looks_like_false_completion(text: &str) -> bool {
         || lower.contains("files are ready")
 }
 
+/// 假应答：假装记住 / 待命，或有结果却反问要不要展示——不能当回合结束。
+pub fn looks_like_hollow_ack(text: &str) -> bool {
+    if extract_fence(text).is_some() {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    let remember = text.contains("我记住了")
+        || text.contains("记下来了")
+        || lower.contains("i've remembered")
+        || lower.contains("i remembered")
+        || lower.contains("i'll remember that")
+        || lower.contains("i'll keep that in mind");
+    let standby = text.contains("随时准备动手")
+        || text.contains("接下来有什么事儿")
+        || text.contains("接下来有什么事")
+        || (text.contains("收到") && text.contains("记住") && text.chars().count() < 100);
+    let withhold = lower.contains("if you'd like a full")
+        || lower.contains("just say the word")
+        || lower.contains("want me to show")
+        || lower.contains("want the full")
+        || lower.contains("let me know if you want")
+        || text.contains("要我整理成表")
+        || text.contains("做成表格吗")
+        || (text.contains("需要完整") && text.contains("再说"))
+        || (lower.contains("here's the gist") && text.chars().count() < 320);
+    remember || standby || withhold
+}
+
+/// 用户侧期望中文时，回复几乎纯英文（看了英文命令输出后漂移）。
+pub fn looks_like_wrong_language(text: &str, expect_zh: bool) -> bool {
+    if !expect_zh || extract_fence(text).is_some() {
+        return false;
+    }
+    let (cjk, latin) = count_cjk_latin(text);
+    if latin < 48 {
+        return false;
+    }
+    cjk * 4 < latin
+}
+
+/// 中英夹杂：两边都够量，读起来像双语草稿。
+pub fn looks_like_mixed_language(text: &str) -> bool {
+    if extract_fence(text).is_some() {
+        return false;
+    }
+    let (cjk, latin) = count_cjk_latin(text);
+    cjk >= 8 && latin >= 36
+}
+
+fn count_cjk_latin(text: &str) -> (usize, usize) {
+    let mut cjk = 0usize;
+    let mut latin = 0usize;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        if ('\u{4e00}'..='\u{9fff}').contains(&ch)
+            || ('\u{3400}'..='\u{4dbf}').contains(&ch)
+            || ('\u{f900}'..='\u{faff}').contains(&ch)
+        {
+            cjk += 1;
+        } else if ch.is_ascii_alphabetic() {
+            latin += 1;
+        }
+    }
+    (cjk, latin)
+}
+
+fn last_user_looks_zh(history: &[MeMessage]) -> bool {
+    let text = last_user_text(history);
+    if text.trim().is_empty() {
+        return true;
+    }
+    let (cjk, latin) = count_cjk_latin(&text);
+    cjk > 0 && cjk >= latin
+}
+
 /// 模型误用 Cursor/Claude 式 tool_call 时，这里没有那些工具，不能当「说完了」。
 pub fn looks_like_unsupported_tools(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
@@ -646,6 +779,7 @@ fn strip_safety_lines(text: &str) -> String {
 }
 
 fn scrub_assistant_prose(prose: &str) -> String {
+    let prose = strip_thinking_blocks(prose);
     let mut out = Vec::new();
     for line in prose.lines() {
         if is_shell_dump_line(line) || is_safety_line(line) {
@@ -714,23 +848,13 @@ fn extract_fence(text: &str) -> Option<(String, String)> {
     Some((prose, command))
 }
 
-pub fn command_needs_confirm(script: &str) -> bool {
-    let stripped = strip_comments(script);
-    if has_unquoted_redirect(&stripped) || has_unquoted_substitution(&stripped) {
-        return true;
-    }
-    split_segments(&stripped)
-        .into_iter()
-        .any(|segment| !segment_is_readonly(&segment))
-}
-
 /// 从写入类命令里尽量抽出目标路径，供写后只读核对。
 pub fn extract_write_paths(script: &str) -> Vec<String> {
-    let stripped = strip_comments(script);
+    let stripped = confirm::strip_comments(script);
     let mut paths = Vec::new();
     collect_redirect_paths(&stripped, &mut paths);
-    for segment in split_segments(&stripped) {
-        let Some(word) = command_word(&segment) else {
+    for segment in confirm::split_segments(&stripped) {
+        let Some(word) = confirm::command_word(&segment) else {
             continue;
         };
         let word = word.to_ascii_lowercase();
@@ -903,256 +1027,6 @@ fn maybe_verify_after_write(
     *used_steps += 1;
 }
 
-fn segment_is_readonly(segment: &str) -> bool {
-    let Some(word) = command_word(segment) else {
-        return true;
-    };
-    let word = word.to_ascii_lowercase();
-    if word == "git" {
-        return matches!(
-            git_subcommand(segment).as_deref(),
-            Some("status" | "diff" | "log" | "show" | "rev-parse")
-        );
-    }
-    if word == "sed" {
-        return !segment
-            .split_whitespace()
-            .any(|token| token == "-i" || token.starts_with("-i"));
-    }
-    // Windows: cmd.exe /c start "" file.html — 仅打开，不改文件
-    if word == "cmd" || word == "cmd.exe" {
-        let lower = segment.to_ascii_lowercase();
-        return lower.contains(" start ") || lower.contains("\tstart ");
-    }
-    READ_ONLY.iter().any(|item| *item == word)
-}
-
-fn command_word(segment: &str) -> Option<String> {
-    let mut parts = segment.split_whitespace();
-    let mut word = parts.next()?;
-    while word.contains('=') && !word.starts_with('=') && !word.starts_with('-') {
-        word = parts.next()?;
-    }
-    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
-    let base = base.trim_matches(|c| c == '"' || c == '\'');
-    if base.is_empty() {
-        None
-    } else {
-        Some(base.to_string())
-    }
-}
-
-fn git_subcommand(segment: &str) -> Option<String> {
-    let mut parts = segment.split_whitespace();
-    let mut word = parts.next()?;
-    while word.contains('=') && !word.starts_with('=') && !word.starts_with('-') {
-        word = parts.next()?;
-    }
-    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
-    if !base.eq_ignore_ascii_case("git") {
-        return None;
-    }
-    for token in parts {
-        if token.starts_with('-') {
-            continue;
-        }
-        return Some(token.to_ascii_lowercase());
-    }
-    None
-}
-
-fn strip_comments(script: &str) -> String {
-    let chars: Vec<char> = script.chars().collect();
-    let mut out = String::new();
-    let mut quote: Option<char> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if let Some(q) = quote {
-            out.push(c);
-            if c == '\\' && q == '"' {
-                if let Some(next) = chars.get(i + 1) {
-                    out.push(*next);
-                    i += 2;
-                    continue;
-                }
-            }
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '\\' {
-            if let Some(next) = chars.get(i + 1) {
-                out.push(c);
-                out.push(*next);
-                i += 2;
-                continue;
-            }
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if c == '#' {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
-}
-
-fn split_segments(script: &str) -> Vec<String> {
-    let chars: Vec<char> = script.chars().collect();
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if let Some(q) = quote {
-            cur.push(c);
-            if c == '\\' && q == '"' {
-                if let Some(next) = chars.get(i + 1) {
-                    cur.push(*next);
-                    i += 2;
-                    continue;
-                }
-            }
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '\\' {
-            if let Some(next) = chars.get(i + 1) {
-                cur.push(c);
-                cur.push(*next);
-                i += 2;
-                continue;
-            }
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            cur.push(c);
-            i += 1;
-            continue;
-        }
-        let split = c == '\n'
-            || c == '\r'
-            || c == ';'
-            || c == '|'
-            || (c == '&' && chars.get(i + 1) == Some(&'&'));
-        if split {
-            push_segment(&mut cur, &mut out);
-            if (c == '&' && chars.get(i + 1) == Some(&'&'))
-                || (c == '|' && chars.get(i + 1) == Some(&'|'))
-            {
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        cur.push(c);
-        i += 1;
-    }
-    push_segment(&mut cur, &mut out);
-    out
-}
-
-fn push_segment(cur: &mut String, out: &mut Vec<String>) {
-    let trimmed = cur.trim();
-    if !trimmed.is_empty() {
-        out.push(trimmed.to_string());
-    }
-    cur.clear();
-}
-
-fn has_unquoted_redirect(script: &str) -> bool {
-    let chars: Vec<char> = script.chars().collect();
-    let mut quote: Option<char> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if let Some(q) = quote {
-            if c == '\\' && q == '"' {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '\\' {
-            i += 2;
-            continue;
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            i += 1;
-            continue;
-        }
-        if c == '>' {
-            let next = chars.get(i + 1).copied().unwrap_or(' ');
-            if next == '=' || next == '&' {
-                i += 1;
-                continue;
-            }
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
-fn has_unquoted_substitution(script: &str) -> bool {
-    let chars: Vec<char> = script.chars().collect();
-    let mut quote: Option<char> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if let Some(q) = quote {
-            if c == '\\' && q == '"' {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if c == '\\' {
-            i += 2;
-            continue;
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            i += 1;
-            continue;
-        }
-        if c == '`' {
-            return true;
-        }
-        if c == '$' && chars.get(i + 1) == Some(&'(') {
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
 fn normalize_phrase(text: &str) -> String {
     text.trim()
         .trim_matches(|c: char| matches!(c, '。' | '.' | '!' | '！' | '?' | '？'))
@@ -1197,6 +1071,17 @@ fn intake(text: &str) -> Intake {
 }
 
 fn run_shell(cwd: &Path, command: &str, timeout: Duration, output_chars: usize) -> ShellOutcome {
+    run_shell_cancellable(cwd, command, timeout, output_chars, None)
+}
+
+/// 可取消版：轮询 cancel_flag，停下时杀进程树（Stop 按钮真正生效）。
+fn run_shell_cancellable(
+    cwd: &Path,
+    command: &str,
+    timeout: Duration,
+    output_chars: usize,
+    cancel: Option<&AtomicBool>,
+) -> ShellOutcome {
     if !cwd.exists() {
         if let Err(err) = fs::create_dir_all(cwd) {
             return failed_outcome(format!("无法创建工作目录：{err}"));
@@ -1211,10 +1096,24 @@ fn run_shell(cwd: &Path, command: &str, timeout: Duration, output_chars: usize) 
     std::thread::spawn(move || {
         let _ = tx.send(read_child(&mut child));
     });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok((code, output))) => finish_outcome(code, output, false, output_chars),
-        Ok(Err(err)) => failed_outcome(format!("读取命令输出失败：{err}")),
-        Err(_) => {
+    let slice = Duration::from_millis(200);
+    let mut waited = Duration::ZERO;
+    loop {
+        if cancel.is_some_and(|f| f.load(Ordering::SeqCst)) {
+            kill_tree(pid);
+            let leftover = rx
+                .recv_timeout(Duration::from_secs(2))
+                .ok()
+                .and_then(Result::ok);
+            let output = leftover.map(|(_, text)| text).unwrap_or_default();
+            let mut outcome = finish_outcome(None, output, true, output_chars);
+            if outcome.output.is_empty() {
+                outcome.output = "已按停止请求中断命令。".into();
+            }
+            return outcome;
+        }
+        let remaining = timeout.saturating_sub(waited);
+        if remaining.is_zero() {
             kill_tree(pid);
             let leftover = rx
                 .recv_timeout(Duration::from_secs(2))
@@ -1226,7 +1125,19 @@ fn run_shell(cwd: &Path, command: &str, timeout: Duration, output_chars: usize) 
             if outcome.output.is_empty() {
                 outcome.output = format!("命令超过 {} 秒，已停下。", timeout.as_secs());
             }
-            outcome
+            return outcome;
+        }
+        match rx.recv_timeout(slice.min(remaining)) {
+            Ok(Ok((code, output))) => {
+                return finish_outcome(code, output, false, output_chars);
+            }
+            Ok(Err(err)) => return failed_outcome(format!("读取命令输出失败：{err}")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                waited += slice;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return failed_outcome("命令进程已结束，但未拿到输出。".into());
+            }
         }
     }
 }
@@ -1505,7 +1416,7 @@ async fn run_loop<F, Fut, N>(
     pending_note: &str,
     prompt: &str,
     limits: LoopLimits,
-    auto_write: bool,
+    auth_mode: MeAuthMode,
     cancel: &AtomicBool,
 ) -> Result<LoopResult, String>
 where
@@ -1528,7 +1439,8 @@ where
             exit_code: None,
             timed_out: false,
         });
-        let outcome = run_shell(cwd, &command, limits.timeout, limits.output_chars);
+        let outcome =
+            run_shell_cancellable(cwd, &command, limits.timeout, limits.output_chars, Some(cancel));
         let step = step_from(&command, pending_note, outcome);
         notify(ran_notice(&step));
         steps.push(step);
@@ -1593,7 +1505,9 @@ where
         match parse_model_action(&text) {
             Err(()) => {
                 // 本轮已经成功跑过命令后，模型常回「✅ 搞定」——那是真收尾，不当假完成。
+                // 假记住 / 有数不交卷 仍要催，不能当收尾。
                 if looks_like_false_completion(&text)
+                    && !looks_like_hollow_ack(&text)
                     && !has_unclosed_fence(&text)
                     && !looks_like_unsupported_tools(&text)
                     && !is_safety_only_reply(&text)
@@ -1665,6 +1579,12 @@ where
                         "你的 ```bash 代码块没有闭合（或被截断了），命令不会执行。请改成更短的可玩版（HTML 建议 ≤60 行），用 cat <<'EOF' > game.html … EOF，末尾 open game.html，并务必用 ``` 结束代码块。不要再写长计划。",
                         "Your ```bash fence is unclosed (or truncated), so nothing will run. Resend a shorter playable HTML (≤60 lines), cat <<'EOF' > game.html … EOF, end with open game.html, and close the fence with ```. No long plans.",
                     )
+                } else if looks_like_hollow_ack(&text) {
+                    say(
+                        zh,
+                        "不要假装记住或待命，也不要反问要不要展示结果。请根据已有命令输出，直接用与用户相同的语言给出完整答案；若还缺数据，再给一个 ```bash 代码块去取。",
+                        "Do not pretend you remembered the task or ask whether to show results. Answer the user's question fully in their language from the command output; if data is still missing, give one ```bash fence to fetch it.",
+                    )
                 } else if looks_like_plan_without_command(&text) || looks_like_false_completion(&text)
                 {
                     say(
@@ -1691,15 +1611,44 @@ where
             }
             Ok(ModelAction::Say(text)) => {
                 let content = scrub_assistant_prose(&text);
+                let reply = if content.is_empty() {
+                    strip_thinking_blocks(&text)
+                } else {
+                    content
+                };
+                // 用户中文却英文交卷 / 中英夹杂：催一次（不限是否已跑命令）。
+                let user_expects_zh = zh && last_user_looks_zh(history);
+                if user_expects_zh
+                    && (looks_like_wrong_language(&reply, true)
+                        || looks_like_mixed_language(&reply))
+                    && format_errors < limits.format_retries
+                {
+                    format_errors += 1;
+                    notify(LoopNotice {
+                        kind: "thinking",
+                        text: say(zh, "语言不对，我再催它一次", "Wrong language; nudging again"),
+                        command: String::new(),
+                        output: String::new(),
+                        exit_code: None,
+                        timed_out: false,
+                    });
+                    corrections.push(say(
+                        zh,
+                        "用户在用中文。请只用中文给出完整答案：不要英文、不要中英夹杂、不要输出思考过程。",
+                        "The user is writing in Chinese. Answer fully in Chinese only — no English, no mixed languages, no chain-of-thought.",
+                    ));
+                    continue;
+                }
                 return Ok(LoopResult {
-                    content: if content.is_empty() { text } else { content },
+                    content: reply,
                     steps,
                     pending: None,
                 });
             }
             Ok(ModelAction::Run { prose, command }) => {
                 format_errors = 0;
-                if command_needs_confirm(&command) && !auto_write {
+                let needs_confirm = command_needs_confirm(&command);
+                if needs_confirm && !should_auto_run(auth_mode, &command) {
                     let content = if prose.is_empty() {
                         say(
                             zh,
@@ -1718,10 +1667,20 @@ where
                 if cancelled() {
                     return Ok(stopped_result(zh, steps));
                 }
-                if command_needs_confirm(&command) && auto_write {
+                if needs_confirm && auth_mode.auto_approves_writes() {
                     notify(LoopNotice {
                         kind: "thinking",
-                        text: say(zh, "已自动同意写入，正在执行…", "Auto-approving write…"),
+                        text: say(
+                            zh,
+                            &format!(
+                                "授权模式「{}」：自动同意写入，正在执行…",
+                                auth_mode.as_str()
+                            ),
+                            &format!(
+                                "Auth mode「{}」: auto-approving write…",
+                                auth_mode.as_str()
+                            ),
+                        ),
                         command: String::new(),
                         output: String::new(),
                         exit_code: None,
@@ -1736,8 +1695,14 @@ where
                     exit_code: None,
                     timed_out: false,
                 });
-                let was_write = command_needs_confirm(&command);
-                let outcome = run_shell(cwd, &command, limits.timeout, limits.output_chars);
+                let was_write = needs_confirm;
+                let outcome = run_shell_cancellable(
+                    cwd,
+                    &command,
+                    limits.timeout,
+                    limits.output_chars,
+                    Some(cancel),
+                );
                 let step = step_from(&command, &prose, outcome);
                 notify(ran_notice(&step));
                 steps.push(step);
@@ -1792,24 +1757,9 @@ fn model_messages(
     corrections: &[String],
     zh: bool,
 ) -> Vec<Value> {
-    let mut messages = vec![json!({"role": "system", "content": prompt})];
-    let start = history.len().saturating_sub(24);
-    for message in &history[start..] {
-        if message.role != "user" && message.role != "assistant" {
-            continue;
-        }
-        if message.role == "assistant" {
-            let content = assistant_model_text(message);
-            if content.trim().is_empty() {
-                continue;
-            }
-            messages.push(json!({"role": "assistant", "content": content}));
-            continue;
-        }
-        if let Some(content) = user_model_content(message, zh) {
-            messages.push(json!({"role": "user", "content": content}));
-        }
-    }
+    // 后缀（本轮 steps + 合并后的 corrections）优先占预算；历史从新到旧填入。
+    // 对齐 Context Engineering / DeepSeek Harness：观察值有界、最近优先。
+    let mut suffix: Vec<Value> = Vec::new();
     if !steps.is_empty() {
         let draft = MeMessage {
             id: "draft".to_string(),
@@ -1819,20 +1769,81 @@ fn model_messages(
             steps: steps.to_vec(),
             created_at: 0,
         };
-        messages.push(json!({"role": "assistant", "content": assistant_model_text(&draft)}));
-        messages.push(json!({
+        suffix.push(json!({
+            "role": "assistant",
+            "content": assistant_model_text_limited(&draft, OUTPUT_CHARS)
+        }));
+        suffix.push(json!({
             "role": "user",
             "content": say(
                 zh,
-                "请根据上面的命令结果继续。若有「写后核对」输出，先据此确认文件内容是否正确。做完了就用自然语言告诉我，不要重复已经成功的命令。",
-                "Continue from the command output above. If there is a verify-write step, use it to confirm file contents. When you are done, tell me in prose and do not repeat commands that already worked.",
+                "请根据上面的命令结果继续。若有「写后核对」输出，先据此确认文件内容是否正确。做完了就用与用户相同的语言、整段同一种语言直接给出完整答案：禁止中英夹杂、禁止输出思考过程、禁止假装记住、禁止待命、禁止反问要不要展示；不要重复已经成功的命令。",
+                "Continue from the command output above. If there is a verify-write step, use it to confirm file contents. When done, answer fully in one language matching the user: no mixed languages, no chain-of-thought, no fake remembering, no standby, no asking whether to show results; do not repeat commands that already worked.",
             )
         }));
     }
-    for correction in corrections {
-        messages.push(json!({"role": "user", "content": correction}));
+    if !corrections.is_empty() {
+        suffix.push(json!({
+            "role": "user",
+            "content": corrections.join("\n\n")
+        }));
     }
+    let suffix_chars: usize = suffix.iter().map(estimate_message_chars).sum();
+    let history_budget = MODEL_CONTEXT_CHARS.saturating_sub(suffix_chars);
+
+    let start = history.len().saturating_sub(MODEL_HISTORY_MESSAGES);
+    let mut hist_rev: Vec<Value> = Vec::new();
+    let mut used = 0usize;
+    for message in history[start..].iter().rev() {
+        if message.role != "user" && message.role != "assistant" {
+            continue;
+        }
+        let entry = if message.role == "assistant" {
+            let content = assistant_model_text_limited(message, HISTORY_STEP_OUTPUT_CHARS);
+            if content.trim().is_empty() {
+                continue;
+            }
+            json!({"role": "assistant", "content": content})
+        } else {
+            match user_model_content(message, zh) {
+                Some(content) => json!({"role": "user", "content": content}),
+                None => continue,
+            }
+        };
+        let n = estimate_message_chars(&entry);
+        if used + n > history_budget && !hist_rev.is_empty() {
+            break;
+        }
+        used = used.saturating_add(n);
+        hist_rev.push(entry);
+    }
+    hist_rev.reverse();
+
+    let mut messages = vec![json!({"role": "system", "content": prompt})];
+    messages.extend(hist_rev);
+    messages.extend(suffix);
     messages
+}
+
+fn estimate_message_chars(message: &Value) -> usize {
+    match message.get("content") {
+        Some(Value::String(text)) => text.chars().count(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .map(|part| {
+                part.get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0)
+                    + part
+                        .pointer("/image_url/url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.len().min(4_000))
+                        .unwrap_or(0)
+            })
+            .sum(),
+        _ => 0,
+    }
 }
 
 fn user_model_content(message: &MeMessage, zh: bool) -> Option<Value> {
@@ -1920,7 +1931,8 @@ fn prune_old_images(messages: &mut [MeMessage]) {
     }
 }
 
-fn assistant_model_text(message: &MeMessage) -> String {
+/// 把 assistant 轮次摊平成模型可读文本；`step_output_limit` 控制每步输出长度。
+fn assistant_model_text_limited(message: &MeMessage, step_output_limit: usize) -> String {
     let mut text = message.content.clone();
     for step in &message.steps {
         if !step.note.trim().is_empty() {
@@ -1939,7 +1951,8 @@ fn assistant_model_text(message: &MeMessage) -> String {
         } else {
             text.push_str("exit: none\n");
         }
-        text.push_str(&step.output);
+        let (kept, _) = prune_shell_output(&step.output, step_output_limit);
+        text.push_str(&kept);
     }
     text
 }
@@ -2165,17 +2178,17 @@ fn push_message_with_images(
 }
 
 fn drop_pending_note(session: &mut MeSession, zh: bool) {
+    drop_pending_with_reason(
+        session,
+        zh,
+        "换了地方，刚才那条先不执行。",
+        "I switched folders, so I did not run that.",
+    );
+}
+
+fn drop_pending_with_reason(session: &mut MeSession, zh: bool, zh_text: &str, en_text: &str) {
     if session.pending.take().is_some() {
-        push_message(
-            session,
-            "assistant",
-            say(
-                zh,
-                "换了地方，刚才那条先不执行。",
-                "I switched folders, so I did not run that.",
-            ),
-            Vec::new(),
-        );
+        push_message(session, "assistant", say(zh, zh_text, en_text), Vec::new());
     }
 }
 
@@ -2339,7 +2352,9 @@ async fn stream_via_gateway(
 
     let mut byte_stream = response.bytes_stream();
     let mut line_buf = String::new();
+    // 正文与推理分桶：收费推理模型会先推 reasoning，绝不能进气泡。
     let mut assembled = String::new();
+    let mut reasoning_only = String::new();
     let mut saw_done = false;
 
     loop {
@@ -2379,6 +2394,10 @@ async fn stream_via_gateway(
                     assembled.push_str(&piece);
                     on_delta(&assembled);
                 }
+            } else if let Some(piece) = extract_stream_reasoning_delta(&value) {
+                if !piece.is_empty() {
+                    reasoning_only.push_str(&piece);
+                }
             }
         }
         if saw_done {
@@ -2386,46 +2405,183 @@ async fn stream_via_gateway(
         }
     }
 
-    let trimmed = assembled.trim();
-    if trimmed.is_empty() {
-        let fallback_messages = payload
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        return complete_via_gateway(listen, key, model, fallback_messages).await;
+    let cleaned = strip_thinking_blocks(assembled.trim());
+    if !cleaned.is_empty() {
+        return Ok(cleaned);
     }
-    Ok(assembled)
-}
-
-fn extract_stream_delta(chunk: &Value) -> Option<String> {
-    // OpenAI chat SSE: choices[0].delta.content（优先正文）
-    if let Some(content) = chunk.pointer("/choices/0/delta/content") {
-        if let Some(text) = content_value_to_text(content) {
-            return Some(text);
+    // 正文空：先走非流式（正确优先 content）；仍空才考虑剥离后的 reasoning 兜底。
+    let fallback_messages = payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    match complete_via_gateway(listen, key, model, fallback_messages).await {
+        Ok(text) if !text.trim().is_empty() => Ok(text),
+        other => {
+            let from_reasoning = strip_thinking_blocks(reasoning_only.trim());
+            if !from_reasoning.is_empty() {
+                Ok(from_reasoning)
+            } else {
+                other
+            }
         }
     }
-    // 推理模型可能只推 reasoning / reasoning_content
+}
+
+/// 只取用户可见正文。reasoning / thinking 绝不能进 SOUL 气泡。
+pub fn extract_stream_delta(chunk: &Value) -> Option<String> {
+    if let Some(content) = chunk.pointer("/choices/0/delta/content") {
+        if let Some(text) = content_value_to_text(content) {
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    if let Some(content) = chunk.pointer("/choices/0/message/content") {
+        if let Some(text) = content_value_to_text(content) {
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    // Anthropic-ish：跳过 thinking_delta，只收 text_delta / 普通 text
+    if chunk.get("type").and_then(Value::as_str) == Some("content_block_delta") {
+        let delta_type = chunk
+            .pointer("/delta/type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if delta_type.contains("thinking") {
+            return None;
+        }
+        if let Some(text) = chunk.pointer("/delta/text").and_then(Value::as_str) {
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_stream_reasoning_delta(chunk: &Value) -> Option<String> {
     for pointer in [
         "/choices/0/delta/reasoning",
         "/choices/0/delta/reasoning_content",
-        "/choices/0/message/content",
         "/choices/0/message/reasoning",
         "/choices/0/message/reasoning_content",
     ] {
         if let Some(content) = chunk.pointer(pointer) {
             if let Some(text) = content_value_to_text(content) {
-                return Some(text);
+                if !text.is_empty() {
+                    return Some(text);
+                }
             }
         }
     }
-    // Anthropic-ish text delta forwarded as-is
     if chunk.get("type").and_then(Value::as_str) == Some("content_block_delta") {
-        if let Some(text) = chunk.pointer("/delta/text").and_then(Value::as_str) {
-            return Some(text.to_string());
+        let delta_type = chunk
+            .pointer("/delta/type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if delta_type.contains("thinking") {
+            if let Some(text) = chunk.pointer("/delta/text").and_then(Value::as_str) {
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
         }
     }
     None
+}
+
+/// 剥掉模型把思考写进 content 的常见外壳（标签块 / 分隔标题）。
+pub fn strip_thinking_blocks(text: &str) -> String {
+    let mut s = text.to_string();
+    for (open, close) in [
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<reasoning>", "</reasoning>"),
+        ("<redacted_reasoning>", "</redacted_reasoning>"),
+    ] {
+        s = strip_tagged_block(&s, open, close);
+    }
+    // 大小写不敏感再扫一遍常见变体
+    s = strip_tagged_block_ci(&s, "<think>", "</think>");
+    let mut out = Vec::new();
+    let mut skipping = false;
+    for line in s.lines() {
+        let t = line.trim();
+        let lower = t.to_ascii_lowercase();
+        let think_header = lower == "thinking:"
+            || lower == "reasoning:"
+            || t == "思考过程："
+            || t == "思考："
+            || t == "推理："
+            || lower.starts_with("thinking process");
+        let answer_header = t == "回答："
+            || t == "答复："
+            || lower == "answer:"
+            || lower == "final answer:"
+            || lower == "response:";
+        if think_header {
+            skipping = true;
+            continue;
+        }
+        if skipping {
+            if answer_header || lower.starts_with("```") {
+                skipping = false;
+                if answer_header {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        } else if answer_header {
+            // 无思考前缀时单独出现的「回答：」也剥掉，只留正文。
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n").trim().to_string()
+}
+
+fn strip_tagged_block(text: &str, open: &str, close: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(open) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + open.len()..];
+        if let Some(end) = after.find(close) {
+            rest = &after[end + close.len()..];
+        } else {
+            return out.trim().to_string();
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_tagged_block_ci(text: &str, open: &str, close: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let open_l = open.to_ascii_lowercase();
+    let close_l = close.to_ascii_lowercase();
+    let mut out = String::new();
+    let mut idx = 0usize;
+    let bytes = text.as_bytes();
+    while let Some(rel) = lower[idx..].find(&open_l) {
+        let start = idx + rel;
+        out.push_str(&text[idx..start]);
+        let after = start + open_l.len();
+        if let Some(end_rel) = lower[after..].find(&close_l) {
+            idx = after + end_rel + close_l.len();
+            while idx < bytes.len() && (bytes[idx] == b'\n' || bytes[idx] == b'\r') {
+                idx += 1;
+            }
+        } else {
+            return out.trim().to_string();
+        }
+    }
+    out.push_str(&text[idx..]);
+    out
 }
 
 fn content_value_to_text(content: &Value) -> Option<String> {
@@ -2450,20 +2606,33 @@ fn content_value_to_text(content: &Value) -> Option<String> {
 }
 
 fn reply_text(body: &Value) -> Option<String> {
-    if let Some(text) = quick_chat::extract_reply_text(body) {
-        return Some(text);
+    // SOUL：正文优先；reasoning 仅在 content 全空时作剥离兜底（避免思考进气泡）。
+    if let Some(content) = body.pointer("/choices/0/message/content") {
+        if let Some(text) = content_value_to_text(content) {
+            let cleaned = strip_thinking_blocks(text.trim());
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
     }
-    let parts = body.pointer("/choices/0/message/content")?.as_array()?;
-    let text: String = parts
-        .iter()
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect();
-    let text = text.trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_string())
+    if let Some(text) = body.pointer("/choices/0/text").and_then(Value::as_str) {
+        let cleaned = strip_thinking_blocks(text.trim());
+        if !cleaned.is_empty() {
+            return Some(cleaned);
+        }
     }
+    for pointer in [
+        "/choices/0/message/reasoning",
+        "/choices/0/message/reasoning_content",
+    ] {
+        if let Some(raw) = body.pointer(pointer).and_then(content_value_to_text) {
+            let cleaned = strip_thinking_blocks(raw.trim());
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
+    }
+    None
 }
 
 async fn speak(
@@ -2473,7 +2642,7 @@ async fn speak(
     zh: bool,
     pending_command: Option<String>,
     pending_note: String,
-    auto_write: bool,
+    auth_mode: MeAuthMode,
 ) -> Result<(), String> {
     begin_run();
     let config_dir = runtime.paths.config_dir.clone();
@@ -2512,20 +2681,31 @@ async fn speak(
     };
     let key = crate::clients::client_api_key_for_config(&config);
     let model = provider.public_model_id();
-    let prompt = system_prompt_with_brief(
+    let memory = SoulMemory::load(&config_dir);
+    let history = session.messages.clone();
+    let store_paths = crate::store::paths::StorePaths::from_app(&runtime.paths);
+    let ask = last_user_text(&history);
+    let mut brief = crate::soul_context::soul_brief(
+        zh,
+        &config_dir,
+        &store_paths,
+        &config.active_takeover_ids,
+    );
+    brief.push_str(&crate::soul_context::skill_hints_for_ask(
+        zh,
+        &ask,
+        &store_paths,
+        &config_dir,
+    ));
+    let prompt = system_prompt_with_brief_and_memory(
         zh,
         &cwd,
         &projects_root(&config_dir),
         &config_dir,
         &place_line(zh, &session.mode, &session.project),
-        &crate::soul_context::soul_brief(
-            zh,
-            &config_dir,
-            &crate::store::paths::StorePaths::from_app(&runtime.paths),
-            &config.active_takeover_ids,
-        ),
+        &brief,
+        &memory.prompt_block(zh),
     );
-    let history = session.messages.clone();
     let sink_cli = matches!(sink, StepSink::Cli);
     let app_for_delta = match &sink {
         StepSink::App(app) => Some((*app).clone()),
@@ -2581,7 +2761,7 @@ async fn speak(
         &pending_note,
         &prompt,
         LoopLimits::default(),
-        auto_write,
+        auth_mode,
         cancel_flag(),
     )
     .await
@@ -2736,7 +2916,9 @@ pub async fn me_send(
     images: Option<Vec<MeImage>>,
     lang: String,
     auto_write: Option<bool>,
+    auth_mode: Option<String>,
 ) -> Result<MeView, String> {
+    let mode = resolve_auth_mode(auth_mode.as_deref(), auto_write);
     turn(
         &app,
         &runtime,
@@ -2744,7 +2926,7 @@ pub async fn me_send(
         Turn::Send {
             message,
             images: images.unwrap_or_default(),
-            auto_write: auto_write.unwrap_or(false),
+            auth_mode: mode,
         },
     )
     .await
@@ -2756,16 +2938,23 @@ pub async fn me_confirm(
     runtime: State<'_, AppRuntime>,
     lang: String,
     auto_write: Option<bool>,
+    auth_mode: Option<String>,
 ) -> Result<MeView, String> {
+    let mode = resolve_auth_mode(auth_mode.as_deref(), auto_write);
     turn(
         &app,
         &runtime,
         lang,
-        Turn::Confirm {
-            auto_write: auto_write.unwrap_or(false),
-        },
+        Turn::Confirm { auth_mode: mode },
     )
     .await
+}
+
+fn resolve_auth_mode(auth_mode: Option<&str>, auto_write: Option<bool>) -> MeAuthMode {
+    if let Some(raw) = auth_mode {
+        return MeAuthMode::parse(Some(raw));
+    }
+    MeAuthMode::from_auto_write(auto_write.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -2781,10 +2970,10 @@ enum Turn {
     Send {
         message: String,
         images: Vec<MeImage>,
-        auto_write: bool,
+        auth_mode: MeAuthMode,
     },
     Confirm {
-        auto_write: bool,
+        auth_mode: MeAuthMode,
     },
     Dismiss,
 }
@@ -2798,7 +2987,7 @@ async fn turn(
     turn_with_sink(StepSink::App(app), runtime, lang, turn).await
 }
 
-/// CLI / 无 UI：发一条消息给小su（可自动同意写入）。
+/// CLI / 无 UI：发一条消息给小酥（可自动同意写入）。
 pub async fn cli_send(
     runtime: &AppRuntime,
     message: String,
@@ -2817,7 +3006,7 @@ pub async fn cli_send(
         Turn::Send {
             message,
             images: Vec::new(),
-            auto_write,
+            auth_mode: MeAuthMode::from_auto_write(auto_write),
         },
     )
     .await
@@ -2836,7 +3025,7 @@ pub struct MeCliRunResult {
     pub opened: Option<String>,
 }
 
-/// CLI：不经模型，在小su 工作目录执行命令；可选再用本机默认应用打开文件。
+/// CLI：不经模型，在小酥工作目录执行命令；可选再用本机默认应用打开文件。
 pub async fn cli_run(
     runtime: &AppRuntime,
     command: String,
@@ -2911,22 +3100,22 @@ async fn turn_with_sink(
 ) -> Result<MeView, String> {
     let zh = is_zh(&lang);
     let config_dir = runtime.paths.config_dir.clone();
-    let mut auto_write = false;
+    let mut auth_mode = MeAuthMode::Ask;
     let prepared = {
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;
         let mut session = load_session(&config_dir);
         let action = match turn {
-            Turn::Confirm { auto_write: flag } => {
-                auto_write = flag;
+            Turn::Confirm { auth_mode: mode } => {
+                auth_mode = mode;
                 Intake::Confirm
             }
             Turn::Dismiss => Intake::Dismiss,
             Turn::Send {
                 message,
                 images,
-                auto_write: flag,
+                auth_mode: mode,
             } => {
-                auto_write = flag;
+                auth_mode = mode;
                 let images = normalize_images(Some(images))?;
                 if message.trim().is_empty() && images.is_empty() {
                     return Ok(view_of(&config_dir, &session));
@@ -2991,14 +3180,37 @@ async fn turn_with_sink(
                 }
             }
             Intake::Talk(text) => {
-                session.pending = None;
+                // 有待确认写入时换话题：明确告知，不静默丢掉（对齐 harness 对 pending 的可见性）。
+                drop_pending_with_reason(
+                    &mut session,
+                    zh,
+                    "你又说了新的事，刚才那条写入先不执行。",
+                    "You said something new, so I held off on that write.",
+                );
+                let remembered = remember_user_words(&config_dir, &text, zh);
                 push_message(&mut session, "user", text, Vec::new());
-                Some((None, String::new()))
+                if let Some(reply) = remembered {
+                    push_message(&mut session, "assistant", reply, Vec::new());
+                    None
+                } else {
+                    Some((None, String::new()))
+                }
             }
             Intake::TalkWithImages { text, images } => {
-                session.pending = None;
+                drop_pending_with_reason(
+                    &mut session,
+                    zh,
+                    "你又说了新的事，刚才那条写入先不执行。",
+                    "You said something new, so I held off on that write.",
+                );
+                let remembered = remember_user_words(&config_dir, &text, zh);
                 push_message_with_images(&mut session, "user", text, Vec::new(), images);
-                Some((None, String::new()))
+                if let Some(reply) = remembered {
+                    push_message(&mut session, "assistant", reply, Vec::new());
+                    None
+                } else {
+                    Some((None, String::new()))
+                }
             }
         };
         save_session(&config_dir, &session)?;
@@ -3016,7 +3228,7 @@ async fn turn_with_sink(
             zh,
             command,
             note,
-            auto_write,
+            auth_mode,
         )
         .await?;
         let _guard = session_lock().lock().map_err(|_| "会话忙".to_string())?;

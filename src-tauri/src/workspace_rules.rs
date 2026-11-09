@@ -14,10 +14,14 @@ pub enum RequestShape {
 }
 
 /// 文档习惯的内置注入文案。`{docs}` 会换成已启用的文档列表。
+///
+/// 注意：不要写成「未建好文档就禁止做任何事」。Codex 工具环里那种硬门禁会把
+/// 「打开浏览器 / 写指定文件」劫持成先建 AGENTS.md，然后模型只宣布下一步就假收工。
 pub fn default_inject_template() -> &'static str {
-    "[SUGT 文档习惯 · 必须执行]\n\
-开干前：用文件工具打开并阅读以下文件；不存在则先创建再继续；未读完/未建好前不要改代码。\n\
-收工门禁：在宣称任务完成、给出最终总结、或停止继续改动之前，必须先用写入工具把本次变动（目录/模块/职责/入口等）写回下列文档；未写回不得声称完成。\n\
+    "[SUGT 文档习惯]\n\
+适用范围：仅当本次会改代码或项目结构时维护下列文档；打开网页、查资料、读写用户点名的文件等任务不要被文档门禁打断。\n\
+开干：若会改代码，先读下列文档；不存在可边做边补，不要只宣布「先建文档」就结束本轮。\n\
+收工：若本次改动了代码/结构，总结前用写入工具把变动写回下列文档。\n\
 {docs}"
 }
 
@@ -100,7 +104,7 @@ fn request_nudge(rules: &WorkspaceRules) -> Option<String> {
         .collect::<Vec<_>>()
         .join("、");
     Some(format!(
-        "[SUGT] 文档 {paths}：开干先读（无则建）；完成前必须写回，未写回不要说做完。"
+        "[SUGT] 文档 {paths}：仅改代码时维护；勿因文档门禁中断用户当前任务，更不要只宣布计划就收工。"
     ))
 }
 
@@ -120,30 +124,34 @@ pub fn inject_into_request_body(
         return body;
     };
     let nudge = request_nudge(rules);
+    let mut nudged = false;
     match shape {
-        RequestShape::OpenAiChat => inject_openai_chat(&mut value, &text, nudge.as_deref()),
+        RequestShape::OpenAiChat => {
+            nudged = inject_openai_chat(&mut value, &text, nudge.as_deref());
+        }
         RequestShape::AnthropicMessages => {
-            inject_anthropic(&mut value, &text, nudge.as_deref())
+            nudged = inject_anthropic(&mut value, &text, nudge.as_deref());
         }
         RequestShape::OpenAiResponses => {
-            inject_responses(&mut value, &text, nudge.as_deref())
+            nudged = inject_responses(&mut value, &text, nudge.as_deref());
         }
     }
     info!(
         shape = ?shape,
         inject_chars = text.len(),
-        nudged = nudge.is_some(),
+        nudged,
         "workspace rules injected into upstream request"
     );
     Bytes::from(serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec()))
 }
 
-fn inject_openai_chat(value: &mut Value, text: &str, nudge: Option<&str>) {
+/// 返回是否实际把 nudge 钉到了 user 消息上。
+fn inject_openai_chat(value: &mut Value, text: &str, nudge: Option<&str>) -> bool {
     let Some(obj) = value.as_object_mut() else {
-        return;
+        return false;
     };
     let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) else {
-        return;
+        return false;
     };
     if let Some(first) = messages.first_mut() {
         if first.get("role").and_then(|r| r.as_str()) == Some("system") {
@@ -155,13 +163,16 @@ fn inject_openai_chat(value: &mut Value, text: &str, nudge: Option<&str>) {
         messages.push(json!({ "role": "system", "content": text }));
     }
     if let Some(nudge) = nudge {
-        nudge_last_user_message(messages, nudge);
+        nudge_last_user_message(messages, nudge)
+    } else {
+        false
     }
 }
 
-fn inject_anthropic(value: &mut Value, text: &str, nudge: Option<&str>) {
+/// 返回是否实际把 nudge 钉到了 user 消息上。
+fn inject_anthropic(value: &mut Value, text: &str, nudge: Option<&str>) -> bool {
     let Some(obj) = value.as_object_mut() else {
-        return;
+        return false;
     };
     match obj.get_mut("system") {
         Some(system) if system.is_string() => {
@@ -180,14 +191,16 @@ fn inject_anthropic(value: &mut Value, text: &str, nudge: Option<&str>) {
     }
     if let Some(nudge) = nudge {
         if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
-            nudge_last_user_message(messages, nudge);
+            return nudge_last_user_message(messages, nudge);
         }
     }
+    false
 }
 
-fn inject_responses(value: &mut Value, text: &str, nudge: Option<&str>) {
+/// 返回是否实际把 nudge 钉到了 user 消息上。
+fn inject_responses(value: &mut Value, text: &str, nudge: Option<&str>) -> bool {
     let Some(obj) = value.as_object_mut() else {
-        return;
+        return false;
     };
     match obj.get("instructions").and_then(|i| i.as_str()) {
         Some(old) if !old.is_empty() => {
@@ -201,12 +214,46 @@ fn inject_responses(value: &mut Value, text: &str, nudge: Option<&str>) {
         }
     }
     if let Some(nudge) = nudge {
-        nudge_responses_input(obj, nudge);
+        // Codex 多轮会把原始 user + function_call(_output) 整包重放。若每轮都把
+        // 文档 nudge 钉回原始 user，模型会被反复拽去「先建 AGENTS.md」，用户任务
+        // （开浏览器等）永远排不到。工具环进行中只保留 instructions，不再改 user。
+        if !responses_input_in_tool_loop(obj) {
+            return nudge_responses_input(obj, nudge);
+        }
     }
+    false
+}
+
+/// Responses input 是否已进入工具环（含 call / output / reasoning 等）。
+fn responses_input_in_tool_loop(obj: &serde_json::Map<String, Value>) -> bool {
+    let Some(Value::Array(items)) = obj.get("input") else {
+        return false;
+    };
+    items.iter().any(responses_item_is_tool_loop)
+}
+
+fn responses_item_is_tool_loop(item: &Value) -> bool {
+    let typ = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    matches!(
+        typ,
+        "function_call"
+            | "function_call_output"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
+            | "local_shell_call"
+            | "local_shell_call_output"
+            | "tool_search_call"
+            | "tool_search_output"
+            | "mcp_call"
+            | "mcp_call_output"
+            | "reasoning"
+            | "item_reference"
+    ) || (item.get("call_id").is_some()
+        && (item.get("output").is_some() || item.get("arguments").is_some()))
 }
 
 /// Responses 的 input 可能是 string 或 message 数组；尽量钉到末条 user。
-fn nudge_responses_input(obj: &mut serde_json::Map<String, Value>, nudge: &str) {
+fn nudge_responses_input(obj: &mut serde_json::Map<String, Value>, nudge: &str) -> bool {
     match obj.get_mut("input") {
         Some(Value::String(s)) => {
             if s.trim().is_empty() {
@@ -214,6 +261,7 @@ fn nudge_responses_input(obj: &mut serde_json::Map<String, Value>, nudge: &str) 
             } else {
                 *s = format!("{nudge}\n\n{s}");
             }
+            true
         }
         Some(Value::Array(items)) => {
             for item in items.iter_mut().rev() {
@@ -222,21 +270,22 @@ fn nudge_responses_input(obj: &mut serde_json::Map<String, Value>, nudge: &str) 
                     .and_then(|r| r.as_str())
                     .or_else(|| item.get("type").and_then(|t| t.as_str()));
                 if role == Some("user") || role == Some("message") {
-                    if is_tool_result_only(item) {
+                    if is_tool_result_only(item) || responses_item_is_tool_loop(item) {
                         continue;
                     }
                     prepend_content_field(item, nudge);
-                    return;
+                    return true;
                 }
             }
             items.push(json!({ "role": "user", "content": nudge }));
+            true
         }
-        _ => {}
+        _ => false,
     }
 }
 
 /// 给最近一条「可读的」user 文本加提醒；跳过纯 tool_result 回合。
-fn nudge_last_user_message(messages: &mut [Value], nudge: &str) {
+fn nudge_last_user_message(messages: &mut [Value], nudge: &str) -> bool {
     for message in messages.iter_mut().rev() {
         if message.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
@@ -245,8 +294,9 @@ fn nudge_last_user_message(messages: &mut [Value], nudge: &str) {
             continue;
         }
         prepend_content_field(message, nudge);
-        return;
+        return true;
     }
+    false
 }
 
 fn is_tool_result_only(message: &Value) -> bool {
@@ -363,10 +413,10 @@ mod tests {
         assert!(text.contains("[SUGT 全局规则]"));
         assert!(text.contains("完成后简短汇报"));
         assert!(text.contains("docs/MAP.md"));
-        assert!(text.contains("必须执行"));
-        assert!(text.contains("不存在则先创建"));
-        assert!(text.contains("收工门禁"));
-        assert!(text.contains("未写回不得声称完成"));
+        assert!(text.contains("文档习惯"));
+        assert!(text.contains("不要被文档门禁打断"));
+        assert!(text.contains("收工"));
+        assert!(text.contains("不要只宣布"));
         assert!(!text.contains("/v1/_sugt/notify"));
         assert!(!text.contains("access_token=x"));
     }
@@ -525,7 +575,7 @@ mod tests {
         assert!(v["messages"][0]["content"].as_str().unwrap().contains("全局规则"));
         let user = v["messages"][1]["content"].as_str().unwrap();
         assert!(user.contains("[SUGT]"));
-        assert!(user.contains("写回"));
+        assert!(user.contains("勿因文档门禁中断"));
         assert!(user.contains("docs/MAP.md"));
         assert!(!user.contains("/v1/_sugt/notify"));
         assert!(user.contains("hi"));
@@ -565,7 +615,7 @@ mod tests {
         assert!(system.starts_with("sys"));
         assert!(system.contains("[SUGT 全局规则]"));
         let user = v["messages"][0]["content"].as_str().unwrap();
-        assert!(user.contains("写回"));
+        assert!(user.contains("勿因文档门禁中断"));
         assert!(user.contains("docs/MAP.md"));
         assert!(!user.contains("/v1/_sugt/notify"));
     }
@@ -611,9 +661,31 @@ mod tests {
         let instr = v["instructions"].as_str().unwrap();
         assert!(instr.starts_with("base"));
         assert!(instr.contains("[SUGT 全局规则]"));
-        assert!(instr.contains("收工门禁"));
+        assert!(instr.contains("收工"));
         let input = v["input"].as_str().unwrap();
-        assert!(input.contains("写回"));
+        assert!(input.contains("勿因文档门禁中断"));
         assert!(input.contains("hi"));
+    }
+
+    #[test]
+    fn skips_responses_nudge_during_tool_loop() {
+        let body = Bytes::from(
+            r#"{"instructions":"base","input":[{"role":"user","content":[{"type":"input_text","text":"open baidu"}]},{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"pwd\"}"},{"type":"function_call_output","call_id":"c1","output":"ok"}]}"#
+                .as_bytes()
+                .to_vec(),
+        );
+        let out = inject_into_request_body(
+            body,
+            &rules_on(),
+            "http://127.0.0.1:8787",
+            RequestShape::OpenAiResponses,
+        );
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        let instr = v["instructions"].as_str().unwrap();
+        assert!(instr.contains("文档习惯"));
+        let input = v["input"].as_array().unwrap();
+        let user = input[0]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(user, "open baidu");
+        assert!(!user.contains("[SUGT]"));
     }
 }

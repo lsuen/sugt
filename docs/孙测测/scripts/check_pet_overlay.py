@@ -74,10 +74,10 @@ SOURCE_CHECKS = [
       "roam_respects_negative_secondary_monitor_origin"]),
     ("C20c", "走动命令注册与 ACL 放行", "src-tauri/src/app.rs",
      ["pet::pet_roam_to", "pet::pet_global_cursor", "pet::pet_set_clickable"]),
-    ("C21", "视线以头部为轴且由 rAF 插值驱动", "src/pet/pet.css",
+    ("C21", "视线以头部为轴且移动中关掉 3D/滤镜", "src/pet/pet.css",
      ["transform-origin: 55% 32%", "rotateY(calc(var(--gaze-x) * 9deg))",
-      "transition: filter 0.25s ease", "@keyframes pet-heart",
-      "@keyframes pet-roam-step", "@keyframes pet-land"]),
+      "filter: none", "transform: scaleX(var(--face-x))",
+      "@keyframes pet-heart", "@keyframes pet-roam-step", "@keyframes pet-land"]),
     ("C22", "气泡不裁字 / 状态胶囊在脚底 / 思考云与摸头反馈", "src/pet/pet.css",
      ["width: max-content", "overflow-wrap: anywhere",
       "left: calc(50% + var(--pet-side-w) / 2)", ".pet-thought",
@@ -99,6 +99,23 @@ SOURCE_CHECKS = [
       "if (roaming && state === 'idle') return 'walk';"]),
     ("C26", "右键菜单 Esc 关闭且不整窗解穿透", "src/pet/PetStage.tsx",
      ["setMenuOpen(false)", "Escape", "onMenuDismiss"]),
+    ("C27", "舞台写死零底色", "src/pet/pet.css",
+     ["background: transparent !important", "background-color: transparent !important",
+      "background-image: none !important"]),
+    ("C27b", "入口 html/body/#root 零底色", "overlay.html",
+     ["background: transparent !important", "background-color: transparent !important"]),
+    ("C29", "姿势硬切且眨眼不叠全身帧", "src/pet/pet.css",
+     ["transition: none", ".pet-stage.blinking .pet-loop.is-active",
+      "visibility: hidden"]),
+    ("C29b", "右键菜单为紧凑面板非整窗铺满", "src/pet/pet.css",
+     ["left: calc(var(--pet-side-w) + 6%)", "bottom: auto"]),
+    ("C30", "立绘透明度变量且舞台无边框", "src/pet/pet.css",
+     ["--pet-opacity", "border: 0 !important", "outline: 0 !important",
+      "box-shadow: none !important", "opacity: var(--pet-opacity)"]),
+    ("C31", "透明窗关闭系统阴影", "src-tauri/src/overlay.rs",
+     [".shadow(false)", "set_shadow(false)"]),
+    ("C32", "立绘禁止 drop-shadow 拖影底板", "src/pet/pet.css",
+     ["禁止 drop-shadow", "filter: none"]),
 ]
 
 DIST_CSS_SELECTORS = [".pet-side", ".pet-figure", ".pet-motion", ".pet-loops",
@@ -162,6 +179,36 @@ def check_no_shake(root: Path) -> tuple[str, str, bool, str]:
         "pet-error 0.4s ease-in-out 2",
     ) if needle in css]
     return "C16", "无限高频摇晃已移除", not bad, "、".join(bad) if bad else "无残留"
+
+
+def check_no_stage_backdrop(root: Path) -> tuple[str, str, bool, str]:
+    """舞台禁止光晕底板 / 地面投影；演示页虚线窗必须透明。"""
+    css = read(root, "src/pet/pet.css")
+    stage = read(root, "src/pet/PetStage.tsx")
+    preview_builder = read(root, "docs/孙测测/scripts/build_pet_preview.py")
+    problems: list[str] = []
+    if ".pet-halo" in css or "pet-halo" in stage:
+        problems.append("残留 pet-halo")
+    if ".pet-ground" in css or "pet-ground" in stage:
+        problems.append("残留 pet-ground")
+    # 任何生效的 drop-shadow 都会在透明窗里裁成矩形底板并拖影（注释除外）
+    in_block_comment = False
+    for line in css.splitlines():
+        stripped = line.strip()
+        if "/*" in stripped:
+            in_block_comment = True
+        if in_block_comment:
+            if "*/" in stripped:
+                in_block_comment = False
+            continue
+        if "drop-shadow" in stripped:
+            problems.append(f"残留 drop-shadow: {stripped[:60]}")
+    if "background:transparent!important" not in preview_builder.replace(" ", ""):
+        problems.append("预览 .win 未强制 transparent")
+    if "棋盘格" not in preview_builder and "模拟壁纸" not in preview_builder:
+        problems.append("预览未标明棋盘格仅为模拟壁纸")
+    return ("C28", "禁止舞台底板且演示窗透明", not problems,
+            "、".join(problems) if problems else "无 halo/ground，预览窗透明")
 
 
 def check_pet_sizes(root: Path) -> tuple[str, str, bool, str]:
@@ -450,6 +497,7 @@ def main() -> int:
         rows.append(check_gateway_wrappers(root))
         rows.append(check_runtime_wiring(root))
         rows.append(check_no_shake(root))
+        rows.append(check_no_stage_backdrop(root))
         rows.append(check_pet_sizes(root))
         rows.append(check_pose_layers(root))
         rows.append(check_v09_wiring(root))

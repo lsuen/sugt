@@ -1138,15 +1138,23 @@ async fn proxy_responses_via_chat(
         let is_free = crate::experimental_free::is_experimental_free(provider);
         let attempts = upstream_attempts(provider, config.failover_enabled);
         for (attempt_idx, attempt) in attempts.iter().enumerate() {
-            let try_native = crate::openai_responses_adapter::should_try_native_responses(
-                &attempt.base_url,
-                &attempt.model_name,
-            );
+            // Codex 几乎每轮都带 tools。火山原生 /responses 常「200 纯文本收工」不发
+            // tool call；带 tools 时一律走 Chat Completions 桥，保证任意 OpenAI 兼容 LLM
+            // 都能跑完工具环，而不是只宣布计划就停。
+            let request_has_tools =
+                crate::openai_responses_adapter::responses_body_declares_tools(&body_bytes);
+            let try_native =
+                crate::openai_responses_adapter::should_try_native_responses_for_body(
+                    &attempt.base_url,
+                    &attempt.model_name,
+                    &body_bytes,
+                );
             info!(
                 provider = %attempt.name,
                 base_url = %attempt.base_url,
                 model = %attempt.model_name,
                 try_native_responses = try_native,
+                request_has_tools,
                 attempt = attempt_idx,
                 "codex responses routing"
             );

@@ -675,3 +675,57 @@ end byte index 500 is not a char boundary; it is inside '中' (bytes 498..501 of
 | winget | 见下方备注；**不阻断** 1.1.8 封版 | 待 moderator |
 
 **封版结论：v1.1.8 已发布，Release / brew / 下载站资产链路闭环完成。**
+
+## 19. Codex「宣布计划就停」与火山通道（2026-11-09）
+
+### 19.1 报告头
+
+| 项 | 内容 |
+| --- | --- |
+| 报告编号 | SUGT-TR-19 |
+| 测试范围 | Codex Desktop / `codex exec` 经 SUGT 网关访问火山 `ark-code-latest`（`/api/plan/v3`）时「只宣布不做」 |
+| 被测版本 | 工作区未提交改动：`responses_upstream` 尊重 plan Base URL；带 tools 走 Chat 桥；文档习惯软化 + Responses 工具环跳过 nudge |
+| 环境 | macOS；`~/Library/Application Support/sugt/{config.toml,sugt.log}`；`~/.codex/sessions/2026/11/09/*.jsonl` |
+| 对照 | [cc-switch 3.19](https://ccswitch.io/en/changelog/3.19.1)：火山 Coding Plan 官方端点可原生 Responses；Chat-only 上游才走本地 Responses↔Chat。Codex 客户端要求 `wire_api=responses`（SUGT 接管已写）。火山官方 Codex 文档 Base 为 `/api/v3` + Responses |
+
+### 19.2 证据链（按时间）
+
+| 时间 (UTC) | 证据 | 结论 |
+| --- | --- | --- |
+| 05:28–05:30 | 日志 `ark-code model detected … using default Coding Plan endpoint` → 目标 `…/api/coding/v3/responses`；会话 `task_complete` 404 `UnsupportedModel / coding plan feature` | **DEF-020** 硬改 Base URL 到 coding，与用户 `plan/v3` 订阅不匹配 |
+| 05:56 / 10:58 | 改尊重配置后 `native_base=…/api/plan/v3`，问候 200 OK | Base URL 修复有效 |
+| 10:58–11:06 | 会话仅 `final_answer` 文本（「我会做一次自测…」「我会调用 openai-docs…」），**0 tool call**；日志 `mode=native_responses_passthrough` | **DEF-021** 火山 plan `/responses` 透传对带 tools 请求常「200 纯文本收工」 |
+| 11:20 后 | 日志 `try_native_responses=false` + `mode=chat_completions_adapter`；`stream completed` 多轮 `tool_calls:1`；会话出现 `exec_command` | Chat 桥恢复工具发射（对齐 cc-switch「Chat 上游必须转换」） |
+| 11:13 / 11:19 | 工具已调用，但先查 AGENTS.md；随后「我会先建立基础记录，再打开网页」即 `task_complete`，浏览器未开 | **DEF-022** `docs_enabled` 默认文案「不存在则先创建再继续」+ 每轮把 nudge 钉回原始 user（Responses 工具环未识别），劫持用户任务并诱发假收工 |
+| 配置对照 | `workspace_rules.enabled=false` 但 `docs_enabled=true`；日志持续 `workspace rules injected … nudged=true` | 文档习惯可独立于全局规则注入——设计如此，但硬门禁文案有害 |
+
+### 19.3 缺陷条目
+
+| ID | 标题 | 优先级 | 严重级别 | 状态 |
+| --- | --- | --- | --- | --- |
+| DEF-020 | Codex Responses 把用户 `plan/v3` 硬改到 `coding/v3` | P0 | Blocker | **已修**：`native_responses_base_url` 只用配置 |
+| DEF-021 | 带 tools 仍走火山原生 `/responses` 透传 → 假成功无 tool call | P0 | Blocker | **已修**：`should_try_native_responses_for_body` 有 tools 则 Chat 桥 |
+| DEF-022 | 文档习惯硬门禁 + Responses 工具环每轮 nudge 劫持任务 | P0 | Major | **已修**：软化默认文案；工具环进行中跳过 user nudge |
+
+### 19.4 与「免费模型」旧归因的关系
+
+此前把同类现象归咎「免费模型不支持 FC」不准确。同一 Chat 桥路径下，免费通道也曾成功 `exec_command` 打开浏览器（2026-11-08 会话）。本轮断点是：**网关路由选错（native 透传）+ 文档门禁劫持**，与付费/免费无关。
+
+### 19.5 适配所有 LLM 的策略（对齐 cc-switch）
+
+1. Codex 始终 `wire_api=responses` 打 SUGT。
+2. 上游若原生 Responses 且本轮**无 tools** → 可透传。
+3. 本轮**有 tools**（Codex Agent 常态）→ Responses→Chat Completions 桥，保留 tools；仅当上游明确拒 FC 才命令模式重试一次。
+4. 文档习惯不得改写工具环中的用户原话，不得要求「先建文档才能做别的事」。
+
+
+### 19.6 本轮验收（2026-11-09 19:34）
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test --lib workspace_rules::` | **16 passed** |
+| `cargo test --lib native_responses_skipped_when_tools_declared` | **ok** |
+| `codex exec --ephemeral -s workspace-write` 写 `hello-sugt.txt` | 发出 `exec`/`apply_patch`，文件内容 `SUGT-ok`，未建 AGENTS.md |
+| `codex exec --ephemeral` 打开百度 | 发出 `open https://www.baidu.com/`（本自动化环境 LaunchServices `-10661` 打不开 GUI 浏览器；网关侧工具环已完成） |
+| 网关日志 | `try_native_responses=false` + `mode=chat_completions_adapter`；多轮 `tool_calls:1` |
+

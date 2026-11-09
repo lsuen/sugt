@@ -36,8 +36,11 @@ from collections import deque
 # idle 直接用洋红底定稿；其余由 Qwen-Edit 产出，文件名带 v7-chroma-<state> 前缀。
 # 不再生成 blink 帧：Qwen-Edit 2509 在本角色上无论如何都保留睁眼（v0.5 同样问题），
 # 闭眼改由运行时眼睑层统一实现（眨眼 + 睡眠共用），更可控也更自然。
-STATES = ("idle", "typing", "done", "error", "sleep")
-LOOP_STATES = ("idle", "typing", "done", "error", "sleep")
+STATES = (
+    "idle", "typing", "done", "error", "sleep",
+    "wave", "peek", "shy", "celebrate", "walk",
+)
+LOOP_STATES = STATES
 
 # 色键参数：背景色度噪声 p99≈15，故 14 以下全清；180 以上视为完全前景
 CHROMA_FLOOR = 14.0

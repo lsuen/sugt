@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { TakeoverProfilesSection } from '../TakeoverProfilesSection';
+import { TakeoverPreviewModal } from '../TakeoverPreviewModal';
 import { invoke } from '@tauri-apps/api/core';
 import {
   ArrowLeft, BookOpen, FolderOpen, Globe, Package, PlugZap, Play, RefreshCw,
@@ -22,6 +23,11 @@ import type {
   StoreSettings,
   StoreSubview,
 } from './types';
+
+/** 商店 client tab → 内置 takeover profile id（与 install_clients_env / ADAPTERS 一致） */
+function storeClientToProfileId(tab: StoreClientTab): string {
+  return tab === 'codex' ? 'codex' : 'claude-code';
+}
 
 type ClientEnvStatus = {
   client: string;
@@ -126,6 +132,7 @@ export function StoreClientsPanel({
   const [statusText, setStatusText] = useState<string | null>(null);
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [launchModalOpen, setLaunchModalOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const loadCatalog = useCallback(async () => {
     const items = await invoke<SkillCatalogItem[]>('store_list_catalog', { query: null });
@@ -249,6 +256,28 @@ export function StoreClientsPanel({
   const skillsPath = clientTab === 'claude' ? paths?.claude_skills : paths?.codex_skills;
   const proxyActive = Boolean(settings.github_proxy_prefix?.trim());
   const clientLabel = clientTab === 'claude' ? 'Claude Code' : 'Codex';
+  const takeoverProfileId = storeClientToProfileId(clientTab);
+
+  // 商店 Codex/Claude 一键接管必须走 install_clients_env（写 OPENAI_* + config.toml），
+  // 不要改成 apply_takeover_profile：后者是模板页路径，商店侧曾因此表现为「点了接管却用不了」。
+  const applyTakeoverFromPreview = () =>
+    run(async () => {
+      const next = await invoke<ClientsEnvStatus>('install_clients_env', {
+        client: clientTab,
+        autoStart: !status?.running,
+      });
+      onClientsChange(next);
+    }, status?.running
+      ? t('store.takenOverToast', { client: clientLabel })
+      : t('store.startedAndTakenOver', { client: clientLabel }));
+
+  const releaseTakeoverFromPreview = () =>
+    run(async () => {
+      const next = await invoke<ClientsEnvStatus>('uninstall_clients_env', {
+        client: clientTab,
+      });
+      onClientsChange(next);
+    }, t('store.cancelledTakeover', { client: clientLabel }));
 
   const discoverFilterLabel = (id: DiscoverFilter): string => {
     switch (id) {
@@ -638,21 +667,46 @@ export function StoreClientsPanel({
                   const next = await invoke<ClientsEnvStatus>('repair_clients_env');
                   onClientsChange(next);
                 }, t('store.repaired'))}><Wrench size={14} />{t('client.repair')}</button>
-                {status?.running ? (
-                  <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
-                    const next = await invoke<ClientsEnvStatus>('install_clients_env', { client: clientTab });
-                    onClientsChange(next);
-                  }, t('store.takenOverToast', { client: clientLabel }))}><PlugZap size={14} />{t('client.takeover')}</button>
+                {activeClient?.configured ? (
+                  <>
+                    <button
+                      type="button"
+                      className="ghost tiny-btn"
+                      disabled={busy}
+                      title={t('client.previewTitle')}
+                      aria-haspopup="dialog"
+                      onClick={() => setPreviewOpen(true)}
+                    >
+                      <ShieldCheck size={14} />{t('client.previewBtn')}
+                    </button>
+                    <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => run(async () => {
+                      const next = await invoke<ClientsEnvStatus>('uninstall_clients_env', { client: clientTab });
+                      onClientsChange(next);
+                    }, t('store.cancelledTakeover', { client: clientLabel }))}>{t('store.cancelTakeover')}</button>
+                  </>
+                ) : status?.running ? (
+                  <button
+                    type="button"
+                    className="primary tiny-btn"
+                    disabled={busy}
+                    title={t('client.previewTitle')}
+                    aria-haspopup="dialog"
+                    onClick={() => setPreviewOpen(true)}
+                  >
+                    <PlugZap size={14} />{t('store.previewThenTakeover')}
+                  </button>
                 ) : (
-                  <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => run(async () => {
-                    const next = await invoke<ClientsEnvStatus>('install_clients_env', { autoStart: true, client: clientTab });
-                    onClientsChange(next);
-                  }, t('store.startedAndTakenOver', { client: clientLabel }))}><Play size={14} />{t('store.startAndTakeover')}</button>
+                  <button
+                    type="button"
+                    className="primary tiny-btn"
+                    disabled={busy}
+                    title={t('client.previewTitle')}
+                    aria-haspopup="dialog"
+                    onClick={() => setPreviewOpen(true)}
+                  >
+                    <Play size={14} />{t('store.previewThenStartTakeover')}
+                  </button>
                 )}
-                <button type="button" className="ghost tiny-btn" disabled={busy || !activeClient?.configured} onClick={() => run(async () => {
-                  const next = await invoke<ClientsEnvStatus>('uninstall_clients_env', { client: clientTab });
-                  onClientsChange(next);
-                }, t('store.cancelledTakeover', { client: clientLabel }))}>{t('store.cancelTakeover')}</button>
               </div>
             </div>
             {clientsHint ? <p className="hint">{clientsHint}</p> : null}
@@ -769,6 +823,24 @@ export function StoreClientsPanel({
       </div>
       {proxyModal}
       {launchModal}
+      {previewOpen && (
+        <TakeoverPreviewModal
+          profileId={takeoverProfileId}
+          profileName={clientLabel}
+          configured={Boolean(activeClient?.configured)}
+          busy={busy}
+          onClose={() => setPreviewOpen(false)}
+          onApply={() => {
+            setPreviewOpen(false);
+            void applyTakeoverFromPreview();
+          }}
+          onRelease={() => {
+            setPreviewOpen(false);
+            void releaseTakeoverFromPreview();
+          }}
+          pushToast={pushToast}
+        />
+      )}
     </section>
   );
 }

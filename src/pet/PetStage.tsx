@@ -393,8 +393,11 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
 
   const onFigureContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
     if (!interactive || cfg.edit) return;
     lastUserTouch.current = Date.now();
+    // 右键当下立刻解穿透，避免菜单刚开就因轮询滞后再次穿透点不中
+    void invoke('pet_set_clickable', { enabled: true }).catch(() => undefined);
     setMenuOpen(true);
   };
 
@@ -419,7 +422,10 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     poked ? 'poked' : '',
     petted ? 'petted' : '',
     roaming ? 'roaming' : '',
+    dragging ? 'dragging' : '',
   ].filter(Boolean).join(' ');
+
+  const petOpacity = Math.min(1, Math.max(0.15, Number(cfg.opacity) || 1));
 
   return (
     <div
@@ -427,11 +433,10 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       className={classNames}
       data-state={petState}
       data-facing={facing}
+      style={{ ['--pet-opacity' as string]: String(petOpacity) }}
     >
-      {/* 环境层：靠近光晕、地面投影、漂浮粒子、完成时的一次性火花 */}
+      {/* 环境层：禁止底板；只留粒子与完成火花（零光晕 / 零地面阴影） */}
       <div className="pet-ambient" aria-hidden="true">
-        <span className="pet-halo" />
-        <span className="pet-ground" />
         {[1, 2, 3, 4, 5, 6].map((n) => <i key={n} className="pet-mote" />)}
         <i className="pet-spark s1" />
         <i className="pet-spark s2" />

@@ -630,3 +630,18 @@ fn streaming_empty_error_object_is_not_a_failure() {
         "必须正常收尾：{out}"
     );
 }
+
+/// 空流式对齐：只有 [DONE]、无正文/工具/推理 → failed，勿伪装 completed。
+#[test]
+fn empty_sse_stream_becomes_failed() {
+    let out = map_sse(vec![Bytes::from_static(b"data: [DONE]\n\n")]);
+    let types = event_types(&out);
+    assert!(
+        types.iter().any(|item| item == "response.failed"),
+        "空流必须 failed：{out}"
+    );
+    assert!(
+        !types.iter().any(|item| item == "response.completed"),
+        "空流不能伪装 completed：{out}"
+    );
+}

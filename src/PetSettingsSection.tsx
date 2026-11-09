@@ -27,13 +27,16 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
   const [bubbleMs, setBubbleMs] = useState(
     overlay?.pet_bubble_ms ?? defaults.pet_bubble_ms,
   );
+  const [opacity, setOpacity] = useState(overlay?.opacity ?? defaults.opacity);
   useEffect(() => {
     setSleepSecs(overlay?.pet_sleep_after_secs ?? defaults.pet_sleep_after_secs);
     setBubbleMs(overlay?.pet_bubble_ms ?? defaults.pet_bubble_ms);
-  }, [overlay?.pet_sleep_after_secs, overlay?.pet_bubble_ms, defaults]);
+    setOpacity(overlay?.opacity ?? defaults.opacity);
+  }, [overlay?.pet_sleep_after_secs, overlay?.pet_bubble_ms, overlay?.opacity, defaults]);
 
   const commitSleep = (value: number) => onPatch({ pet_sleep_after_secs: value });
   const commitBubble = (value: number) => onPatch({ pet_bubble_ms: value });
+  const commitOpacity = (value: number) => onPatch({ opacity: value });
 
   const posText =
     !overlay || overlay.x < 0 || overlay.y < 0
@@ -53,13 +56,14 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
       layout: 'column',
       ...(enabled
         ? {
-            // 重新开启时默认拉齐全功能
+            // 重新开启时默认拉齐全功能；立绘默认不透明，避免沿用 HUD 半透明底
             pet_interactive: true,
             pet_always_interactive: true,
             pet_gaze: true,
             pet_blink: true,
             pet_snap: true,
             pet_roam: true,
+            opacity: 1,
           }
         : { pet_interactive: false, pet_always_interactive: false }),
     });
@@ -135,6 +139,25 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
             ))}
           </div>
         </div>
+
+        <div className="switch-line">
+          <span>{t('set.petOpacity', { p: Math.round(opacity * 100) })}</span>
+          <input
+            type="range"
+            min={0.15}
+            max={1}
+            step={0.05}
+            value={opacity}
+            disabled={!petOn}
+            onChange={(e) => setOpacity(Number(e.currentTarget.value))}
+            onMouseUp={(e) => commitOpacity(Number(e.currentTarget.value))}
+            onTouchEnd={(e) => commitOpacity(Number(e.currentTarget.value))}
+            onKeyUp={(e) => {
+              if (e.key.startsWith('Arrow')) commitOpacity(Number(e.currentTarget.value));
+            }}
+          />
+        </div>
+        <p className="hint compact">{t('set.petOpacityHint')}</p>
 
         <label className="switch-line">
           <span>{t('set.petSnap')}</span>

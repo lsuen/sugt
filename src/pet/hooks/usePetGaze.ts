@@ -147,14 +147,15 @@ export function usePetGaze({
         return;
       }
       const rect = figureRef.current?.getBoundingClientRect();
-      const overFigure = rect ? pointInsideFigure(clientX, clientY, rect) : false;
+      // 外扩 14px：右键落点更容易命中，避免「看着在人上却仍穿透」
+      const overFigure = rect ? pointInsideFigure(clientX, clientY, rect, 14) : false;
       const overMenu = hitMenu(clientX, clientY);
-      // 仅命中立绘或菜单，或正在拖动 —— 空白侧栏 / 透明边距永远穿透
-      const next = overFigure || overMenu || dragActive.current;
+      // 贴脸时提前解穿透，否则右键按下瞬间窗口还是穿透，contextmenu 进不来
+      const approaching = !menuOpen.current && gazeRef.current.near > 0.4;
+      const next = overFigure || overMenu || dragActive.current || approaching;
       setClickable(next);
 
-      // 菜单打开后光标离开立绘+菜单：短暂延迟后关掉，避免菜单悬空挡视线
-      // 且绝不靠「整窗可点」去接点外关闭。
+      // 菜单打开后离开立绘+菜单才关；给 450ms 宽限，避免移向菜单项途中被关掉
       if (menuOpen.current) {
         if (overFigure || overMenu) {
           window.clearTimeout(menuLeaveTimer);
@@ -163,7 +164,7 @@ export function usePetGaze({
           menuLeaveTimer = window.setTimeout(() => {
             menuLeaveTimer = 0;
             if (!cancelled) onMenuDismissRef.current?.();
-          }, 280);
+          }, 450);
         }
       }
     };

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SUGT 小su 桌面精灵 v0.7 浏览器冒烟：真实时间验证动画与交互。
+"""SUGT 小su 桌面精灵 v1.0 浏览器冒烟：真实时间验证动画与互动。
 
 编写人员：孙测测
 作用用途：无头 Chrome 的 --virtual-time-budget 会冻结图像动画时间线，
-         静态截图无法证明「动画 WebP 真的在播」。本脚本用 Playwright 的
-         真实等待逐帧采样，并把视线跟随、眨眼、静态降级、状态切换、
-         轻碰反馈做成可判定断言，结果落 Markdown 留痕。
-适用项目：SUGT 桌面精灵 v0.7
-创建日期：2026-11-08
+         静态截图无法证明「动画 WebP 真的在播」，也无法证明按钮点击后
+         小精灵真的演了一段动作。本脚本用 Playwright 的真实等待逐帧采样，
+         并把视线跟随、动作重播/自动复位、走动位移、点击角色、自动演示
+         做成可判定断言，结果落 Markdown 留痕。
+适用项目：SUGT 桌面精灵 v1.0
+创建日期：2026-11-08（2026-11-09 改同文档互动演示断言）
 复用方式：python3 docs/孙测测/scripts/pet_v07_browser_smoke.py [--root 项目根]
           环境变量 SUGT_PLAYWRIGHT_MODULE 指向 playwright 的 index.mjs，
           SUGT_CHROME_PATH 指向 Chrome 可执行文件（默认本机 macOS 路径）
@@ -42,8 +43,7 @@ try {
     args: ['--no-sandbox', '--disable-gpu'],
   });
   // 1) 动画 WebP 作为 CSS 背景，真实时间下必须出现多个不同帧。
-  //    用只含背景图的极简页整页截图，避开 Playwright 对「元素稳定」的要求，
-  //    也排除呼吸动画对帧差异的干扰。
+  //    用只含背景图的极简页整页截图，避开 Playwright 对「元素稳定」的要求。
   const animPage = await browser.newPage({ viewport: { width: 240, height: 360 } });
   await animPage.goto(pathToFileURL(args.animPage).href);
   const samples = [];
@@ -57,53 +57,134 @@ try {
   await animPage.close();
 
   const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
   await page.goto(pathToFileURL(args.preview).href);
   await page.waitForTimeout(500);
-  const frame = page.frameLocator('#pet');
-  const stage = frame.locator('#stage');
+  const stage = page.locator('#stage');
+  const win = page.locator('#win');
+  const snap = () => page.evaluate(() => {
+    const s = document.getElementById('stage');
+    const f = document.getElementById('figure');
+    return {
+      cls: s.className,
+      state: s.dataset.state,
+      active: [...s.querySelectorAll('.pet-loop.is-active')].map(n => n.dataset.loop),
+      bubble: document.getElementById('bubble').textContent,
+      bubbleShown: document.getElementById('bubble').style.display !== 'none',
+      label: document.getElementById('label').textContent,
+      thought: document.getElementById('thought').style.display,
+      figCls: f.className,
+      winTransform: document.getElementById('win').style.transform,
+      onActions: [...document.querySelectorAll('[data-action].on')].map(b => b.dataset.action),
+      now: document.getElementById('now').textContent,
+    };
+  });
 
-  // 2) 视线跟随：两次移动都落在 iframe 内（产品侧监听 document.pointermove，
-  //    预览页在 iframe 内复刻同一映射），验证 gaze 变量随鼠标变化。
-  //    先预热一次移动，规避「首次进入 iframe 只触发 pointerenter」的时序抖动。
-  const petBox = await page.locator('#pet').boundingBox();
-  await page.mouse.move(petBox.x + petBox.width * 0.20, petBox.y + petBox.height * 0.24);
-  await page.waitForTimeout(120);
-  await page.mouse.move(petBox.x + petBox.width * 0.30, petBox.y + petBox.height * 0.32, { steps: 3 });
-  await page.waitForTimeout(240);
+  // 2) 视线跟随：两次移动都落在桌面区域内，验证 gaze 变量随鼠标变化并点亮光晕。
+  const winBox = await win.boundingBox();
+  await page.mouse.move(winBox.x + winBox.width * 0.20, winBox.y + winBox.height * 0.24);
+  await page.waitForTimeout(160);
   const first = await stage.evaluate(el => el.style.getPropertyValue('--gaze-x'));
-  await page.mouse.move(petBox.x + petBox.width * 0.86, petBox.y + petBox.height * 0.68, { steps: 3 });
-  await page.waitForTimeout(240);
+  await page.mouse.move(winBox.x + winBox.width * 0.86, winBox.y + winBox.height * 0.68, { steps: 4 });
+  await page.waitForTimeout(260);
   const second = await stage.evaluate(el => ({
     x: el.style.getPropertyValue('--gaze-x'),
     y: el.style.getPropertyValue('--gaze-y'),
     near: el.style.getPropertyValue('--near'),
   }));
-  // 鼠标贴近头部时靠近光晕必须点亮
-  const figBox = await frame.locator('#figure').boundingBox();
-  await page.mouse.move(figBox.x + figBox.width * 0.55, figBox.y + figBox.height * 0.32, { steps: 3 });
-  await page.waitForTimeout(220);
+  const figBox = await page.locator('#figure').boundingBox();
+  await page.mouse.move(figBox.x + figBox.width * 0.55, figBox.y + figBox.height * 0.32, { steps: 4 });
+  await page.waitForTimeout(260);
   const halo = await stage.evaluate(el => ({
     near: el.style.getPropertyValue('--near'),
     on: el.classList.contains('nearby'),
   }));
   check('视线跟随鼠标与靠近光晕',
-        first !== '' && second.x !== '' && first !== second.x
-        && Math.abs(Number(second.x) - Number(first)) > 0.05
+        first !== '' && Math.abs(Number(second.x) - Number(first)) > 0.05
         && halo.on && Number(halo.near) > 0.12,
         `gaze-x ${first} → ${second.x}，gaze-y ${second.y}，near ${second.near}；贴头 near ${halo.near} nearby=${halo.on}`);
 
-  // 3) 眨眼帧叠加层
+  // 3) 开场招呼：一段可观察的表演，且能自动复位、能重播（旧版「闪一下就没」）
+  await page.locator('#helloBtn').click();
+  await page.waitForTimeout(260);
+  const hello = await snap();
+  check('开场招呼可见反馈',
+        hello.active.length === 1 && hello.active[0] === 'wave'
+        && hello.bubble.includes('我来啦') && hello.label.includes('挥手')
+        && hello.now.includes('正在演示'),
+        `pose=${hello.active.join(',')} 气泡=${hello.bubble} 状态=${hello.label}`);
+  await page.waitForTimeout(2200);
+  const rested = await snap();
+  await page.locator('#helloBtn').click();
+  await page.waitForTimeout(220);
+  const replay = await snap();
+  check('动作自动复位且可重播',
+        rested.active[0] === 'idle' && rested.label === '待机中' && rested.onActions.length === 0
+        && replay.active[0] === 'wave' && replay.label.includes('挥手'),
+        `复位 pose=${rested.active.join(',')}/${rested.label}；重播 pose=${replay.active.join(',')}/${replay.label}`);
+
+  // 4) 摸头 / 轻碰 / 思考云 / 落地：动作类与反馈互不串台，点新动作会取消旧动作
+  await page.locator('#patBtn').click();
+  await page.waitForTimeout(200);
+  const pat = await snap();
+  await page.locator('#thinkBtn').click();
+  await page.waitForTimeout(200);
+  const think = await snap();
+  check('摸头与思考云反馈互斥',
+        pat.cls.includes('petted') && pat.active[0] === 'shy' && pat.bubble.includes('嘿嘿')
+        && think.thought !== 'none' && !think.cls.includes('petted') && think.onActions.join(',') === 'think',
+        `摸头 cls=${pat.cls} pose=${pat.active.join(',')}；思考云 thought=${think.thought} 动作=${think.onActions.join(',')}`);
+
+  // 5) 自主走动：窗口真的位移，不只是加个 CSS 类
+  await page.locator('#roamBtn').click();
+  await page.waitForTimeout(650);
+  const walking = await snap();
+  await page.waitForTimeout(2200);
+  const landed = await snap();
+  check('自主走动有位移且会回位',
+        /translateX\(-?\d+(\.\d+)?px\)/.test(walking.winTransform)
+        && !/translateX\(0\.0px\)/.test(walking.winTransform)
+        && walking.active[0] === 'walk' && !/translateX/.test(landed.winTransform),
+        `走动 transform=${walking.winTransform} pose=${walking.active.join(',')}；结束 transform=${landed.winTransform}`);
+
+  // 6) 直接点角色本体：头部害羞冒心形，身体招手
+  await page.locator('#resetBtn').click();
+  const headBox = await page.locator('#figure').boundingBox();
+  await page.mouse.click(headBox.x + headBox.width * 0.55, headBox.y + headBox.height * 0.22);
+  await page.waitForTimeout(200);
+  const head = await snap();
+  await page.mouse.click(headBox.x + headBox.width * 0.55, headBox.y + headBox.height * 0.72);
+  await page.waitForTimeout(200);
+  const body = await snap();
+  check('点击角色头部/身体分别触发互动',
+        head.cls.includes('petted') && head.active[0] === 'shy'
+        && body.figCls.includes('poked') && body.active[0] === 'wave',
+        `头部 cls=${head.cls} pose=${head.active.join(',')}；身体 cls=${body.figCls} pose=${body.active.join(',')}`);
+
+  // 7) 自动演示：按钮常亮，序列里确实有动作在播
+  await page.locator('#demoBtn').click();
+  await page.locator('#patBtn').count();  // 保证 DOM 已就绪
+  await page.waitForTimeout(2600);
+  const demo = await snap();
+  check('自动演示播放序列',
+        (await page.locator('#demoBtn').evaluate(el => el.classList.contains('on')))
+        && demo.now.includes('正在演示'),
+        `demoBtn.on=true 当前=${demo.label} / ${demo.now}`);
+  await page.locator('#resetBtn').click();
+
+  // 8) 眨眼帧叠加层（一次性 320ms 动作）
   await page.locator('#blinkBtn').click();
-  await page.waitForTimeout(120);
-  const blinkOpacity = await frame.locator('.pet-blink').evaluate(
+  await page.waitForTimeout(110);
+  const blinkOpacity = await page.locator('.pet-blink').evaluate(
     el => getComputedStyle(el).opacity);
   check('眨眼帧可显示', Number(blinkOpacity) > 0.9, `opacity=${blinkOpacity}`);
-  await page.locator('#blinkBtn').click();
+  await page.waitForTimeout(400);
 
-  // 4) 静态帧降级（reduced-motion / 窗口隐藏）
+  // 9) 静态帧降级（reduced-motion / 窗口隐藏）
   await page.locator('#stillBtn').click();
-  await page.waitForTimeout(120);
-  const stillState = await frame.locator('#stage').evaluate(el => ({
+  await page.waitForTimeout(140);
+  const stillState = await stage.evaluate(el => ({
     loop: getComputedStyle(el.querySelector('.pet-loop')).display,
     poster: getComputedStyle(el.querySelector('.pet-poster')).opacity,
   }));
@@ -111,29 +192,21 @@ try {
         `loop.display=${stillState.loop}, poster.opacity=${stillState.poster}`);
   await page.locator('#stillBtn').click();
 
-  // 5) 状态切换只让对应动画层可见
+  // 10) 状态切换只让对应动画层可见
   await page.locator('#stateBtns button[data-key="error"]').click();
-  await page.waitForTimeout(120);
-  const stateInfo = await frame.locator('#stage').evaluate(el => ({
-    state: el.dataset.state,
-    active: [...el.querySelectorAll('.pet-loop.is-active')].map(n => n.dataset.loop),
-  }));
+  await page.waitForTimeout(140);
+  const stateInfo = await snap();
   check('状态切换命中动画层', stateInfo.state === 'error'
         && stateInfo.active.length === 1 && stateInfo.active[0] === 'error',
         `state=${stateInfo.state}, active=${stateInfo.active.join(',')}`);
 
-  // 6) 轻碰反馈：一次性弹跳 + 轻声回应
-  await page.locator('#pokeBtn').click();
-  await page.waitForTimeout(120);
-  const poke = await frame.locator('#stage').evaluate(el => ({
-    poked: el.querySelector('#figure').classList.contains('poked'),
-    bubble: el.querySelector('#bubble').textContent,
-  }));
-  check('轻碰反馈', poke.poked && poke.bubble.includes('嗯'),
-        `poked=${poke.poked}, bubble=${poke.bubble}`);
-
+  // 11) 页面脚本无异常，并产出一张可人工复核的「正在打招呼」截图
+  await page.locator('#stateBtns button[data-key="idle"]').click();
+  await page.locator('#helloBtn').click();
+  await page.waitForTimeout(280);
   await page.screenshot({ path: args.screenshot });
-  check('验收截图产出', true, args.screenshot);
+  check('浏览器无脚本异常且截图产出', errors.length === 0,
+        `pageerror=${errors.length ? errors.join(' | ') : '无'}，截图 ${args.screenshot}`);
 } catch (error) {
   check('浏览器执行', false, String(error && error.stack || error));
 } finally {
@@ -145,7 +218,7 @@ console.log(JSON.stringify(rows));
 
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[2]
-    parser = argparse.ArgumentParser(description="桌面精灵 v0.7 浏览器冒烟")
+    parser = argparse.ArgumentParser(description="桌面精灵 v1.0 互动演示浏览器冒烟")
     parser.add_argument("--root", type=Path, default=root)
     parser.add_argument("--out", type=Path, default=None, help="留痕路径")
     return parser.parse_args()
@@ -218,11 +291,11 @@ def main() -> int:
     trace = Path(trace)
     trace.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# 桌面精灵 v0.7 浏览器冒烟留痕",
+        "# 桌面精灵 v1.0 互动演示浏览器冒烟留痕",
         "",
         "- 执行时间：%s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "- 脚本：`docs/孙测测/scripts/pet_v07_browser_smoke.py`",
-        "- 预览页：`docs/design/pet-v07-preview.html`（同源 CSS + 内联素材）",
+        "- 演示页：`docs/design/pet-v07-preview.html`（同源 CSS + 内联素材 + 同文档互动）",
         "- 驱动：Playwright + 本机 Chrome，真实时间逐帧采样（不用虚拟时间截图）",
         "- 结论：%s（%d/%d）" % ("通过" if passed == len(rows) else "不通过", passed, len(rows)),
         "",

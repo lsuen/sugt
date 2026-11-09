@@ -6,6 +6,7 @@ import { ModalPortal } from './ModalPortal';
 import { lang, t, type TKey } from './i18n';
 import { MeMarkdown } from './meMarkdown';
 import { clipPreview, parsePendingFiles } from './mePendingFiles';
+import { loadMeAuthMode, saveMeAuthMode, type MeAuthMode, ME_AUTH_MODES } from './meAuth';
 
 const PLACE_HISTORY_KEY = 'sugt_me_place_history';
 const PLACE_HISTORY_LIMIT = 8;
@@ -160,26 +161,9 @@ const emptyEvent = (kind: string, text = '', command = ''): MeEvent => ({
   timed_out: false,
 });
 
-const AUTO_WRITE_KEY = 'sugt_me_auto_write';
-
-function loadAutoWrite(): boolean {
-  try {
-    return localStorage.getItem(AUTO_WRITE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function saveAutoWrite(on: boolean): void {
-  try {
-    localStorage.setItem(AUTO_WRITE_KEY, on ? '1' : '0');
-  } catch {
-    /* ignore */
-  }
-}
-
 export function tauriMeApi(): MeApi {
   const language = () => lang();
+  const authMode = () => loadMeAuthMode();
   return {
     load: () => invoke<MeView>('me_status'),
     setPlace: (mode, project) => invoke<MeView>('me_set_place', { mode, project: project ?? null, lang: language() }),
@@ -188,11 +172,13 @@ export function tauriMeApi(): MeApi {
       message,
       images: images && images.length > 0 ? images : null,
       lang: language(),
-      autoWrite: loadAutoWrite(),
+      authMode: authMode(),
+      autoWrite: authMode() !== 'ask',
     }),
     confirm: () => invoke<MeView>('me_confirm', {
       lang: language(),
-      autoWrite: loadAutoWrite(),
+      authMode: authMode(),
+      autoWrite: authMode() !== 'ask',
     }),
     dismiss: () => invoke<MeView>('me_dismiss', { lang: language() }),
     stop: () => invoke('me_stop'),
@@ -284,8 +270,8 @@ export function createPreviewMeApi(): MeApi {
           'from su',
           'EOF',
         ].join('\n');
-        if (loadAutoWrite()) {
-          onStep?.(emptyEvent('thinking', t('me.autoWriteOn')));
+        if (loadMeAuthMode() !== 'ask') {
+          onStep?.(emptyEvent('thinking', t('me.auth.autoHint')));
           onStep?.(emptyEvent('running', '写到 notes/readme.txt', command));
           await wait(180);
           const step: MeStep = {
@@ -422,14 +408,21 @@ export function createPreviewMeApi(): MeApi {
 }
 
 /** SOUL 只读编排层允许的四类意图；写操作仍由用户点按钮走既有确定性命令。 */
-export type SoulRoute = 'clients' | 'skills' | 'preview' | 'settings';
+export type SoulRoute = 'clients' | 'skills' | 'preview' | 'settings' | 'pet';
 
 type Props = {
   api?: MeApi;
   onOpenClients: () => void;
   onOpenModels?: () => void;
+  onOpenSkills?: () => void;
   onRoute?: (route: SoulRoute) => void;
 };
+
+function looksLikeStepBudgetStop(content: string): boolean {
+  return content.includes('这一轮的步数用完了')
+    || content.includes('used up its steps')
+    || content.includes('步数用完');
+}
 
 function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | null {
   if (steps.length === 0) return null;
@@ -446,7 +439,7 @@ function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | nul
   return { ok: true, text: t('me.composerDoneOk', { count: steps.length }) };
 }
 
-export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
+export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRoute }: Props) {
   const client = useMemo(() => api ?? tauriMeApi(), [api]);
   const [session, setSession] = useState<MeView | null>(null);
   const [draft, setDraft] = useState('');
@@ -461,7 +454,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
   const [clearArmed, setClearArmed] = useState(false);
   const [history, setHistory] = useState<PlaceHistoryItem[]>(() => loadPlaceHistory());
   const [placeOpen, setPlaceOpen] = useState(false);
-  const [autoWrite, setAutoWrite] = useState(() => loadAutoWrite());
+  const [authMode, setAuthMode] = useState<MeAuthMode>(() => loadMeAuthMode());
   const [liveDraft, setLiveDraft] = useState('');
   const [modelLabel, setModelLabel] = useState('');
   const [gatewayOn, setGatewayOn] = useState<boolean | null>(null);
@@ -832,7 +825,12 @@ export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
           <button type="button" className="tiny" disabled={busy || !session} onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}>
             <FolderOpen size={14} />{t('me.openDir')}
           </button>
-          <button type="button" className="tiny" onClick={onOpenClients}>{t('me.handoff')}</button>
+          {onOpenSkills && (
+            <button type="button" className="tiny" title={t('me.openSkillsHint')} onClick={onOpenSkills}>
+              {t('me.openSkills')}
+            </button>
+          )}
+          <button type="button" className="tiny" title={t('me.handoffHint')} onClick={onOpenClients}>{t('me.handoff')}</button>
         </div>
       </div>
       {session?.mode === 'config' && <p className="me-warn">{t('me.configWarn')}</p>}
@@ -848,6 +846,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
             <div className="me-ideas">
               <button type="button" className="tiny" onClick={() => void send(t('me.suggestList'))}>{t('me.suggestList')}</button>
               <button type="button" className="tiny" onClick={() => void send(t('me.suggestProject'))}>{t('me.suggestProject')}</button>
+              <button type="button" className="tiny" onClick={() => void send(t('me.suggestLookup'))}>{t('me.suggestLookup')}</button>
             </div>
           </div>
         )}
@@ -989,7 +988,24 @@ export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
               void run(() => client.clear());
             }}
           >{clearArmed ? t('me.clearSure') : t('me.clear')}</button>
+          {(() => {
+            const lastAssistant = [...(session?.messages ?? [])].reverse().find((m) => m.role === 'assistant');
+            if (!lastAssistant || busy || awaiting) return null;
+            if (!looksLikeStepBudgetStop(lastAssistant.content || '')) return null;
+            return (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void send(t('me.continuePrompt'))}
+              >{t('me.continue')}</button>
+            );
+          })()}
           <div className="me-composer-status" aria-live="polite">
+            {session && session.messages.length > 0 && (
+              <span className="me-status-hint" title={t('me.contextDepth', { count: session.messages.length })}>
+                {t('me.contextDepth', { count: session.messages.length })}
+              </span>
+            )}
             {gatewayOn !== null && (
               <span
                 className={gatewayOn ? 'me-gw-dot on' : 'me-gw-dot'}
@@ -1020,21 +1036,27 @@ export function MePanel({ api, onOpenClients, onOpenModels, onRoute }: Props) {
             </span>
           </div>
           <div className="me-composer-right">
-            <button
-              type="button"
-              className={autoWrite ? 'tiny me-auto-write on' : 'tiny me-auto-write'}
-              aria-pressed={autoWrite}
-              title={autoWrite ? t('me.autoWriteOn') : t('me.autoWriteHint')}
-              disabled={busy}
-              onClick={() => {
-                const next = !autoWrite;
-                saveAutoWrite(next);
-                setAutoWrite(next);
-                if (next && session?.pending) {
-                  void run(() => client.confirm(), true);
-                }
-              }}
-            >{t('me.autoWrite')}</button>
+            <label className="me-auth-mode" title={t(`me.auth.${authMode}Hint` as TKey)}>
+              <span className="me-auth-mode-label">{t('me.auth.label')}</span>
+              <select
+                className="me-auth-select"
+                value={authMode}
+                disabled={busy}
+                aria-label={t('me.auth.label')}
+                onChange={(e) => {
+                  const next = e.target.value as MeAuthMode;
+                  saveMeAuthMode(next);
+                  setAuthMode(next);
+                  if (next !== 'ask' && session?.pending) {
+                    void run(() => client.confirm(), true);
+                  }
+                }}
+              >
+                {ME_AUTH_MODES.map((mode) => (
+                  <option key={mode} value={mode}>{t(`me.auth.${mode}` as TKey)}</option>
+                ))}
+              </select>
+            </label>
             {awaiting ? (
               <button
                 type="button"
@@ -1069,7 +1091,7 @@ type SuBubbleProps = {
   onRoute?: (route: SoulRoute) => void;
 };
 
-const VALID_SOUL_ROUTES: SoulRoute[] = ['clients', 'skills', 'preview', 'settings'];
+const VALID_SOUL_ROUTES: SoulRoute[] = ['clients', 'skills', 'preview', 'settings', 'pet'];
 
 /// 解析模型输出的意图标记；未知 / 半截标记一律剥离，绝不当作正文或指令执行。
 function parseSoulRoutes(raw: string): { text: string; routes: SoulRoute[] } {
@@ -1081,10 +1103,11 @@ function parseSoulRoutes(raw: string): { text: string; routes: SoulRoute[] } {
     if (VALID_SOUL_ROUTES.includes(route) && !routes.includes(route)) routes.push(route);
     return '';
   });
-  // 流式时标记可能只写了一半，清掉残片避免用户看到乱码。
+  // 流式时标记可能只写了一半（含正文中间残片），清掉避免露馅。
   text = text
-    .replace(/\[\[\/?SUGT_ROUTE\]\]/g, '')
-    .replace(/\[\[\/?SUGT_ROUTE(?:\]\])?$/, '')
+    .replace(/\[\[SUGT_ROUTE\]\][a-z]*$/g, '')
+    .replace(/\[\[\/?SUGT_ROUTE\]\]?/g, '')
+    .replace(/\[\[\/?SUGT_ROU(?:TE(?:\]\])?)?$/, '')
     .replace(/\n{3,}/g, '\n\n')
     .trimEnd();
   return { text, routes };
@@ -1158,7 +1181,7 @@ function PendingNote({
   return (
     <div className="me-note">
       <strong>{t('me.confirmTitle')}</strong>
-      <p className="me-note-hint">{t('me.confirmHint')} · {t('me.autoWriteHint')}</p>
+      <p className="me-note-hint">{t('me.confirmHint')} · {t('me.auth.askHint')}</p>
       {files.length > 0 ? (
         <div className="me-files">
           {files.map((file) => (

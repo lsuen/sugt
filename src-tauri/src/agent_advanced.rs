@@ -280,12 +280,21 @@ fn load_config_view(profile: &TakeoverProfile, settings_root: Option<&Path>) -> 
 fn config_candidates(profile: &TakeoverProfile, settings_root: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let id = profile.id.to_ascii_lowercase();
+    let adapter = crate::agent_adapters::by_id(&profile.id);
+    let is_codex = adapter
+        .map(|a| a.config.kind == crate::agent_adapters::ConfigKind::CodexToml)
+        .unwrap_or(false)
+        || profile.launch_command.as_deref() == Some("codex");
+    let is_claude = adapter
+        .map(|a| a.id == "claude-code")
+        .unwrap_or_else(|| {
+            id.contains("claude") || profile.protocol.to_ascii_lowercase().contains("anthropic")
+        });
     if let Some(root) = settings_root {
-        if id.contains("codex") {
+        if is_codex {
             out.push(root.join("config.toml"));
             out.push(root.join("config.json"));
-        } else if id.contains("claude") || profile.protocol.to_ascii_lowercase().contains("anthropic")
-        {
+        } else if is_claude {
             out.push(root.join("settings.json"));
             out.push(root.join("settings.local.json"));
             out.push(root.join(".claude.json"));
@@ -298,13 +307,15 @@ fn config_candidates(profile: &TakeoverProfile, settings_root: Option<&Path>) ->
             out.push(root.join("config.json"));
         }
     }
-    // 内置兜底
-    if id.contains("codex") {
+    // 内置兜底：优先用 adapter 声明的 config_path
+    if let Some(path) = adapter.and_then(|a| a.config.config_path).and_then(expand_home) {
+        out.push(path);
+    } else if is_codex {
         if let Some(p) = expand_home("~/.codex/config.toml") {
             out.push(p);
         }
     }
-    if id.contains("claude") {
+    if is_claude {
         if let Some(p) = expand_home("~/.claude/settings.json") {
             out.push(p);
         }
