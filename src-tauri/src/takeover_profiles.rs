@@ -87,7 +87,7 @@ pub fn builtin_profiles() -> Vec<TakeoverProfile> {
         ),
         profile(
             "codex",
-            "OpenAI Codex CLI",
+            "Codex ChatGPT",
             "OpenAI",
             "~/.codex/config.toml model_providers.sugt（wire_api=responses）+ auth.json；env 仅作兜底",
             "openai",

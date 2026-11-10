@@ -101,7 +101,7 @@ static ADAPTERS: &[AgentAdapter] = &[
     },
     AgentAdapter {
         id: "codex",
-        name: "OpenAI Codex CLI",
+        name: "Codex ChatGPT",
         vendor: "OpenAI",
         protocol: "openai",
         commands: &["codex"],

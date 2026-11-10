@@ -433,13 +433,12 @@ fn default_overlay_height() -> f64 {
 }
 
 fn default_pet_width() -> f64 {
-    // v1.1 档位整体下移：旧小档 148 升为新中，新增 120 的小档；
-    // 素材已裁剪透明边，窗口更小但人物视觉不缩小。
-    120.0
+    // 产品默认中档（148×168）；小 120×136 / 大 180×204 仍可由设置切换。
+    148.0
 }
 
 fn default_pet_height() -> f64 {
-    136.0
+    168.0
 }
 
 fn default_pet_sleep_after_secs() -> u32 {

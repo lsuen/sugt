@@ -45,8 +45,8 @@ export const DEFAULT_OVERLAY: OverlayConfigView = {
   x: -1,
   y: -1,
   layout: 'column',
-  width: 120,
-  height: 136,
+  width: 148,
+  height: 168,
   pet_enabled: true,
   pet_interactive: true,
   pet_snap: true,
@@ -93,12 +93,15 @@ export const PET_SIZES = [
 // 沿用 v2 key：老存档 medium/large 自然落到「新中/新大」，正好是档位整体下移。
 export const PET_SIZE_STORAGE_KEY = 'sugt.pet.size.v2';
 
+/** 无存档时的默认档：中号。 */
+export const DEFAULT_PET_SIZE = PET_SIZES[1];
+
 export const readPetSize = (): (typeof PET_SIZES)[number] => {
   try {
     const saved = window.localStorage.getItem(PET_SIZE_STORAGE_KEY);
-    return PET_SIZES.find((size) => size.key === saved) ?? PET_SIZES[0];
+    return PET_SIZES.find((size) => size.key === saved) ?? DEFAULT_PET_SIZE;
   } catch {
-    return PET_SIZES[0];
+    return DEFAULT_PET_SIZE;
   }
 };
 

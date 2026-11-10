@@ -559,16 +559,6 @@ function App() {
                   </div>
                   {statusBadge}
                 </div>
-                {status?.last_proxy_provider && (
-                  <p className="hint compact hero-proxy-hint">
-                    {t('dash.recent')} {status.last_proxy_provider}
-                    {status.last_proxy_failover ? t('dash.failover') : ''}
-                    · {status.last_proxy_path ?? '-'}
-                    {status.last_proxy_workspace_rules === true ? ` · ${t('dash.rulesInjected')}` : ''}
-                    {status.last_proxy_workspace_rules === false ? ` · ${t('dash.rulesSkipped')}` : ''}
-                    {status.last_proxy_at ? ` · ${new Date(status.last_proxy_at).toLocaleString()}` : ''}
-                  </p>
-                )}
                 <div className="actions dashboard-actions">
                   <button className="primary" disabled={busy || status?.running} onClick={() => run(() => invoke('start_gateway'), t('dash.toastStarted'))}><Play size={17} />{t('dash.start')}</button>
                   <button className="danger" disabled={busy || !status?.running} onClick={() => run(() => invoke('stop_gateway'), t('dash.toastStopped'))}><CircleStop size={17} />{t('dash.stop')}</button>
@@ -579,8 +569,6 @@ function App() {
               <TrafficPanel
                 traffic={status?.traffic}
                 running={status?.running}
-                lastProvider={status?.last_proxy_provider}
-                lastPath={status?.last_proxy_path}
               />
             </div>
 

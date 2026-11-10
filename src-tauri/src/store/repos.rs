@@ -557,7 +557,13 @@ pub fn ensure_preferred_repo_cached(store_paths: &StorePaths) -> Result<Preferre
             }
             Err(err) => {
                 repos[idx].last_error = Some(err.to_string());
-                messages.push(format!("{} 拉取失败（可配 GitHub 代理后重试）", repos[idx].label()));
+                // GitHub 仓才提示代理；Gitee 等直连仓失败时不要误导用户去配代理。
+                let hint = if repos[idx].is_github() {
+                    format!("{} 拉取失败（可配 GitHub 代理后重试）", repos[idx].label())
+                } else {
+                    format!("{} 拉取失败", repos[idx].label())
+                };
+                messages.push(hint);
             }
         }
     }

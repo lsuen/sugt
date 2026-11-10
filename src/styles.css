@@ -1690,17 +1690,98 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   margin-bottom: 12px;
 }
 .skills-toolbar .store-search { flex: 1; min-width: 180px; }
+.skills-add-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.skills-add-chevron {
+  transition: transform .15s ease;
+}
+.skills-add-toggle.open .skills-add-chevron {
+  transform: rotate(180deg);
+}
+.skills-add-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(255,255,255,.1));
+  border-radius: var(--radius-sm, 12px);
+  background: var(--surface-2, rgba(255,255,255,.03));
+}
+.skills-add-modes {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.skills-add-mode {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: transparent;
+  color: var(--muted, #94a9bd);
+  font-size: 12px;
+  cursor: pointer;
+}
+.skills-add-mode.active {
+  color: var(--text, #e8f1f8);
+  border-color: rgba(10, 255, 157, .28);
+  background: rgba(10, 255, 157, .08);
+}
 .skills-create-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .skills-create-row input { flex: 1; min-width: 160px; }
+.skills-selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(10, 255, 157, .28);
+  background: rgba(10, 255, 157, .08);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.skills-selection-count {
+  font-size: 13px;
+  color: var(--text, #e8f1f8);
+  margin-right: 4px;
+}
+.skills-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  min-height: 24px;
+}
+.skills-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted, #94a9bd);
+  cursor: pointer;
+  user-select: none;
+}
+.skills-select-all input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #7c5cff;
+}
 .skills-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: min(56vh, 520px);
+  max-height: min(62vh, 580px);
   overflow-y: auto;
 }
 .skills-row {
@@ -1712,6 +1793,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   border: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.03);
   cursor: pointer;
+  position: relative;
 }
 .skills-row > input[type="checkbox"] {
   flex-shrink: 0;
@@ -1724,12 +1806,27 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   border-color: rgba(10, 255, 157, .28);
   background: rgba(10, 255, 157, .05);
 }
+.skills-row.unmounted {
+  opacity: .88;
+}
 .skills-row-main { flex: 1; min-width: 0; }
 .skills-row-title {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+.skills-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.skills-repo-label {
+  margin-left: 2px;
+  opacity: .85;
 }
 .skills-row-actions {
   display: flex;
@@ -1738,8 +1835,49 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
+  position: relative;
+}
+.skills-more-btn {
+  padding: 4px 6px !important;
+}
+.skills-row-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 132px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255,255,255,.12));
+  background: var(--surface, rgba(16, 22, 34, .98));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+.skills-row-menu-pop .tiny {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+  gap: 6px;
 }
 .skills-pill { font-size: 11px; }
+.skills-pill.muted,
+.badge.muted {
+  opacity: .72;
+}
+.skills-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 18px 12px;
+}
+.skills-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .skills-agent-pick {
   display: flex;
   flex-direction: column;
@@ -3162,15 +3300,13 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   overflow-wrap: anywhere;
 }
 
-/* 技能-本地技能：GitHub 地址安装、触发词与优化建议 */
+/* 技能-本地技能：GitHub 地址安装（折叠进「添加技能」） */
 .skills-git-row {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
-.skills-git-head { display: flex; flex-direction: column; gap: 2px; }
-.skills-git-head strong { font-size: 13px; }
 .skills-git-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .skills-git-form input:first-child { flex: 1 1 260px; min-width: 0; }
 .skills-git-branch { flex: 0 1 190px; min-width: 0; }

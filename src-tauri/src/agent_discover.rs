@@ -63,7 +63,7 @@ fn fingerprints() -> Vec<Fingerprint> {
         },
         Fingerprint {
             id: "codex",
-            name: "OpenAI Codex CLI",
+            name: "Codex ChatGPT",
             vendor: "OpenAI",
             protocol: "openai",
             keywords: &["codex"],

@@ -3,8 +3,8 @@
 //!
 //! 背景：`tauri.conf.json` 的初始高度从最早版本起一直是 680，状态栏加入后
 //! `.app-shell` 改成「内容 1fr + 状态栏 auto」两行，内容区净高被吃掉 34px。
-//! 因此初始高度改为 714、最小高度改为 674；再把用户手动调整后的尺寸落盘，
-//! 避免每次启动都回到默认值（也避免小屏用户被迫接受 714）。
+//! 因此先补到 714（680+34），再按真机视觉微调为默认 730；最小高度 674。
+//! 用户手动调整后的尺寸落盘，避免每次启动都回到默认值（也避免小屏用户被迫接受 730）。
 //! 只读/写一份可重建的小 JSON，任何失败都降级为配置默认值，绝不阻断启动。
 
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,11 @@ const MIN_WIDTH: f64 = 960.0;
 const MAX_WIDTH: f64 = 1200.0;
 const MIN_HEIGHT: f64 = 674.0;
 const MAX_HEIGHT: f64 = 960.0;
-/// 状态栏高度，与 `styles.css` 的 `--status-bar-h` 对齐。初始 680 → 714 即补这 34px。
+/// 状态栏高度，与 `styles.css` 的 `--status-bar-h` 对齐。历史补偿：680 + 34 → 714，现默认高 730。
 pub const STATUS_BAR_HEIGHT: f64 = 34.0;
+/// 与 `tauri.conf.json` 初始宽高一致（改配置时同步）。
+pub const DEFAULT_WIDTH: f64 = 1040.0;
+pub const DEFAULT_HEIGHT: f64 = 730.0;
 /// 换到更小的显示器时，给系统菜单栏 / Dock 留出的余量。
 const SCREEN_MARGIN: f64 = 48.0;
 const STATE_FILE: &str = "window-state.json";
@@ -217,10 +220,10 @@ mod tests {
 
     #[test]
     fn restore_echo_is_ignored_only_for_the_same_size() {
-        mark_restored(1040.0, 714.0);
-        assert!(is_restore_echo(1040.0, 714.0), "恢复产生的回声不应写盘");
-        assert!(!is_restore_echo(1100.0, 714.0), "用户手动改宽度必须能保存");
-        assert!(!is_restore_echo(1040.0, 800.0), "用户手动改高度必须能保存");
+        mark_restored(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        assert!(is_restore_echo(DEFAULT_WIDTH, DEFAULT_HEIGHT), "恢复产生的回声不应写盘");
+        assert!(!is_restore_echo(1100.0, DEFAULT_HEIGHT), "用户手动改宽度必须能保存");
+        assert!(!is_restore_echo(DEFAULT_WIDTH, 800.0), "用户手动改高度必须能保存");
     }
 
     #[test]

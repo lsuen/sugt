@@ -145,11 +145,9 @@ function ChannelsDetailModal({
 type Props = {
   traffic?: TrafficStats;
   running?: boolean;
-  lastProvider?: string | null;
-  lastPath?: string | null;
 };
 
-export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props) {
+export function TrafficPanel({ traffic, running }: Props) {
   const [clientsOpen, setClientsOpen] = useState(false);
   const [channelsOpen, setChannelsOpen] = useState(false);
 
@@ -219,13 +217,6 @@ export function TrafficPanel({ traffic, running, lastProvider, lastPath }: Props
               <strong>{formatToken(traffic.today_output_tokens)}</strong>
             </div>
           </div>
-          <p className="hint compact traffic-token-hint">{t('trafstat.tokenHint')}</p>
-          {(lastProvider || lastPath) && (
-            <p className="hint compact traffic-last-hit">
-              {t('trafstat.lastHit')}{lastProvider ?? '—'}
-              {lastPath ? ` · ${lastPath}` : ''}
-            </p>
-          )}
           <TrafficChart buckets={traffic.hourly_buckets} />
           <div className="traffic-clients">
             {traffic.recent_clients.length > 0 && (

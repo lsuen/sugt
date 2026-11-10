@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  ArrowLeft, Download, FolderOpen, Plus, PlugZap, RefreshCw, Search, Settings2, Trash2, Unplug,
+  ArrowLeft, ChevronDown, Download, FolderOpen, MoreHorizontal, Plus, PlugZap, RefreshCw, Search, Settings2, Trash2, Unplug,
 } from 'lucide-react';
 import { GithubProxyModal } from './store/GithubProxyModal';
 import type { ParsedGitRepo, SkillCatalogItem, SkillRepoView, StoreSettings } from './store/types';
@@ -73,6 +73,9 @@ export function SkillsPanel({
   const [gitUrl, setGitUrl] = useState('');
   const [gitBranch, setGitBranch] = useState('');
   const [gitNotice, setGitNotice] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<'create' | 'git'>('create');
+  const [menuSkillId, setMenuSkillId] = useState<string | null>(null);
   const [adviceSkill, setAdviceSkill] = useState<LocalSkillView | null>(null);
   const [newRepo, setNewRepo] = useState({ url: '', branch: 'main', weight: '100' });
   const [repoTestHint, setRepoTestHint] = useState<string | null>(null);
@@ -185,6 +188,23 @@ export function SkillsPanel({
     });
   };
 
+  const allFilteredSelected = filteredLocal.length > 0
+    && filteredLocal.every((s) => selected.has(s.id));
+
+  const toggleSelectAll = () => {
+    setSelected((prev) => {
+      if (filteredLocal.length === 0) return prev;
+      if (filteredLocal.every((s) => prev.has(s.id))) {
+        const next = new Set(prev);
+        for (const s of filteredLocal) next.delete(s.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const s of filteredLocal) next.add(s.id);
+      return next;
+    });
+  };
+
   const openMount = (mode: 'mount' | 'unmount') => {
     if (selected.size === 0) {
       pushToast(t('skill.selectSkillsFirst'), 'info');
@@ -220,6 +240,7 @@ export function SkillsPanel({
     run(async () => {
       await invoke('store_create_local_skill', { name: newSkillName });
       setNewSkillName('');
+      setAddOpen(false);
       await reloadLocal();
     }, t('skill.createdLocal'));
 
@@ -247,6 +268,7 @@ export function SkillsPanel({
       setGitUrl('');
       setGitBranch('');
       setTab('local');
+      setAddOpen(false);
       setGitNotice(result.note);
       await reloadLocal();
     });
@@ -267,6 +289,24 @@ export function SkillsPanel({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [adviceSkill]);
+
+  useEffect(() => {
+    if (!menuSkillId) return;
+    const onDoc = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('.skills-row-menu')) return;
+      setMenuSkillId(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuSkillId(null);
+    };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menuSkillId]);
 
   const uninstallSkill = (id: string) =>
     run(async () => {
@@ -449,67 +489,94 @@ export function SkillsPanel({
             </select>
           )}
           {tab === 'local' && (
-            <>
-              <button type="button" className="primary tiny-btn" disabled={busy || selected.size === 0} onClick={() => openMount('mount')}>
-                <PlugZap size={14} />{t('skill.mount')}
-              </button>
-              <button type="button" className="ghost tiny-btn" disabled={busy || selected.size === 0} onClick={() => openMount('unmount')}>
-                <Unplug size={14} />{t('skill.unmount')}
-              </button>
-            </>
+            <button
+              type="button"
+              className={`ghost tiny-btn skills-add-toggle${addOpen ? ' open' : ''}`}
+              disabled={busy}
+              aria-expanded={addOpen}
+              onClick={() => setAddOpen((v) => !v)}
+            >
+              <Plus size={14} />
+              {t('skill.addSkill')}
+              <ChevronDown size={14} className="skills-add-chevron" />
+            </button>
           )}
         </div>
 
         {tab === 'local' && (
           <>
-            <div className="skills-create-row">
-              <input
-                placeholder={t('skill.newNamePlaceholder')}
-                value={newSkillName}
-                disabled={busy}
-                onChange={(e) => setNewSkillName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newSkillName.trim()) createSkill();
-                }}
-              />
-              <button type="button" className="primary tiny-btn" disabled={busy || !newSkillName.trim()} onClick={() => createSkill()}>
-                <Plus size={14} />{t('skill.new')}
-              </button>
-            </div>
+            {addOpen && (
+              <div className="skills-add-panel">
+                <div className="skills-add-modes" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    className={addMode === 'create' ? 'skills-add-mode active' : 'skills-add-mode'}
+                    aria-selected={addMode === 'create'}
+                    onClick={() => setAddMode('create')}
+                  >
+                    {t('skill.addCreate')}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    className={addMode === 'git' ? 'skills-add-mode active' : 'skills-add-mode'}
+                    aria-selected={addMode === 'git'}
+                    onClick={() => setAddMode('git')}
+                  >
+                    {t('skill.addGit')}
+                  </button>
+                </div>
+                {addMode === 'create' ? (
+                  <div className="skills-create-row">
+                    <input
+                      placeholder={t('skill.newNamePlaceholder')}
+                      value={newSkillName}
+                      disabled={busy}
+                      onChange={(e) => setNewSkillName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && newSkillName.trim()) createSkill();
+                      }}
+                    />
+                    <button type="button" className="primary tiny-btn" disabled={busy || !newSkillName.trim()} onClick={() => createSkill()}>
+                      <Plus size={14} />{t('skill.new')}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="skills-git-row">
+                    <div className="skills-git-form" title={t('skill.gitHintShort')}>
+                      <input
+                        placeholder={t('skill.gitPlaceholder')}
+                        value={gitUrl}
+                        disabled={busy}
+                        onChange={(e) => setGitUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && gitUrl.trim() && !busy) installGitSkills();
+                        }}
+                      />
+                      <input
+                        className="skills-git-branch"
+                        placeholder={t('skill.gitBranchPlaceholder')}
+                        title={t('skill.gitBranch')}
+                        value={gitBranch}
+                        disabled={busy}
+                        onChange={(e) => setGitBranch(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="primary tiny-btn"
+                        disabled={busy || !gitUrl.trim()}
+                        onClick={() => installGitSkills()}
+                      >
+                        <Download size={14} />{t('skill.gitInstall')}
+                      </button>
+                    </div>
+                    <span className="hint compact">{t('skill.gitHintShort')}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
-            <div className="skills-git-row">
-              <div className="skills-git-head">
-                <strong>{t('skill.gitTitle')}</strong>
-                <span className="hint compact">{t('skill.gitHint')}</span>
-              </div>
-              <div className="skills-git-form">
-                <input
-                  placeholder={t('skill.gitPlaceholder')}
-                  value={gitUrl}
-                  disabled={busy}
-                  onChange={(e) => setGitUrl(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && gitUrl.trim() && !busy) installGitSkills();
-                  }}
-                />
-                <input
-                  className="skills-git-branch"
-                  placeholder={t('skill.gitBranchPlaceholder')}
-                  title={t('skill.gitBranch')}
-                  value={gitBranch}
-                  disabled={busy}
-                  onChange={(e) => setGitBranch(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="primary tiny-btn"
-                  disabled={busy || !gitUrl.trim()}
-                  onClick={() => installGitSkills()}
-                >
-                  <Download size={14} />{t('skill.gitInstall')}
-                </button>
-              </div>
-            </div>
             {gitNotice && (
               <div className="skill-git-notice" role="status">
                 <span>{gitNotice}</span>
@@ -517,69 +584,169 @@ export function SkillsPanel({
               </div>
             )}
 
+            {selected.size > 0 && (
+              <div className="skills-selection-bar" role="status">
+                <span className="skills-selection-count">{t('skill.selectedCount', { n: selected.size })}</span>
+                <button type="button" className="primary tiny-btn" disabled={busy} onClick={() => openMount('mount')}>
+                  <PlugZap size={14} />{t('skill.mount')}
+                </button>
+                <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => openMount('unmount')}>
+                  <Unplug size={14} />{t('skill.unmount')}
+                </button>
+                <button type="button" className="ghost tiny-btn" disabled={busy} onClick={() => setSelected(new Set())}>
+                  {t('skill.clearSelection')}
+                </button>
+              </div>
+            )}
+
+            <div className="skills-list-head">
+              <label className="skills-select-all">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  disabled={busy || filteredLocal.length === 0}
+                  onChange={toggleSelectAll}
+                />
+                <span>{t('skill.listCount', { n: filteredLocal.length })}</span>
+              </label>
+            </div>
+
             <div className="skills-list">
-              {filteredLocal.map((skill) => (
-                <label key={skill.id} className={`skills-row${selected.has(skill.id) ? ' selected' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(skill.id)}
-                    disabled={busy}
-                    onChange={() => toggleSelect(skill.id)}
-                  />
-                  <div className="skills-row-main">
-                    <div className="skills-row-title">
-                      <strong>{skill.name}</strong>
-                      {skill.is_local && <span className="badge inline">{t('skill.selfBuilt')}</span>}
-                      {skill.mounted_agents.map((a) => (
-                        <span key={a.id} className="badge ok inline skills-pill">{a.name}</span>
-                      ))}
-                      {(skill.mounted_paths ?? []).map((p) => (
-                        <span key={p} className="badge inline skills-pill" title={p}>{t('skill.project')}</span>
-                      ))}
-                      {skill.mounted_agents.length === 0 && !(skill.mounted_paths?.length) && (
-                        <span className="badge inline">{t('skill.notMounted')}</span>
-                      )}
+              {filteredLocal.map((skill) => {
+                const mounted = skill.mounted_agents.length > 0 || (skill.mounted_paths?.length ?? 0) > 0;
+                const agentShown = skill.mounted_agents.slice(0, 2);
+                const agentMore = skill.mounted_agents.length - agentShown.length;
+                const triggers = (skill.triggers ?? []).slice(0, 3);
+                const menuOpen = menuSkillId === skill.id;
+                return (
+                  <label
+                    key={skill.id}
+                    className={`skills-row${selected.has(skill.id) ? ' selected' : ''}${mounted ? '' : ' unmounted'}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(skill.id)}
+                      disabled={busy}
+                      onChange={() => toggleSelect(skill.id)}
+                    />
+                    <div className="skills-row-main">
+                      <div className="skills-row-title">
+                        <strong>{skill.name}</strong>
+                        {skill.is_local && <span className="badge inline">{t('skill.selfBuilt')}</span>}
+                        {agentShown.map((a) => (
+                          <span key={a.id} className="badge ok inline skills-pill">{a.name}</span>
+                        ))}
+                        {agentMore > 0 && (
+                          <span className="badge ok inline skills-pill">{t('skill.moreMounted', { n: agentMore })}</span>
+                        )}
+                        {(skill.mounted_paths ?? []).slice(0, 1).map((p) => (
+                          <span key={p} className="badge inline skills-pill" title={p}>{t('skill.project')}</span>
+                        ))}
+                        {!mounted && (
+                          <span className="badge inline skills-pill muted">{t('skill.notMounted')}</span>
+                        )}
+                      </div>
+                      <div className="skills-row-meta">
+                        {triggers.length > 0 ? (
+                          triggers.map((word) => (
+                            <span key={word} className="badge inline skills-pill">{word}</span>
+                          ))
+                        ) : (
+                          <span className="hint compact">{t('skill.noTriggers')}</span>
+                        )}
+                        <span className="hint compact skills-repo-label">{skill.repo_label}</span>
+                      </div>
                     </div>
-                    <span className="hint compact">{skill.repo_label}</span>
-                    {clipTriggerHint(skill.description) && (
-                      <span className="hint compact skills-trigger-hint" title={skill.description ?? undefined}>
-                        {t('skill.applicable', { hint: clipTriggerHint(skill.description) ?? '' })}
-                      </span>
-                    )}
-                    <div className="skills-trigger-row">
-                      <span className="hint compact">{t('skill.triggers')}：</span>
-                      {(skill.triggers ?? []).length > 0
-                        ? (skill.triggers ?? []).slice(0, 5).map((word) => (
-                          <span key={word} className="badge inline skills-pill">{word}</span>
-                        ))
-                        : <span className="hint compact">{t('skill.noTriggers')}</span>}
+                    <div className="skills-row-actions skills-row-menu">
                       <button
                         type="button"
-                        className="tiny ghost"
+                        className="tiny ghost skills-more-btn"
+                        disabled={busy}
+                        aria-label={t('skill.moreActions')}
+                        aria-expanded={menuOpen}
                         onClick={(e) => {
                           e.preventDefault();
-                          setAdviceSkill(skill);
+                          setMenuSkillId((cur) => (cur === skill.id ? null : skill.id));
                         }}
                       >
-                        {t('skill.advice')}{(skill.suggestions?.length ?? 0) > 0 ? ` · ${skill.suggestions?.length}` : ''}
+                        <MoreHorizontal size={16} />
                       </button>
+                      {menuOpen && (
+                        <div className="skills-row-menu-pop" role="menu">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="tiny ghost"
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setMenuSkillId(null);
+                              run(async () => { await invoke('store_open_skill', { skillId: skill.id, staged: true }); });
+                            }}
+                          >{t('common.open')}</button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="tiny ghost"
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setMenuSkillId(null);
+                              setAdviceSkill(skill);
+                            }}
+                          >
+                            {t('skill.advice')}{(skill.suggestions?.length ?? 0) > 0 ? ` · ${skill.suggestions?.length}` : ''}
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="tiny ghost danger-link"
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setMenuSkillId(null);
+                              if (window.confirm(t('skill.confirmDeleteLocal', { name: skill.name }))) uninstallSkill(skill.id);
+                            }}
+                          >
+                            <Trash2 size={14} />{t('common.delete')}
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  <div className="skills-row-actions">
-                    <button type="button" className="tiny ghost" disabled={busy} onClick={(e) => {
-                      e.preventDefault();
-                      run(async () => { await invoke('store_open_skill', { skillId: skill.id, staged: true }); });
-                    }}>{t('common.open')}</button>
-                    <button type="button" className="tiny ghost danger-link" disabled={busy} onClick={(e) => {
-                      e.preventDefault();
-                      if (window.confirm(t('skill.confirmDeleteLocal', { name: skill.name }))) uninstallSkill(skill.id);
-                    }}>
-                      <Trash2 size={14} />
+                  </label>
+                );
+              })}
+              {filteredLocal.length === 0 && (
+                <div className="skills-empty">
+                  <p className="hint compact">{t('skill.localEmpty')}</p>
+                  <div className="skills-empty-actions">
+                    <button
+                      type="button"
+                      className="ghost tiny-btn"
+                      disabled={busy}
+                      onClick={() => { setAddMode('create'); setAddOpen(true); }}
+                    >
+                      <Plus size={14} />{t('skill.emptyCreate')}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost tiny-btn"
+                      disabled={busy}
+                      onClick={() => { setAddMode('git'); setAddOpen(true); }}
+                    >
+                      <Download size={14} />{t('skill.emptyGit')}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost tiny-btn"
+                      disabled={busy}
+                      onClick={() => setTab('discover')}
+                    >
+                      {t('skill.emptyDiscover')}
                     </button>
                   </div>
-                </label>
-              ))}
-              {filteredLocal.length === 0 && <p className="hint compact">{t('skill.localEmpty')}</p>}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -592,20 +759,34 @@ export function SkillsPanel({
                 className="ghost tiny-btn"
                 disabled={busy}
                 onClick={() => run(async () => {
-                  // 发现页同步推荐仓：Gitee + Anthropic（含 frontend-design）
+                  // 发现页同步推荐仓：Gitee + Anthropic。单仓失败继续下一个，避免 Gitee 挂掉拖死 GitHub。
                   const ids = ['swlgitee-sun-skills', 'anthropics-skills'];
                   let next = repos;
+                  const failed: string[] = [];
+                  let ok = 0;
                   for (const id of ids) {
                     const target = next.find((r) => r.id === id)
                       ?? (id === 'swlgitee-sun-skills'
                         ? next.find((r) => r.clone_url.toLowerCase().includes('gitee.com/swlgitee/sun-skills'))
                         : undefined);
                     if (!target) continue;
-                    next = await invoke<SkillRepoView[]>('store_refresh_repo', { repoId: target.id });
-                    setRepos(next);
+                    try {
+                      next = await invoke<SkillRepoView[]>('store_refresh_repo', { repoId: target.id });
+                      setRepos(next);
+                      ok += 1;
+                    } catch {
+                      failed.push(target.label || id);
+                    }
                   }
                   await reloadDiscover();
-                }, t('skill.toastRecommendedRefreshed'))}
+                  if (failed.length === 0) {
+                    pushToast(t('skill.toastRecommendedRefreshed'), 'ok');
+                  } else if (ok > 0) {
+                    pushToast(t('skill.toastRecommendedPartial', { failed: failed.join('、') }), 'info');
+                  } else {
+                    throw new Error(t('skill.toastRecommendedFailed', { failed: failed.join('、') }));
+                  }
+                })}
               >
                 <RefreshCw size={14} />{t('skill.refreshRecommended')}
               </button>
