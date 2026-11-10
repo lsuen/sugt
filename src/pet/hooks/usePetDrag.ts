@@ -5,6 +5,14 @@ import type { MutableRefObject, RefObject, MouseEvent as ReactMouseEvent } from 
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { clamp, easeInOut } from '../config';
+import { AUTO } from '../petState';
+
+/**
+ * v1.3 拖拽三段物理感：按下即「被提起来」(lifted)，松手落地缓冲 (landing)，
+ * 随后回基态 (idle)。三段都有专属动作素材，不再复用走路姿。
+ * 纯单击（未发生位移）不播落地姿，避免点一下就抖。
+ */
+export type PetDragPhase = 'idle' | 'lifted' | 'landing';
 
 type Props = {
   interactive: boolean;
@@ -20,6 +28,9 @@ const FLING_DISTANCE_CAP = 240; // 物理像素，单轴最大滑行距离
 
 export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: Props) {
   const [dragging, setDragging] = useState(false);
+  // 三段拖拽：lifted 只在按住期间生效，landing 是松手后的一次性缓冲过渡。
+  const [dragPhase, setDragPhase] = useState<PetDragPhase>('idle');
+  const phaseTimer = useRef(0);
   const dragActive = useRef(false);
   const movedDuringDrag = useRef(false);
   const dragRequested = useRef(false);
@@ -38,6 +49,7 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
     pendingDrag.current = null;
     velocity.current = [];
     setDragging(false);
+    setDragPhase('idle');
   }, []);
 
   const beginDrag = useCallback(() => {
@@ -47,6 +59,10 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
     velocity.current = [];
     window.clearTimeout(dragCleanupTimer.current);
     window.clearTimeout(snapTimer.current);
+    window.clearTimeout(phaseTimer.current);
+    // 按下即「被提起来」，不必等位移；视觉层用专属 lifted 序列帧。
+    setDragging(true);
+    setDragPhase('lifted');
     // 原生 start_dragging 在部分平台会吞掉 pointerup，超时兜底避免状态位永久卡住
     dragCleanupTimer.current = window.setTimeout(clearDragFlags, 5000);
   }, [clearDragFlags]);
@@ -134,6 +150,15 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
       const didMove = movedDuringDrag.current;
       dragActive.current = false;
       setDragging(false);
+      window.clearTimeout(phaseTimer.current);
+      if (didMove) {
+        // 真的换了位置才播落地缓冲；纯单击不抖。
+        setDragPhase('landing');
+        phaseTimer.current = window.setTimeout(
+          () => setDragPhase('idle'), AUTO.drag.holdMs);
+      } else {
+        setDragPhase('idle');
+      }
       finishDrag(didMove);
       window.clearTimeout(dragCleanupTimer.current);
       dragCleanupTimer.current = window.setTimeout(() => {
@@ -194,6 +219,7 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
       window.clearTimeout(dragCleanupTimer.current);
       window.clearTimeout(snapTimer.current);
       window.clearTimeout(landTimer.current);
+      window.clearTimeout(phaseTimer.current);
     },
     [],
   );
@@ -221,6 +247,7 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
 
   return {
     dragging,
+    dragPhase,
     dragActive,
     movedDuringDrag,
     dragRequested,

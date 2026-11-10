@@ -68,6 +68,11 @@ scripts/.notify-*.json
 # 孙测测专属测试资产（脚本 / 留痕 / 报告 / 索引）需可追溯，整目录入库
 !/docs/孙测测/
 !/docs/孙测测/**
+# 小精灵维护手册 / 定版脚本 / 配置快照：后续维护入口，整目录入库
+!/docs/小精灵维护/
+!/docs/小精灵维护/**
+# 41 张 WebP 的可选快照不入库（唯一进包路径仍是 src/assets/pet/）
+/docs/小精灵维护/assets/final/
 
 # Footgun: a FILE named .github must never store tokens
 # (workflows live in the .github/ DIRECTORY only)
@@ -75,3 +80,17 @@ scripts/.notify-*.json
 # Local test caches & tool temp dirs
 src-tauri/target-agent-test/
 .commandcode/
+
+# Python 字节码缓存：孙测测留痕目录整体入库，但运行产生的缓存不入库
+__pycache__/
+*.py[cod]
+
+# macOS 目录元数据
+.DS_Store
+
+# 本机临时参考图：定稿副本已收敛到 docs/孙测测/traces/assets/ 与 docs/小精灵维护/assets/
+/good.png
+/docs/20261110004012_6_5.jpg
+
+# 本机 Cargo 构建调优（不随项目分发，避免影响 CI/他人构建）
+/src-tauri/.cargo/

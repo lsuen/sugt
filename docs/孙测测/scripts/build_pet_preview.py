@@ -45,7 +45,7 @@ REQUIRED_SELECTORS = (
 MANIFEST_REL = Path("src") / "assets" / "pet" / "manifest.json"
 CSS_ANCHOR = "/* ===== 桌面精灵"
 # pet.css 相对路径为 ../assets/pet/；兼容旧版 overlay.css 的 ./assets/pet/
-URL_PATTERN = re.compile(r"url\('(?:\.\./)*assets/pet/([a-z0-9-]+)\.webp'\)")
+URL_PATTERN = re.compile(r"url\('(?:\.\./)*assets/pet/([A-Za-z0-9-]+)\.webp'\)")
 
 TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -92,7 +92,7 @@ __PET_CSS_RAW__
 </head>
 <body>
 <div class="wrap">
-<h1>小su 桌面精灵 v1.0 · 互动演示</h1>
+<h1>小su 桌面精灵 v1.3 · 动作注册表互动演示（20 动作 / 1000 帧）</h1>
 <p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。静态海报 + 带 alpha 的逐帧动画 WebP 全部内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
 <span class="badge">生成时间 __GENERATED_AT__</span>
 <span class="badge">源 CSS sha256 __CSS_HASH__</span>
@@ -127,7 +127,7 @@ __PET_CSS_RAW__
         <button type="button" id="blinkBtn" data-action="blink">眨眼</button>
         <button type="button" id="thinkBtn" data-action="think">思考云</button>
         <button type="button" id="roamBtn" data-action="roam">自主走动</button>
-        <button type="button" id="landBtn" data-action="land">落地回弹</button>
+        <button type="button" id="landBtn" data-action="land">松手放下</button>
       </div>
     </div>
     <div class="group">
@@ -137,9 +137,10 @@ __PET_CSS_RAW__
         <button type="button" data-action="failed">失败失落</button>
         <button type="button" data-action="wake">睡醒过渡</button>
         <button type="button" data-action="wait">等待批准</button>
-        <button type="button" data-action="drag">拖拽中</button>
+        <button type="button" data-action="drag">按住提起</button>
         <button type="button" data-action="idle">闲置差分</button>
         <button type="button" data-action="turn">转身张望</button>
+        <button type="button" data-action="greet">点头招呼</button>
       </div>
     </div>
     <div class="group">
@@ -171,16 +172,7 @@ __PET_CSS_RAW__
           <div class="pet-figure" id="figure">
             <div class="pet-motion">
               <div class="pet-loops">
-                <span class="pet-loop" data-loop="idle" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="typing" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="done" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="error" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="sleep" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="wave" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="peek" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="shy" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="celebrate" aria-hidden="true"></span>
-                <span class="pet-loop" data-loop="walk" aria-hidden="true"></span>
+__PET_LOOP_NODES__
                 <span class="pet-poster" id="poster" data-frame="idle" aria-hidden="true"></span>
                 <span class="pet-blink" aria-hidden="true"></span>
               </div>
@@ -198,7 +190,7 @@ __PET_CSS_RAW__
 <table>
 <tr><th>v1.1 互动</th><th>演示中可验证</th></tr>
 <tr><td>触发式动作</td><td>每个按钮点一次播 1.5~2.6s：换姿势 + 气泡 + 脚底状态文字 + 一次性动效，播完自动复位；再点可重播，不会「闪一下就没了」</td></tr>
-<tr><td>素材与尺寸</td><td>画布由 240×360 裁到 105×297（人物占比 38% → 87%）；动画由 6 帧硬循环改为 10 帧往返 + 非匀速逐帧时长；三档窗口整体下移，新增更小的「小」档</td></tr>
+<tr><td>素材与尺寸</td><td>v1.1 画布由 240×360 裁到 105×297（人物占比 38% → 87%）；v1.3.1 画布加宽到 180×297，按逐动作代表框尺度归一 + 全局幅度安全边统一坐标系；20 动作 × 50 帧均为独立位图；三档窗口整体下移，新增更小的「小」档</td></tr>
 <tr><td>自动交互动作</td><td>请求完成庆祝、失败失落尾段、睡醒过渡、等待批准、拖拽中、闲置差分、转身张望；间隔/姿势池来自 manifest.autoActions，零负反馈</td></tr>
 <tr><td>鼠标穿透</td><td>产品侧默认关闭（整窗可交互，可拖动/右键）；开启后按立绘 alpha 命中框动态穿透，本预览页不模拟 OS 层穿透</td></tr>
 <tr><td>自动演示</td><td>「▶ 自动演示全部」依次播放招呼 → 轻碰 → 庆祝 → 失落 → 睡醒 → 等待 → 转身 → 闲置 → 拖拽 → 散步，无需逐个点</td></tr>
@@ -207,18 +199,26 @@ __PET_CSS_RAW__
 <tr><td>气泡与状态胶囊</td><td>气泡左上 <code>max-content</code> 自适应、长文案自然换行；状态胶囊居中固定在角色脚底</td></tr>
 <tr><td>自主走动</td><td>演示里窗口真的左右位移并播 walk 逐帧动画；产品侧只在 idle 且久无操作时小范围缓动，后端按当前显示器硬夹边</td></tr>
 <tr><td>请求级思考云</td><td>typing 时只有三个装饰点、不吐文案；状态仍以后端真实在途请求为准，结果级事件才出泡</td></tr>
-<tr><td>单层背景红线</td><td>10 个姿势各只挂一张动画 WebP + 一张静态海报，带 alpha 的透明区域不会露出第二层立绘</td></tr>
+<tr><td>单层背景红线</td><td>__POSE_COUNT__ 个动作各只挂一张动画 WebP + 一张静态海报，带 alpha 的透明区域不会露出第二层立绘</td></tr>
+<tr><td>v1.3 动作注册表</td><td>__POSE_COUNT__ 个动作 × 50 帧 = 1000 张独立位图；每个动作有专属语义、专属素材、专属 trigger 与 priority，新增动作只在 manifest 追加一条，前端按 priority 降序查表、代码零改动</td></tr>
+<tr><td>v1.3 拖拽三段</td><td>按住 → <code>lifted</code>（双脚离地、头发与双腿垂摆、整只上移 10px）；松手 → <code>landing</code>（落地缓冲）；随后回 <code>idle</code>。三段各有专属 50 帧序列，不再复用走路姿</td></tr>
 </table>
 
 <footer>由 <code>docs/孙测测/scripts/build_pet_preview.py</code> 生成，请勿手工编辑；修改精灵 CSS 或互动层后重跑脚本即可。预览页不参与打包。</footer>
 </div>
 
 <script>
+// v1.3：状态与动作清单全部取自 manifest 注册表（20 动作 / 1000 帧），
+// 这里只列演示入口，第三项必须是注册表里真实存在的动作名。
 const STATES = [
   ['idle', '待机中', 'idle'], ['typing', '处理中', 'typing'], ['done', '已完成', 'done'],
-  ['error', '出错了', 'error'], ['sleep', '休息中', 'sleep'], ['offline', '未运行', 'idle'],
-  ['wave', '轻碰招手', 'wave'], ['peek', '靠近倾听', 'peek'], ['shy', '害羞', 'shy'],
-  ['celebrate', '庆祝', 'celebrate'], ['walk', '走近', 'walk'],
+  ['error', '出错了', 'error'], ['sleep', '休息中', 'sleep'], ['offline', '未运行', 'offline'],
+  ['lifted', '被提起来', 'lifted'], ['landing', '松手落地', 'landing'],
+  ['poked', '轻碰回应', 'poked'], ['petted', '被摸头', 'petted'], ['peek', '靠近倾听', 'peek'],
+  ['celebrate', '庆祝', 'celebrate'], ['disappointed', '失落', 'disappointed'],
+  ['welcome', '挥手欢迎', 'welcome'], ['greeting', '点头招呼', 'greeting'],
+  ['wait', '等待批准', 'wait'], ['stretch', '伸懒腰', 'stretch'],
+  ['lookAround', '转头张望', 'lookAround'], ['walk', '走近', 'walk'],
 ];
 // v1.1 三档：旧大档废弃、档位整体下移；素材已裁掉透明边，同档人物视觉不缩小。
 const SIZES = { small: [120, 136, 4.0], medium: [148, 168, 3.2], large: [180, 204, 2.6] };
@@ -238,21 +238,25 @@ const BUBBLES = {
 // 每个动作都是「一段可观察的表演」，不是常驻开关：pose / 气泡 / 状态文字 / CSS 反馈类
 // / 持续时间 / 是否真的移动窗口。pose 为 null 表示沿用当前状态的立绘。
 const ACTIONS = {
-  hello: { label: '挥手打招呼', pose: 'wave', bubble: 'hello', ms: 2200 },
-  pat:   { label: '被摸头啦', pose: 'shy', bubble: 'pat', cls: 'petted', ms: 2000 },
-  poke:  { label: '轻碰招手', pose: 'wave', bubble: 'poke', fig: 'poked', ms: 1800 },
+  hello: { label: '挥手打招呼', pose: 'welcome', bubble: 'hello', ms: 2200 },
+  pat:   { label: '被摸头啦', pose: 'petted', bubble: 'pat', cls: 'petted', ms: 2000 },
+  poke:  { label: '轻碰回应', pose: 'poked', bubble: 'poke', fig: 'poked', ms: 1800 },
   blink: { label: '眨了下眼', pose: null, bubble: null, cls: 'blinking', ms: 320 },
   think: { label: '在想事情…', pose: null, bubble: null, thought: true, ms: 2200 },
   roam:  { label: '散步中', pose: 'walk', bubble: 'roam', cls: 'roaming', ms: 2600, move: true },
-  land:  { label: '放下啦', pose: null, bubble: 'land', cls: 'pet-landed', ms: 1500 },
+  // 拖拽三段：按住「被提起来」，松手「落地缓冲」，两段各有专属 50 帧素材。
+  drag:  { label: '按住提起', pose: 'lifted', bubble: 'drag', cls: 'dragging',
+           phase: 'lifted', ms: 1800 },
+  land:  { label: '松手放下', pose: 'landing', bubble: 'land', cls: 'pet-landed',
+           phase: 'landing', ms: 1500 },
   // v1.1 自动交互动作（参考 whale-girl）：事件反馈 / 陪伴 / 用户互动，零负反馈。
   cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: 2600 },
-  wake:  { label: '睡醒过渡', pose: 'peek', bubble: 'wake', ms: 1600 },
-  failed:{ label: '失败失落尾段', pose: 'shy', bubble: 'disappointed', ms: 2200 },
-  wait:  { label: '等待批准', pose: 'peek', bubble: 'wait', cls: 'pet-walking', ms: 2000 },
-  drag:  { label: '拖拽中', pose: 'walk', bubble: 'drag', cls: 'dragging', ms: 1800 },
-  idle:  { label: '闲置小动作', pose: 'wave', bubble: 'idleVariant', ms: 2200 },
-  turn:  { label: '转身张望', pose: null, bubble: 'turn', cls: 'pet-listening', ms: 1800 },
+  wake:  { label: '睡醒伸懒腰', pose: 'wake', bubble: 'wake', ms: 1600 },
+  failed:{ label: '失败失落尾段', pose: 'disappointed', bubble: 'disappointed', ms: 2200 },
+  wait:  { label: '等待批准', pose: 'wait', bubble: 'wait', cls: 'pet-walking', ms: 2000 },
+  idle:  { label: '闲置伸懒腰', pose: 'stretch', bubble: 'idleVariant', ms: 2200 },
+  turn:  { label: '转身张望', pose: 'lookAround', bubble: 'turn', cls: 'pet-listening', ms: 1800 },
+  greet: { label: '点头打招呼', pose: 'greeting', bubble: 'hello', ms: 1800 },
 };
 
 let currentState = 'idle';
@@ -317,7 +321,7 @@ function setBubble(key) {
 function updateNow(text) {
   const [w, h, s] = SIZES[currentSize];
   now.textContent = text || ('当前：' + stateEntry()[1]);
-  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 105×297（裁剪后）@2x';
+  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 180×297（v1.3.1 尺度统一 + 四边安全边）@2x';
 }
 
 function syncButtons() {
@@ -360,6 +364,7 @@ function clearAction() {
   moveTimers.forEach(clearTimeout);
   moveTimers = [];
   stage.classList.remove('petted', 'roaming', 'pet-landed', 'blinking');
+  stage.dataset.dragPhase = 'idle';
   figure.classList.remove('poked');
   thought.style.display = 'none';
   win.style.transform = 'scale(' + SIZES[currentSize][2] + ')';
@@ -393,6 +398,7 @@ function playAction(name, fromDemo, hold) {
   currentAction = name;
   void stage.offsetWidth;
   if (action.cls) stage.classList.add(action.cls);
+  if (action.phase) stage.dataset.dragPhase = action.phase;
   if (action.fig) figure.classList.add(action.fig);
   thought.style.display = action.thought ? '' : 'none';
   setPose(action.pose || stateEntry()[2]);
@@ -629,10 +635,15 @@ def build_preview(root: Path, out: Path) -> dict:
     if names != expected:
         raise ValueError(f"素材集合异常: 缺 {sorted(expected - names)} / 多 {sorted(names - expected)}")
 
+    # 动作 DOM 也由 manifest 派生：新增动作不需要改预览页模板。
+    loop_nodes = "\n".join(
+        '                <span class="pet-loop" data-loop="%s" aria-hidden="true"></span>'
+        % name for name in poses)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     css_hash = hashlib.sha256(css.encode("utf-8")).hexdigest()[:12]
     html = (
-        TEMPLATE.replace("__PET_CSS_RAW__", pet_css)
+        TEMPLATE.replace("__PET_LOOP_NODES__", loop_nodes)
+        .replace("__PET_CSS_RAW__", pet_css)
         .replace("__GENERATED_AT__", generated_at)
         .replace("__CSS_HASH__", css_hash)
         .replace("__ASSET_COUNT__", str(len(frame_names)))

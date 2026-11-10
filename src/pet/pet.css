@@ -17,6 +17,12 @@
   --pet-line: rgba(140, 200, 232, 0.28);
   /* 窄侧栏：气泡叠在立绘左侧空隙；此区域必须保持穿透，不可整窗解穿透 */
   --pet-side-w: 28%;
+  /* v1.3.1 角色安全边：窗口 overflow:hidden 是硬裁剪，lifted 上移 10px、
+     hop 上移 7px、breathe/poke 轻微放大都需要窗口内侧留余量。
+     素材自身四边也有透明安全边，两层叠加才不会被裁发梢/手/鞋。
+     调「显示框内边距」改这两个变量，不要动 overflow。 */
+  --pet-inset-x: 8px;
+  --pet-inset-y: 8px;
   /* 眼→头→身分级跟随变量：usePetGaze 按递减 lerp 分别写入 */
   --gaze-x: 0;
   --gaze-y: 0;
@@ -206,9 +212,9 @@
 .pet-figure {
   position: absolute;
   left: var(--pet-side-w);
-  right: 0;
-  top: 0;
-  bottom: 0;
+  right: var(--pet-inset-x);
+  top: var(--pet-inset-y);
+  bottom: var(--pet-inset-y);
   transform-style: preserve-3d;
   transform-origin: 55% 32%;
   transform:
@@ -285,7 +291,7 @@
   position: absolute;
   inset: 0;
   background-repeat: no-repeat;
-  background-position: right bottom;
+  background-position: center bottom;
   background-size: contain;
   pointer-events: none;
 }
@@ -305,26 +311,46 @@
    以下规则由 gen_pet_from_manifest.py 从 src/assets/pet/manifest.json 生成；
    新增姿势只改 manifest，不要手工加 url（C17 要求每条规则恰好一个 url）。 */
 /* @generated:pet-assets begin —— 由 gen_pet_from_manifest.py 生成，勿手工编辑 */
-.pet-loop[data-loop="idle"] { background-image: url('../assets/pet/su-idle-loop.webp'); }
+.pet-loop[data-loop="lifted"] { background-image: url('../assets/pet/su-lifted-loop.webp'); }
+.pet-loop[data-loop="landing"] { background-image: url('../assets/pet/su-landing-loop.webp'); }
 .pet-loop[data-loop="typing"] { background-image: url('../assets/pet/su-typing-loop.webp'); }
-.pet-loop[data-loop="done"] { background-image: url('../assets/pet/su-done-loop.webp'); }
 .pet-loop[data-loop="error"] { background-image: url('../assets/pet/su-error-loop.webp'); }
+.pet-loop[data-loop="done"] { background-image: url('../assets/pet/su-done-loop.webp'); }
 .pet-loop[data-loop="sleep"] { background-image: url('../assets/pet/su-sleep-loop.webp'); }
-.pet-loop[data-loop="wave"] { background-image: url('../assets/pet/su-wave-loop.webp'); }
-.pet-loop[data-loop="peek"] { background-image: url('../assets/pet/su-peek-loop.webp'); }
-.pet-loop[data-loop="shy"] { background-image: url('../assets/pet/su-shy-loop.webp'); }
+.pet-loop[data-loop="offline"] { background-image: url('../assets/pet/su-offline-loop.webp'); }
 .pet-loop[data-loop="celebrate"] { background-image: url('../assets/pet/su-celebrate-loop.webp'); }
+.pet-loop[data-loop="disappointed"] { background-image: url('../assets/pet/su-disappointed-loop.webp'); }
+.pet-loop[data-loop="petted"] { background-image: url('../assets/pet/su-petted-loop.webp'); }
+.pet-loop[data-loop="poked"] { background-image: url('../assets/pet/su-poked-loop.webp'); }
+.pet-loop[data-loop="wake"] { background-image: url('../assets/pet/su-wake-loop.webp'); }
+.pet-loop[data-loop="welcome"] { background-image: url('../assets/pet/su-welcome-loop.webp'); }
+.pet-loop[data-loop="greeting"] { background-image: url('../assets/pet/su-greeting-loop.webp'); }
+.pet-loop[data-loop="wait"] { background-image: url('../assets/pet/su-wait-loop.webp'); }
+.pet-loop[data-loop="stretch"] { background-image: url('../assets/pet/su-stretch-loop.webp'); }
+.pet-loop[data-loop="lookAround"] { background-image: url('../assets/pet/su-lookAround-loop.webp'); }
+.pet-loop[data-loop="peek"] { background-image: url('../assets/pet/su-peek-loop.webp'); }
 .pet-loop[data-loop="walk"] { background-image: url('../assets/pet/su-walk-loop.webp'); }
-.pet-poster[data-frame="idle"] { background-image: url('../assets/pet/su-idle.webp'); }
+.pet-loop[data-loop="idle"] { background-image: url('../assets/pet/su-idle-loop.webp'); }
+.pet-poster[data-frame="lifted"] { background-image: url('../assets/pet/su-lifted.webp'); }
+.pet-poster[data-frame="landing"] { background-image: url('../assets/pet/su-landing.webp'); }
 .pet-poster[data-frame="typing"] { background-image: url('../assets/pet/su-typing.webp'); }
-.pet-poster[data-frame="done"] { background-image: url('../assets/pet/su-done.webp'); }
 .pet-poster[data-frame="error"] { background-image: url('../assets/pet/su-error.webp'); }
+.pet-poster[data-frame="done"] { background-image: url('../assets/pet/su-done.webp'); }
 .pet-poster[data-frame="sleep"] { background-image: url('../assets/pet/su-sleep.webp'); }
-.pet-poster[data-frame="wave"] { background-image: url('../assets/pet/su-wave.webp'); }
-.pet-poster[data-frame="peek"] { background-image: url('../assets/pet/su-peek.webp'); }
-.pet-poster[data-frame="shy"] { background-image: url('../assets/pet/su-shy.webp'); }
+.pet-poster[data-frame="offline"] { background-image: url('../assets/pet/su-offline.webp'); }
 .pet-poster[data-frame="celebrate"] { background-image: url('../assets/pet/su-celebrate.webp'); }
+.pet-poster[data-frame="disappointed"] { background-image: url('../assets/pet/su-disappointed.webp'); }
+.pet-poster[data-frame="petted"] { background-image: url('../assets/pet/su-petted.webp'); }
+.pet-poster[data-frame="poked"] { background-image: url('../assets/pet/su-poked.webp'); }
+.pet-poster[data-frame="wake"] { background-image: url('../assets/pet/su-wake.webp'); }
+.pet-poster[data-frame="welcome"] { background-image: url('../assets/pet/su-welcome.webp'); }
+.pet-poster[data-frame="greeting"] { background-image: url('../assets/pet/su-greeting.webp'); }
+.pet-poster[data-frame="wait"] { background-image: url('../assets/pet/su-wait.webp'); }
+.pet-poster[data-frame="stretch"] { background-image: url('../assets/pet/su-stretch.webp'); }
+.pet-poster[data-frame="lookAround"] { background-image: url('../assets/pet/su-lookAround.webp'); }
+.pet-poster[data-frame="peek"] { background-image: url('../assets/pet/su-peek.webp'); }
 .pet-poster[data-frame="walk"] { background-image: url('../assets/pet/su-walk.webp'); }
+.pet-poster[data-frame="idle"] { background-image: url('../assets/pet/su-idle.webp'); }
 /* @generated:pet-assets end */
 
 /* 非激活循环跳过合成；sleep/offline 时彻底藏起非当前帧以省解码 */
@@ -458,13 +484,46 @@
   pointer-events: none;
   animation: pet-heart 0.72s ease-out 1;
 }
-/* 自主走动：窗口位置由 Rust 夹边移动；左右朝向见 --face-x */
+/* v1.3.3 自主漂移：整段 lifted 序列帧 + 离地上移 + 头发/双腿轻摆，
+   观感是「被提起来飞过去」，不再用 walk 走路帧跟窗口位移硬对齐；
+   落点由 pet-landed 播一次 landing 缓冲，闭合「提起 → 飞 → 松手落地」。
+   必须写在 428 行「移动中压掉 3D/呼吸」之后，否则 animation:none 会压掉摆动。 */
+.pet-stage.roaming .pet-figure {
+  transform: scaleX(var(--face-x)) translateY(-8px);
+}
+.pet-stage.roaming .pet-weight {
+  animation: pet-lift-dangle 1.1s ease-in-out infinite;
+}
 .pet-stage.roaming .pet-loops {
-  animation: pet-roam-step 1.5s ease-in-out infinite;
+  animation: pet-lift-float 1.5s ease-in-out infinite;
 }
 /* 松手落地：一次性轻微回弹 */
 .pet-stage.pet-landed .pet-motion {
   animation: pet-land 0.32s ease-out 1;
+}
+
+/* ---- v1.3 拖拽三段物理感 ----
+   按下：整只被提起离地 + 头发/双腿自然垂摆（专属 lifted 序列帧负责肢体，
+   这里只做位移与摆动，不叠第二张立绘）；松手：落地缓冲后回基态。
+   必须写在 .pet-stage.dragging 之后，否则拖动期 animation:none 会压掉提摆动。 */
+.pet-stage[data-drag-phase="lifted"] .pet-figure {
+  filter: none;
+  transform: scaleX(var(--face-x)) translateY(-10px);
+  transform-style: flat;
+}
+.pet-stage[data-drag-phase="lifted"] .pet-weight {
+  animation: pet-lift-dangle 1.1s ease-in-out infinite;
+}
+@keyframes pet-lift-dangle {
+  0%, 100% { transform: translateY(0) rotate(-1.6deg); }
+  50% { transform: translateY(-2.5px) rotate(1.6deg); }
+}
+.pet-stage[data-drag-phase="landing"] .pet-figure {
+  transform: scaleX(var(--face-x)) translateY(0);
+  transform-style: flat;
+}
+.pet-stage[data-drag-phase="landing"] .pet-motion {
+  animation: pet-land 0.42s ease-out 1;
 }
 
 /* 一次性反馈：只在状态跃迁/交互时播一次 */
@@ -479,7 +538,7 @@
   inset: 0;
   background-image: url('../assets/pet/su-blink.webp');
   background-repeat: no-repeat;
-  background-position: right bottom;
+  background-position: center bottom;
   background-size: contain;
   opacity: 0;
   visibility: hidden;
@@ -656,10 +715,11 @@
   35% { opacity: 1; transform: translateY(-4px) scale(1.1) rotate(4deg); }
   100% { opacity: 0; transform: translateY(-18px) scale(0.85) rotate(-4deg); }
 }
-@keyframes pet-roam-step {
-  0%, 100% { transform: translateY(0) rotate(0deg); }
-  25% { transform: translateY(-1.5px) rotate(-0.5deg); }
-  75% { transform: translateY(-1.5px) rotate(0.5deg); }
+/* 漂移期的悬浮轻摆：与 .pet-weight 的 pet-lift-dangle 分层叠加，
+   两层幅度都极小，避免 alpha 合成层拖影。 */
+@keyframes pet-lift-float {
+  0%, 100% { transform: translateY(-1px) rotate(-0.6deg); }
+  50% { transform: translateY(1.5px) rotate(0.6deg); }
 }
 @keyframes pet-land {
   0% { transform: translateY(0) scaleY(1); }
@@ -675,7 +735,10 @@
   .pet-motion, .pet-weight, .pet-secondary, .pet-loops, .pet-mote,
   .pet-spark, .pet-bubble, .pet-status-dot,
   .pet-thought, .pet-thought i, .pet-stage.petted .pet-figure::after,
-  .pet-stage.roaming .pet-loops, .pet-stage.pet-landed .pet-motion,
+  .pet-stage.roaming .pet-loops, .pet-stage.roaming .pet-weight,
+  .pet-stage.pet-landed .pet-motion,
+  .pet-stage[data-drag-phase="lifted"] .pet-weight,
+  .pet-stage[data-drag-phase="landing"] .pet-motion,
   .pet-menu {
     animation: none !important;
   }

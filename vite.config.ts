@@ -26,6 +26,12 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    // 精灵 41 张 WebP 必须是离散文件（SCR-006 D04 与 Tauri 打包都按文件核对）。
+    // v1.3.2 纯缩放后部分 poster 小于 Vite 默认 4096 B 内联阈值（实测
+    // su-stretch.webp 4032 B），会被转成 data URL 导致 dist 只有 40 张。
+    // 这里对精灵素材禁用内联，其它资源仍走默认策略。
+    assetsInlineLimit: (filePath: string) =>
+      filePath.replace(/\\/g, '/').includes('/assets/pet/') ? false : undefined,
     // 主窗口 + 流量悬浮窗两个入口
     rollupOptions: {
       input: {

@@ -1,6 +1,7 @@
 // 桌面精灵（小酥）前端共享类型、默认值与工具函数。
 // SettingsPanel / overlay / PetStage 统一从这里取，避免与后端 model.rs 的 OverlayConfig 三处重复。
 import type { TKey } from '../i18n';
+import { PET_IMAGE_SIZE } from './petManifest.generated';
 
 export type OverlayConfigView = {
   enabled: boolean;
@@ -82,7 +83,7 @@ export type OverlayStatus = {
 export type Bubble = { id: number; text: string; kind: 'ok' | 'error' | 'info' };
 
 // v1.1 三档：旧「大」(220×250) 废弃，旧中降为新大、旧小降为新中，新增更小的小档。
-// 素材已裁掉透明边（105×297），同档下人物视觉反而更大，屏幕占用矩形更小。
+// 素材已裁掉透明边（v1.3 为 160×297），同档下人物视觉反而更大，屏幕占用矩形更小。
 export const PET_SIZES = [
   { key: 'small', label: 'set.petSizeSmall' as TKey, width: 120, height: 136 },
   { key: 'medium', label: 'set.petSizeMedium' as TKey, width: 148, height: 168 },
@@ -135,14 +136,17 @@ export const FULL_HITBOX = [0, 0, 1, 1] as const;
 
 /**
  * 把素材内归一化的 alpha 包围盒映射到实际绘制区。
- * 立绘是 background-size: contain + right/bottom 对齐，所以先算等比缩放后的
- * 绘制矩形，再叠加 bbox 与外扩 pad；命中区只覆盖有像素的部分，透明边距不挡点击。
+ * 立绘是 background-size: contain + center/bottom 对齐（v1.3.1 起水平居中，
+ * 让 scaleX 镜像后左右对称、四周都有安全边），所以先算等比缩放后的绘制矩形，
+ * 再叠加 bbox 与外扩 pad；命中区只覆盖有像素的部分，透明边距不挡点击。
+ * 传入的 rect 必须是 .pet-figure 的实际盒子（已含 --pet-inset-* 内缩）。
  * 默认尺寸与 manifest.baseSize（裁剪后画布）保持一致。
  */
 export function figureHitRect(
   rect: FigureRect,
   hitBox: readonly [number, number, number, number],
-  image: { w: number; h: number } = { w: 105, h: 297 },
+  // 画布尺寸唯一真相源：manifest.json → petManifest.generated.ts，禁止再写第二份。
+  image: { w: number; h: number } = PET_IMAGE_SIZE,
   pad = 0,
 ): FigureRect {
   const width = rect.right - rect.left;
@@ -150,7 +154,9 @@ export function figureHitRect(
   const factor = Math.min(width / image.w, height / image.h);
   const drawW = image.w * factor;
   const drawH = image.h * factor;
-  const originX = rect.right - drawW;
+  // center bottom：绘制矩形水平居中、垂直贴底，与 pet.css 的
+  // background-position 保持一致；写成 rect.right - drawW 会让命中框整体偏左。
+  const originX = rect.left + (width - drawW) / 2;
   const originY = rect.bottom - drawH;
   const left = originX + hitBox[0] * drawW - pad;
   const top = originY + hitBox[1] * drawH - pad;

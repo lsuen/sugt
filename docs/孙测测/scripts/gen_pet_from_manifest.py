@@ -33,7 +33,13 @@ CSS_BEGIN = "/* @generated:pet-assets begin —— 由 gen_pet_from_manifest.py 
 CSS_END = "/* @generated:pet-assets end */"
 ALPHA_THRESHOLD = 8
 VALID_PLAYBACK = ("loop", "pingpong", "once", "blink")
-VALID_MOTION = ("breathe", "bob", "float", "tilt", "wiggle", "shake", "wave", "hop")
+VALID_MOTION = (
+    "breathe", "bob", "float", "tilt", "wiggle", "shake", "wave", "hop",
+    # v1.3 动作注册表新增：每个动作有专属 motion，不跨语义复用。
+    "dangle", "settle", "droop", "nod", "turn", "stretch",
+)
+# 动作注册表必填字段：新增动作必须把语义、触发、分组、优先级一次声明完整。
+ACTION_KEYS = ("semantic", "trigger", "group", "priority")
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=default_root, help="项目根目录")
     parser.add_argument("--check", action="store_true", help="只校验不写文件")
     parser.add_argument("--out", type=Path, default=None, help="自定留痕路径")
+    parser.add_argument(
+        "--emit-only", action="store_true",
+        help="素材生产期间只生成 CSS/TS 常量（跳过素材核对）；禁止用于最终验收",
+    )
     return parser.parse_args()
 
 
@@ -89,7 +99,75 @@ def load_manifest(root: Path) -> dict:
         box = pose["hitBox"]
         if not isinstance(box, list) or len(box) != 4:
             raise ValueError(f"姿势 {pose['name']} hitBox 必须是 4 元数组")
+    validate_action_registry(data, poses)
     return data
+
+
+def validate_action_registry(data: dict, poses: list[dict]) -> None:
+    """校验动作注册表：帧预算、独立位图帧、语义/触发/优先级唯一、扩展规则自洽。
+
+    v1.3 起 manifest.poses[] 就是动作注册表条目；未声明 actionRegistry 的旧
+    manifest 仍可正常走生成流程，保持向后兼容。
+    """
+    registry = data.get("actionRegistry")
+    if not isinstance(registry, dict):
+        return
+
+    for pose in poses:
+        for key in ACTION_KEYS:
+            if key not in pose:
+                raise ValueError(f"动作 {pose['name']} 缺注册表字段 {key}")
+        if not isinstance(pose["priority"], int):
+            raise ValueError(f"动作 {pose['name']} priority 必须是整数")
+        states = pose.get("states")
+        if states is not None:
+            allowed = set(data.get("statePriority") or [])
+            if not isinstance(states, list) or not set(states).issubset(allowed):
+                raise ValueError(f"动作 {pose['name']} states 含非法状态")
+
+    budget = registry.get("frameBudget") or {}
+    total = budget.get("total")
+    if isinstance(total, int) and sum(p["frames"] for p in poses) != total:
+        raise ValueError(
+            f"动作注册表总帧数 {sum(p['frames'] for p in poses)} ≠ 预算 {total}")
+    if budget.get("uniqueBitmapFrames"):
+        for pose in poses:
+            order = pose["frameOrder"]
+            if sorted(order) != list(range(pose["frames"])):
+                raise ValueError(
+                    f"动作 {pose['name']} 用重复帧冒充扩容：frameOrder 必须是 "
+                    "0..frames-1 的无重复排列")
+
+    if registry.get("semanticUniqueness"):
+        for key in ("semantic", "poster", "loop", "priority"):
+            values = [p[key] for p in poses]
+            if len(set(values)) != len(values):
+                raise ValueError(f"动作注册表 {key} 不唯一（存在跨语义复用）")
+        triggers = [p["trigger"] for p in poses if p["trigger"] != "always"]
+        if len(set(triggers)) != len(triggers):
+            raise ValueError("动作注册表 trigger 不唯一（除 always 外须一对一）")
+
+    expected_order = [p["name"] for p in sorted(poses, key=lambda x: -x["priority"])]
+    if data.get("posePriority") != expected_order:
+        raise ValueError("posePriority 未与 actions.priority 降序同步")
+
+    # 自动交互槽位的 pose 必须指向同名专属动作，杜绝「拖拽复用走路」这类语义错配。
+    auto = data.get("autoActions") or {}
+    names = {p["name"] for p in poses}
+    for slot in ("wake", "welcome", "celebrate", "disappointed", "wait"):
+        pose_name = (auto.get(slot) or {}).get("pose")
+        if pose_name is not None and pose_name not in names:
+            raise ValueError(f"autoActions.{slot}.pose={pose_name} 不在动作注册表中")
+        if pose_name is not None and pose_name != slot:
+            raise ValueError(
+                f"autoActions.{slot}.pose={pose_name} 复用了别的动作，语义不一致")
+    drag = auto.get("drag") or {}
+    for key in ("pose", "releasePose"):
+        if drag.get(key) and drag[key] not in names:
+            raise ValueError(f"autoActions.drag.{key}={drag[key]} 不在动作注册表中")
+    for pose_name in (auto.get("idleVariant") or {}).get("poses", []):
+        if pose_name not in names:
+            raise ValueError(f"autoActions.idleVariant 含未知动作 {pose_name}")
 
 
 def read_riff(path: Path) -> dict:
@@ -280,6 +358,34 @@ def build_ts(manifest: dict) -> str:
     lines += [
         "};",
         "",
+        "// 动作注册表：前端按 priority 降序查表。新增动作只在 manifest.json 追加一条，",
+        "// 本文件由生成器重算，petState.ts / PetStage.tsx 无需改动。",
+        "export type PetAction = {",
+        "  name: PetPoseName;",
+        "  semantic: string;",
+        "  trigger: string;",
+        "  group: string;",
+        "  priority: number;",
+        "  states: readonly string[] | null;",
+        "  motion: string;",
+        "  playback: string;",
+        "  frames: number;",
+        "};",
+        "",
+        "export const PET_ACTIONS: readonly PetAction[] = [",
+    ]
+    for pose in sorted(manifest["poses"], key=lambda x: -x["priority"]):
+        states = (js_object(pose["states"]) if pose.get("states") is not None
+                  else "null")
+        lines.append(
+            "  { name: '%s', semantic: %s, trigger: '%s', group: '%s', "
+            "priority: %d, states: %s, motion: '%s', playback: '%s', frames: %d },"
+            % (pose["name"], js_object(pose["semantic"]), pose["trigger"],
+               pose["group"], pose["priority"], states, pose["motion"],
+               pose["playback"], pose["frames"]))
+    lines += [
+        "] as const;",
+        "",
         "// 自动交互节奏：语义层常量，代码级固定，不进设置页（参考 whale-girl 零打扰原则）。",
         f"export const PET_AUTO_ACTIONS = {js_object(manifest.get('autoActions', {}))} as const;",
         "",
@@ -363,11 +469,21 @@ def main() -> int:
     """入口：读 manifest → 核对素材 → 比对/写生成物 → 留痕 → 退出码。"""
     args = parse_args()
     root = args.root.resolve()
-    mode = "--check（只校验）" if args.check else "写模式（更新生成物）"
+    if args.emit_only:
+        mode = "--emit-only（仅生成前端常量，素材未落包，不可用于验收）"
+    elif args.check:
+        mode = "--check（只校验）"
+    else:
+        mode = "写模式（更新生成物）"
     rows: list[tuple[str, bool, str]] = []
     try:
         manifest = load_manifest(root)
-        problems, boxes, box_diffs = inspect_assets(root, manifest)
+        if args.emit_only:
+            problems = []
+            boxes = {pose["name"]: list(pose["hitBox"]) for pose in manifest["poses"]}
+            box_diffs = []
+        else:
+            problems, boxes, box_diffs = inspect_assets(root, manifest)
         consumer_problems = check_consumers(root)
         targets = expected_outputs(root, manifest, boxes)
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
@@ -375,9 +491,13 @@ def main() -> int:
         return 2
 
     check_problems = problems + [f"{name} hitBox 漂移" for name in box_diffs]
-    rows.append(("素材尺寸/帧数/逐帧时长/alpha/文件与 manifest 一致",
-                 not problems, "、".join(problems[:4]) if problems else
-                 f"{len(manifest['poses'])} 个姿势全部一致"))
+    if args.emit_only:
+        rows.append(("素材核对（--emit-only 明确跳过，待落包后跑完整模式）",
+                     True, "已跳过，不构成验收证据"))
+    else:
+        rows.append(("素材尺寸/帧数/逐帧时长/alpha/文件与 manifest 一致",
+                     not problems, "、".join(problems[:4]) if problems else
+                     f"{len(manifest['poses'])} 个姿势全部一致"))
     if args.check:
         rows.append(("manifest hitBox 与素材实测一致",
                      not box_diffs,

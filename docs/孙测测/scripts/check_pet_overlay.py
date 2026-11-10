@@ -77,7 +77,7 @@ SOURCE_CHECKS = [
     ("C21", "视线以头部为轴且移动中关掉 3D/滤镜", "src/pet/pet.css",
      ["transform-origin: 55% 32%", "rotateY(calc(var(--head-x) * 9deg))",
       "filter: none", "transform: scaleX(var(--face-x))",
-      "@keyframes pet-heart", "@keyframes pet-roam-step", "@keyframes pet-land"]),
+      "@keyframes pet-heart", "@keyframes pet-lift-float", "@keyframes pet-land"]),
     ("C22", "气泡不裁字 / 状态胶囊在脚底 / 思考云与摸头反馈", "src/pet/pet.css",
      ["width: max-content", "overflow-wrap: anywhere",
       "left: calc(50% + var(--pet-side-w) / 2)", ".pet-thought",
@@ -92,12 +92,48 @@ SOURCE_CHECKS = [
      ["'set.petRoam'", "pet_roam: e.target.checked", "cfg.pet_roam !== false"]),
     ("C24c", "后端配置字段与默认值", "src-tauri/src/model.rs",
      ["pub pet_roam: bool", "pet_roam: true"]),
-    ("C25", "状态机声明式优先级表 + 自动交互节奏器 + 纯 reducer", "src/pet/petState.ts",
+    ("C25", "状态机动作注册表驱动 + 拖拽三段 + 自动节奏器 + 纯 reducer", "src/pet/petState.ts",
      ["export const PET_STATE_TABLE", "export const PET_POSE_TABLE",
+      "export const PET_ACTION_TABLE", "export function selectPetAction",
       "export function reducePetState", "export function rhythmDelay",
       "export function shouldWake", "export function pickIdleVariant",
-      "waking?: boolean", "dragging?: boolean", "disappointed?: boolean",
-      "state === 'idle' && Boolean(i.idlePose)", "Boolean(i.dragging)"]),
+      "waking?: boolean", "dragging?: boolean", "landing?: boolean",
+      "disappointed?: boolean", "PET_ACTIONS.map("]),
+    # v1.3：拖拽三段必须一路通到渲染层与 CSS，任一环断了就退化成「复用走路姿」。
+    ("C37", "拖拽三段接线：lifted / landing 专属动作接入渲染层", "src/pet/PetStage.tsx",
+     ["dragPhase", "data-drag-phase={dragPhase}",
+      "dragging: dragPhase === 'lifted'", "landing: dragPhase === 'landing'"]),
+    ("C37b", "拖拽状态机三段与 manifest 落地时长", "src/pet/hooks/usePetDrag.ts",
+     ["setDragPhase('lifted')", "setDragPhase('landing')",
+      "setDragPhase('idle')", "AUTO.drag.holdMs"]),
+    ("C37c", "拖拽物理感：离地提摆 + 落地缓冲", "src/pet/pet.css",
+     ['data-drag-phase="lifted"', "data-drag-phase=\"landing\"",
+      "@keyframes pet-lift-dangle"]),
+    # v1.3.1：两层安全边 + 水平居中，防止「动作伸出框外 / 高矮胖瘦」回归。
+    ("C38", "角色层内缩安全边且立绘水平居中贴底", "src/pet/pet.css",
+     ["--pet-inset-x: 8px", "--pet-inset-y: 8px",
+      "right: var(--pet-inset-x)", "top: var(--pet-inset-y)",
+      "bottom: var(--pet-inset-y)", "background-position: center bottom",
+      "overflow: hidden"]),
+    ("C38b", "穿透命中框按 center bottom 反算，跟随 CSS 对齐方式", "src/pet/config.ts",
+     ["originX = rect.left + (width - drawW) / 2",
+      "originY = rect.bottom - drawH"]),
+    # v1.3.3：漫游 = 被提起来飞过去 + 落点落地；不得回退成走路帧或抢请求态。
+    # 编号从 C46 起：C39/C40 早已被 manifest v2 / 重编码脚本占用，不能复用。
+    ("C46", "自主漂移映射 lifted 且只在 idle 生效", "src/pet/petState.ts",
+     ["Boolean(input.roaming) && input.state === 'idle'",
+      "walk: Boolean(input.walking)"]),
+    ("C46b", "漂移落点播一次 landing 且不虚报请求态", "src/pet/hooks/usePetBehaviors.ts",
+     ["setRoamLanding(true)", "AUTO.drag.holdMs", "roamLanding"]),
+    ("C46c", "落地接线到渲染层与 CSS 缓冲", "src/pet/PetStage.tsx",
+     ["roamLanding && petState === 'idle'", "roamLanding ? 'pet-landed' : ''"]),
+    ("C46d", "漂移期离地提摆，不再用走路步频动画", "src/pet/pet.css",
+     ["translateY(-8px)", "@keyframes pet-lift-float",
+      ".pet-stage.roaming .pet-weight"]),
+    # v1.3.3：生成侧四边门禁，防止源视频再次把手指/发梢/鞋底裁掉。
+    ("C47", "生产线四边触边门禁与 640 宽画布", "docs/孙测测/scripts/comfyui_pet_action_series.py",
+     ["def edge_touch_score(", "SUGT_PET_CANVAS\", \"640x768\"",
+      "SUGT_PET_MASTER_SCALE", "三段补间均触边，标记待返工"]),
     ("C34", "前端姿势清单与 motion 来自 manifest 生成物", "src/pet/PetStage.tsx",
      ["import { PET_MOTION, PET_POSE_NAMES } from './petManifest.generated';",
       "const PET_LOOPS = PET_POSE_NAMES;", "reducePetState(",
@@ -179,7 +215,7 @@ SOURCE_CHECKS = [
 DIST_CSS_SELECTORS = [".pet-side", ".pet-figure", ".pet-weight", ".pet-motion",
                      ".pet-secondary", ".pet-loops", ".pet-blink",
                      ".pet-status-bar", ".pet-edit-bar",
-                     ".pet-thought", "pet-heart", "pet-roam-step",
+                     ".pet-thought", "pet-heart", "pet-lift-float",
                      "pet-weight-sway", "pet-secondary-sway"]
 MANIFEST_REL = Path("src") / "assets" / "pet" / "manifest.json"
 
@@ -224,6 +260,58 @@ def check_manifest_source(root: Path) -> tuple[str, str, bool, str]:
     return ("C33", "manifest 单一真相源接线", not problems,
             "、".join(problems[:4]) if problems
             else f"{len(data['poses'])} 个姿势、生成段与前端常量齐全")
+
+
+def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
+    """C36：1000 帧动作注册表必须是唯一真相源，且语义/素材/优先级无复用。
+
+    v1.3 红线：每个动作一张专属 poster + 一张专属 loop，拖拽不再复用走路姿；
+    新增动作只在 manifest 追加一条，前端按 priority 降序查表，代码零改动。
+    """
+    try:
+        data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return "C36", "动作注册表 1000 帧契约", False, f"读取失败: {exc}"
+    poses = data.get("poses", [])
+    problems: list[str] = []
+    registry = data.get("actionRegistry", {})
+    budget = registry.get("frameBudget", {})
+    total = sum(pose.get("frames", 0) for pose in poses)
+    if total != 1000 or budget.get("total") != 1000:
+        problems.append(f"总帧 {total} ≠ 1000")
+    if not budget.get("uniqueBitmapFrames") or not registry.get("semanticUniqueness"):
+        problems.append("未声明独立位图/语义唯一")
+    for field in ("semantic", "priority", "poster", "loop"):
+        values = [pose.get(field) for pose in poses]
+        if len(set(values)) != len(poses):
+            problems.append(f"{field} 存在复用")
+    for pose in poses:
+        order = pose.get("frameOrder", [])
+        if len(order) != pose.get("frames") or set(order) != set(range(pose["frames"])):
+            problems.append(f'{pose["name"]} 帧序不是独立位图排列')
+        trigger = pose.get("trigger")
+        if trigger != "always" and trigger != pose.get("name"):
+            problems.append(f'{pose["name"]} trigger 未登记为同名 flag')
+        if trigger == "always" and not pose.get("states"):
+            problems.append(f'{pose["name"]} state 类动作缺 states 约束')
+        if pose.get("playback") not in ("loop", "once"):
+            problems.append(f'{pose["name"]} playback 非法')
+    descending = [pose["name"] for pose in sorted(
+        poses, key=lambda item: -item["priority"])]
+    if descending != data.get("posePriority"):
+        problems.append("posePriority 与 priority 降序不一致")
+    names = {pose["name"] for pose in poses}
+    if not {"lifted", "landing", "idle"} <= names:
+        problems.append("缺拖拽三段或基态动作")
+    drag = data.get("autoActions", {}).get("drag", {})
+    if drag.get("pose") != "lifted" or drag.get("releasePose") != "landing":
+        problems.append("autoActions.drag 未指向专属提起/落地动作")
+    walk = next((pose for pose in poses if pose["name"] == "walk"), {})
+    if "拖拽" in walk.get("semantic", "") or "提起" in walk.get("semantic", ""):
+        problems.append("walk 仍在承担拖拽语义")
+    return ("C36", "动作注册表 1000 帧 / 语义唯一 / 可扩展契约", not problems,
+            "、".join(problems[:4]) if problems else
+            f"{len(poses)} 动作 / {total} 帧 / 语义与素材均唯一")
 
 
 def parse_args() -> argparse.Namespace:
@@ -350,7 +438,7 @@ def check_pose_layers(root: Path) -> tuple[str, str, bool, str]:
             if not rule:
                 problems.append(f"{pose} 缺{kind}规则")
                 continue
-            urls = re.findall(r"url\('(?:\.\./)*assets/pet/([a-z0-9-]+\.webp)'\)", rule.group(1))
+            urls = re.findall(r"url\('(?:\.\./)*assets/pet/([A-Za-z0-9-]+\.webp)'\)", rule.group(1))
             if urls != [expected]:
                 problems.append(f"{pose}{kind}={urls or '空'}（应单层 {expected}）")
         for name in (f"su-{pose}.webp", f"su-{pose}-loop.webp"):
@@ -453,12 +541,15 @@ def check_dist(root: Path) -> list[tuple[str, str, bool, str]]:
     assets = sorted((root / "dist" / "assets").glob("su-*.webp"))
     total = sum(p.stat().st_size for p in assets)
     _, asset_names, loops = load_pet_manifest(root)
+    extras = len(json.loads((root / MANIFEST_REL).read_text(
+        encoding="utf-8")).get("extraFrames", []))
     names_ok = all(any(p.name.startswith(name + "-") for p in assets)
                    for name in asset_names)
     results.append((
         "D04",
         f"dist 内含 {len(asset_names)} 张精灵 WebP"
-        f"（{len(asset_names) - len(loops)} 静态 + {len(loops)} 动画）",
+        f"（{len(asset_names) - len(loops) - extras} 静态 poster + "
+        f"{len(loops)} 动画 loop + {extras} 附加帧）",
         len(assets) == len(asset_names) and names_ok,
         f"{len(assets)} 张 / {total / 1024:.2f} KB"))
     return results
@@ -524,9 +615,16 @@ def check_preview_v10(root: Path) -> tuple[str, str, bool, str]:
         ('data-action="wake"', "睡醒过渡按钮"),
         ('data-action="drag"', "拖拽中按钮"),
         ('data-action="turn"', "转身张望按钮"),
-        ("105×297", "裁剪后画布说明"), ("[120, 136", "新小档尺寸"),
+        ("180×297", "v1.3.1 统一坐标系画布说明"), ("[120, 136", "新小档尺寸"),
         ("helloBtn", "开场招呼按钮"), ("roamBtn", "自主走动按钮"),
         ("pet-thought", "思考云 DOM"), ("roaming", "走动反馈类"),
+        # v1.3：预览页必须真的能验收拖拽三段与全部 20 个动作。
+        ("v1.3 动作注册表", "1000 帧注册表说明"),
+        ("data-action=\"greet\"", "点头招呼按钮"),
+        ("stage.dataset.dragPhase", "拖拽三段状态接线"),
+        ("data-loop=\"lifted\"", "被提起动作层"),
+        ("data-loop=\"landing\"", "落地动作层"),
+        ("data-loop=\"lookAround\"", "转头张望动作层"),
     )
     missing = [label for needle, label in needles if needle not in html]
     return ("D08", "预览页含 v1.1 自动交互与尺寸演示", not missing,
@@ -604,6 +702,7 @@ def main() -> int:
         rows.append(check_pet_sizes(root))
         rows.append(check_pose_layers(root))
         rows.append(check_manifest_source(root))
+        rows.append(check_action_registry(root))
         rows.append(check_v09_wiring(root))
         rows += check_v10_behaviors(root)
         rows += check_dist(root)

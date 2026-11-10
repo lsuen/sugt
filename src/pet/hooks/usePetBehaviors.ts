@@ -19,7 +19,7 @@ import {
   type PetState,
 } from '../petState';
 
-/** 走动朝向：复用现有 walk 素材，左右用 CSS 镜像，不新增四向立绘。 */
+/** 漂移朝向：整段用 lifted（被提起来）序列帧，左右用 CSS 镜像，不新增四向立绘。 */
 export type PetFacing = 'left' | 'right';
 const PET_IDLE_BUBBLES: TKey[] = [
   'pet.bubble.idle1', 'pet.bubble.idle2', 'pet.bubble.idle3',
@@ -55,9 +55,12 @@ export function usePetBehaviors({
   const [blinking, setBlinking] = useState(false);
   const [greeting, setGreeting] = useState(false);
   const [roaming, setRoaming] = useState(false);
+  // v1.3.3：落到新位置后播一次 landing，闭合「被提起来 → 飞过去 → 松手落地」。
+  const [roamLanding, setRoamLanding] = useState(false);
   const [facing, setFacing] = useState<PetFacing>('right');
 
   const blinkTimers = useRef<number[]>([]);
+  const landTimer = useRef(0);
   const greeted = useRef(false);
   const lastIdleBubble = useRef(0);
 
@@ -154,8 +157,9 @@ export function usePetBehaviors({
     };
   }, [still, playIdlePose, pushBubble, petStateRef, dragActive, lastUserTouch, t]);
 
-  // 自主走动：在当前显示器可用区内随机落点（整屏，非小范围漂），
-  // 后端 pet_roam_to 再硬夹边；左右朝向用 CSS 镜像现有 walk 素材。
+  // 自主漂移：在当前显示器可用区内随机落点（整屏，非小范围漂），
+  // 后端 pet_roam_to 再硬夹边。全程 lifted（被提起来飞过去），落点播 landing；
+  // 不再用 walk 走路帧，避免脚步与窗口位移永远对不齐。
   useEffect(() => {
     if (!roamEnabled || still) return;
     let cancelled = false;
@@ -166,6 +170,10 @@ export function usePetBehaviors({
     };
     const finish = () => {
       setRoaming(false);
+      setRoamLanding(true);
+      window.clearTimeout(landTimer.current);
+      landTimer.current = window.setTimeout(
+        () => setRoamLanding(false), AUTO.drag.holdMs);
       void invoke('pet_finish_drag', { snap: false }).catch(() => undefined);
       schedule(nextWanderAt({ now: 0 }));
     };
@@ -290,6 +298,7 @@ export function usePetBehaviors({
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(landTimer.current);
     };
   }, [roamEnabled, still, petStateRef, dragActive, lastUserTouch, gazeRef]);
 
@@ -313,5 +322,5 @@ export function usePetBehaviors({
     };
   }, [still, roaming, dragActive, petStateRef]);
 
-  return { blinking, greeting, roaming, facing };
+  return { blinking, greeting, roaming, roamLanding, facing };
 }

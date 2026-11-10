@@ -27,7 +27,13 @@ docs/孙测测/
 │   ├── pet_reencode_assets.py         ← SCR-011 素材裁剪 / 往返帧 / 调色板 lossless 重编码 + RIFF 校验
 │   ├── comfyui_curl_http.py           ← SCR-012 共用 curl 传输适配器（本机 Python socket 被拦）
 │   ├── comfyui_pet_keyposes_trial.py  ← SCR-013 关键姿态能力核实试片（不进包）
-│   └── comfyui_pet_palette_trial.py   ← SCR-014 发色 / 下装形象候选试片（不进包）
+│   ├── comfyui_pet_palette_trial.py   ← SCR-014 发色 / 下装形象候选试片（不进包）
+│   ├── comfyui_pet_cel_keyvisual.py   ← SCR-015 赛璐璐化新造型定稿候选（文生图 / 锁 seed / 不进包）
+│   ├── check_pet_keyvisual_cutout.py  ← SCR-016 定稿图可进包抠图验收（五项判据 / 四联对照）
+│   ├── check_pet_cutout_asset.py      ← SCR-017 已抠透明 PNG 进包门禁（溢色 / 残留 / 噪点 / 体积 / 修补）
+│   ├── check_pet_pose_series.py       ← SCR-018 姿态 / 视频帧序列验收（背景漂移 / 自适应色键 / bbox / 配色 / 脚部留白 / 亮青平台 / 1000 帧体积）
+│   ├── comfyui_pet_action_series.py   ← SCR-019 v1.3 动作注册表 1000 帧批量生产线（关键姿态 / H3 补间 / 朝向门禁 / 自适应色键 / 统一 bbox / 断点续跑）
+│   └── check_pet_final_frames.py      ← SCR-020 落包 1000 帧逐帧验收（尺寸 / 帧数 / alpha / 脚部留白 / 独立位图 / poster 一致性 / blink 去重 / 体积）
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论
@@ -106,3 +112,4 @@ docs/孙测测/
 - **本目录**：孙测测的可复用 Python 脚本、留痕、对接文档、版本测试报告（人工/脚本混合评估产物）。
 - **项目 `tests/`**：产品级自动化测试（如 `theme-pack-smoke.mjs`）仍留在原处，保持 `npm test` 链路不变，不搬迁、不重复造轮子。
 - **项目 `src-tauri/tests/`**：Rust 单元 / e2e 测试保持原状，脚本只负责**调度与汇总**，不复制断言逻辑。
+- **项目 `docs/小精灵维护/`**（2026-11-10 新增）：面向后续维护者的自包含手册目录（v1.3 定版脚本**只读副本**、`manifest.json` 快照、master 基准图、动作接触图、素材清单、动作表、更新维护手册、脚本说明手册）。其 `scripts/petctl.py` 登记为 **SCR-021**，可统一调度本目录定版脚本并做副本一致性自检；**脚本编辑源仍是本目录 `scripts/`**，副本由 `sync` 单向同步，避免双份真相源漂移。留痕与报告仍只写本目录 `traces/` / `reports/`。

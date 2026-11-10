@@ -74,7 +74,7 @@ check('生成 TS 逐帧时长为数组且带 motion / 自动动作常量',
   && generated.includes('export const PET_AUTO_ACTIONS')
   && generated.includes('export const PET_POSE_PRIORITY'));
 
-const declared = [...generated.matchAll(/^\s{2}'([a-z]+)',$/gm)].map((m) => m[1]);
+const declared = [...generated.matchAll(/^\s{2}'([A-Za-z]+)',$/gm)].map((m) => m[1]);
 check('生成 TS 姿势清单与 manifest 一致',
   declared.length === poses.length && declared.every((name, i) => name === poses[i]),
   `TS ${declared.join(',')} / manifest ${poses.join(',')}`);
@@ -87,7 +87,7 @@ for (const pose of manifest.poses) {
   ]) {
     const rule = css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`));
     const urls = rule
-      ? [...rule[1].matchAll(/url\('\.\.\/assets\/pet\/([a-z0-9-]+\.webp)'\)/g)]
+      ? [...rule[1].matchAll(/url\('\.\.\/assets\/pet\/([A-Za-z0-9-]+\.webp)'\)/g)]
         .map((m) => m[1])
       : [];
     check(`${name} ${kind} 恰好一张且文件名匹配`,
@@ -98,9 +98,14 @@ for (const pose of manifest.poses) {
     existsSync(join(root, 'src/assets/pet', pose.poster))
     && existsSync(join(root, 'src/assets/pet', pose.loop)));
   const [x0, y0, x1, y1] = pose.hitBox;
-  check(`${name} hitBox 合法且人物占比 > 70%（透明点击墙已消除）`,
+  // v1.3.2 改为「纯缩放、不裁肢体」后人物在 180×297 画布里占比进一步下降，
+  // 再用写死的 >70% / >60% 会把 14 个动作误判为命中框脱节。判据改为：
+  // 四边内缩（透明安全边不进命中区）+ 面积不退化；逐动作与素材 50 帧 alpha
+  // 并集的精确比对由 SCR-020（Python + Pillow）承担，那里才读得到像素。
+  check(`${name} hitBox 合法且四边内缩、面积不退化`,
     [x0, y0, x1, y1].every((v) => Number.isFinite(v) && v >= 0 && v <= 1)
-    && x1 > x0 && y1 > y0 && (x1 - x0) > 0.7 && (y1 - y0) > 0.7,
+    && x0 > 0.05 && y0 > 0.05 && x1 < 0.95 && y1 < 0.95
+    && (x1 - x0) > 0.45 && (y1 - y0) > 0.45,
     JSON.stringify(pose.hitBox));
   const ms = pose.frameMs;
   const order = pose.frameOrder;
@@ -113,16 +118,57 @@ for (const pose of manifest.poses) {
     && ['loop', 'pingpong', 'once', 'blink'].includes(pose.playback)
     && totalMs >= 800,
     `${pose.frames} 帧 / 总 ${totalMs}ms`);
-  check(`${name} 循环首尾衔接（无 6 帧硬跳）`,
-    Math.abs(order[order.length - 1] - order[0]) <= 1,
-    JSON.stringify(order));
+  // v1.3：帧序就是 0..frames-1 的独立位图排列；闭环由 H3 首尾同源关键帧
+  // 在像素层面保证，不能用「首尾 index 相邻」来判断（那正是重复帧冒充扩容）。
+  check(`${name} 帧序为无重复排列（1000 帧均为独立位图）`,
+    order.every((value, i) => value === i)
+    && new Set(order).size === pose.frames
+    && pose.sourceFrames === pose.frames,
+    `${order.length} 帧 / sourceFrames ${pose.sourceFrames}`);
+  // 用数值比对而非字符串拼接：生成物按 Python 浮点格式写 0.0 / 1.0，
+  // JS `join(', ')` 会写成 0 / 1，字符串断言会把数值一致的常量误判为漂移。
+  const hitRow = generated.match(new RegExp(`^\\s*${name}: \\[([^\\]]+)\\]`, 'm'));
+  const hitValues = hitRow
+    ? hitRow[1].split(',').map((part) => Number(part.trim()))
+    : [];
   check(`${name} hitBox 写入前端常量`,
-    generated.includes(`${name}: [${pose.hitBox.join(', ')}]`));
+    hitValues.length === 4
+    && hitValues.every((value, i) => Number.isFinite(value)
+      && Math.abs(value - pose.hitBox[i]) < 1e-6),
+    `manifest [${pose.hitBox.join(', ')}] / 生成物 [${hitValues.join(', ')}]`);
 }
 
 for (const extra of manifest.extraFrames || []) {
   check(`附加帧 ${extra} 落盘`, existsSync(join(root, 'src/assets/pet', extra)));
 }
+
+// v1.3 动作注册表：可扩展、语义唯一、总帧精确 1000。
+const registry = manifest.actionRegistry;
+check('动作注册表声明帧预算与扩展规则', registry?.version === 1
+  && registry.frameBudget.total === 1000
+  && registry.frameBudget.uniqueBitmapFrames === true
+  && registry.semanticUniqueness === true
+  && typeof registry.extension === 'string');
+check('20 动作 / 1000 帧 / 语义、素材、优先级、触发词均唯一',
+  poses.length === 20
+  && manifest.poses.reduce((sum, pose) => sum + pose.frames, 0) === 1000
+  && new Set(manifest.poses.map((pose) => pose.semantic)).size === 20
+  && new Set(manifest.poses.map((pose) => pose.loop)).size === 20
+  && new Set(manifest.poses.map((pose) => pose.poster)).size === 20
+  && new Set(manifest.poses.map((pose) => pose.priority)).size === 20);
+check('拖拽三段在注册表中各有专属动作，不再复用走路姿',
+  ['lifted', 'landing'].every((name) => manifest.poses.some((pose) => pose.name === name
+    && pose.group === 'interaction'))
+  && manifest.autoActions.drag.pose === 'lifted'
+  && manifest.autoActions.drag.releasePose === 'landing'
+  && manifest.poses.find((pose) => pose.name === 'walk').semantic.includes('游走'));
+check('生成 TS 的 PET_ACTIONS 与 manifest 动作表逐项一致且按 priority 降序',
+  generated.includes('export const PET_ACTIONS')
+  && manifest.poses.every((pose) => generated.includes(
+    `{ name: '${pose.name}', semantic: "${pose.semantic}"`))
+  && manifest.posePriority.join(',') === [...manifest.poses]
+    .sort((a, b) => b.priority - a.priority)
+    .map((pose) => pose.name).join(','));
 
 if (failed) {
   console.error(`pet-manifest smoke: ${failed} failed`);

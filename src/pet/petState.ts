@@ -1,20 +1,21 @@
 // 桌面精灵（小酥）状态机纯函数：与 React / Tauri 解耦，便于单测与复用。
-// 声明式优先级表（行序即优先级，首个命中即返回）+ 纯 reducer，取代原先的 if 链。
-// 网关态 + 自动交互叠加姿分开，避免轻碰抢掉真实 typing。
-// v1.1：参考 whale-girl 的「零打扰自动交互」——随机眨眼/转身/闲置差分/游走、
-// 睡醒过渡、请求完成庆祝、失败失落、拖拽态；节奏参数由 manifest 单一真相源注入。
-import { PET_AUTO_ACTIONS } from './petManifest.generated';
+// v1.3：立绘动作改为「注册表驱动」——PET_ACTIONS 由 manifest.json 的 poses[]
+// 生成，按 priority 降序查表；新增动作只在 manifest 追加一条并放两张 WebP，
+// 本文件、PetStage.tsx、pet.css 一律零改动。
+// 网关态 + 交互/自动动作分开，避免轻碰抢掉真实 typing；纯 reducer 不读 Date.now。
+import {
+  PET_ACTIONS,
+  PET_AUTO_ACTIONS,
+  type PetPoseName,
+} from './petManifest.generated';
+
+// 动作注册表同样由状态机对外暴露：调用方/单测无需再直接依赖生成物。
+export { PET_ACTIONS } from './petManifest.generated';
 
 export type PetState = 'offline' | 'idle' | 'typing' | 'done' | 'error' | 'sleep';
 
-/** 立绘可用的动画层（含交互/表情差分，不计入状态胶囊文案） */
-export type PetPose =
-  | PetState
-  | 'wave'
-  | 'peek'
-  | 'shy'
-  | 'celebrate'
-  | 'walk';
+/** 立绘动作名唯一真相源：src/assets/pet/manifest.json → petManifest.generated.ts */
+export type PetPose = PetPoseName;
 
 export type PetHold = { state: PetState; until: number };
 
@@ -66,12 +67,12 @@ export function nextWanderAt(
   return now + rhythmDelay('wander', random);
 }
 
-/** 从 manifest 允许的闲置差分姿里随机挑一个；空列表回退 peek。 */
+/** 从 manifest 允许的闲置差分姿里随机挑一个；空列表回退 stretch。 */
 export function pickIdleVariant(
   { random = Math.random }: { random?: () => number } = {},
 ): PetPose {
   const list = AUTO.idleVariant.poses as readonly PetPose[];
-  return list.length ? list[Math.floor(random() * list.length)] : 'peek';
+  return list.length ? list[Math.floor(random() * list.length)] : 'stretch';
 }
 
 /** 睡醒边沿：上一帧是 sleep、本帧离开 sleep，且不是拖拽/已有醒觉动作打断。 */
@@ -117,10 +118,7 @@ export type PetStateRule = {
   when: (input: PetStateInput) => boolean;
 };
 
-/**
- * 网关态优先级表：offline → typing（含余晖）→ error → done → sleep → idle。
- * 与 src/assets/pet/manifest.json 的 statePriority 同序；新增状态只插一行。
- */
+/** 网关态优先级表，与 manifest.statePriority 同序；新增状态只插一行。 */
 export const PET_STATE_TABLE: readonly PetStateRule[] = [
   { id: 'offline', state: 'offline', when: (i) => !i.running },
   { id: 'typing', state: 'typing', when: (i) => i.active > 0 || i.typingUntil > i.now },
@@ -145,7 +143,54 @@ export function selectPetState(input: PetStateInput): PetState {
   return row ? row.state : 'idle';
 }
 
-// ---- 立绘 / 自动交互动作 ----
+// ---- 动作注册表（表驱动，扩展零改代码）----
+
+/** flags 的 key 就是 manifest.poses[].trigger；true 表示该事件正在发生。 */
+export type PetActionInput = {
+  state: PetState;
+  flags?: Readonly<Record<string, boolean>>;
+};
+
+export type PetActionRule = {
+  id: string;
+  pose: PetPose;
+  priority: number;
+  trigger: string;
+  states: readonly string[] | null;
+  group: string;
+  when: (input: PetActionInput) => boolean;
+};
+
+/**
+ * 由生成常量直接构建优先级表：PET_ACTIONS 已按 priority 降序排列。
+ * `trigger: 'always'` 用于 state 类动作（states 约束生效），其余靠 flags 命中。
+ * 每个动作有专属素材，不存在「拖拽复用走路」这类跨语义复用。
+ */
+export const PET_ACTION_TABLE: readonly PetActionRule[] = PET_ACTIONS.map((action) => ({
+  id: action.name,
+  pose: action.name,
+  priority: action.priority,
+  trigger: action.trigger,
+  states: action.states,
+  group: action.group,
+  when: (input) =>
+    (action.states === null || action.states.includes(input.state))
+    && (action.trigger === 'always' || Boolean(input.flags?.[action.trigger])),
+}));
+
+/** 查表：首个命中即返回；idle 是 priority 0 的兜底行，永远有结果。 */
+export function selectPetAction(input: PetActionInput): PetPose {
+  const row = PET_ACTION_TABLE.find((rule) => rule.when(input));
+  return row ? row.pose : 'idle';
+}
+
+/** 动作名 → 是否属于某语义分组；扩展动作后自动纳入，无需改调用方。 */
+export function actionsInGroup(group: string): readonly PetPose[] {
+  return PET_ACTION_TABLE.filter((rule) => rule.group === group)
+    .map((rule) => rule.pose);
+}
+
+// ---- v1.2 兼容包装：旧字段映射到新 flags ----
 
 export type PetPoseInput = {
   state: PetState;
@@ -157,80 +202,53 @@ export type PetPoseInput = {
   greeting?: boolean;
   idlePose?: PetPose | null;
   roaming?: boolean;
-  /** v1.1 自动交互：拖拽 / 睡醒 / 欢迎 / 等待批准 / 失败失落尾段 */
   dragging?: boolean;
+  /** v1.3 放下落地：松手后的短暂专属姿 */
+  landing?: boolean;
   waking?: boolean;
   welcoming?: boolean;
   waiting?: boolean;
   disappointed?: boolean;
 };
 
-export type PetPoseRule = {
-  id: string;
-  pose: PetPose | ((input: PetPoseInput) => PetPose);
-  when: (input: PetPoseInput) => boolean;
-};
+/** 旧式布尔输入 → 注册表 flags；保留给渐进迁移与既有单测。 */
+export function petActionFlags(input: PetPoseInput): Record<string, boolean> {
+  const flags: Record<string, boolean> = {
+    // v1.3.3：自主漫游改成「被提起来飞过去」，不再复用 walk 走路序列帧
+    // （走路姿与窗口位移对齐困难，脚步与落点永远对不上）。
+    // 只在 idle 生效：漫游本就只在 idle 启动，且被 typing/error 打断时
+    // 不能用 lifted 盖掉真实请求态（红线：状态反馈不得虚报）。
+    lifted: Boolean(input.dragging)
+      || (Boolean(input.roaming) && input.state === 'idle'),
+    landing: Boolean(input.landing),
+    wake: Boolean(input.waking),
+    welcome: Boolean(input.welcoming),
+    greeting: Boolean(input.greeting),
+    celebrate: Boolean(input.celebrating),
+    disappointed: Boolean(input.disappointed),
+    petted: Boolean(input.shy),
+    poked: Boolean(input.poked),
+    wait: Boolean(input.waiting),
+    peek: Boolean(input.listening),
+    // walk 只剩「鼠标靠近时的预备走」视线反馈；整屏漂移不再用它。
+    walk: Boolean(input.walking),
+  };
+  if (input.idlePose) flags[input.idlePose] = true;
+  return flags;
+}
 
-/**
- * 立绘层优先级表（行序即优先级，与 manifest.posePriority 同序）：
- * 事件反馈 > 用户互动 > 自动陪伴 > 基态。
- * 差分只在 idle/offline/sleep 生效；typing/error/done 等真实任务态不抢戏。
- * 素材复用说明：drag 复用 walk、wake/wait 复用 peek、disappointed 复用 shy，
- * 待 1000 帧真动作素材落包后逐项换成专属姿势，触发逻辑不变。
- */
-export const PET_POSE_TABLE: readonly PetPoseRule[] = [
-  { id: 'drag', pose: 'walk', when: (i) => Boolean(i.dragging) },
-  {
-    id: 'wake', pose: 'peek',
-    when: (i) => Boolean(i.waking) && (i.state === 'idle' || i.state === 'offline'),
-  },
-  {
-    id: 'welcome', pose: 'wave',
-    when: (i) => Boolean(i.welcoming) && (i.state === 'idle' || i.state === 'offline'),
-  },
-  {
-    id: 'celebrate', pose: 'celebrate',
-    when: (i) => i.celebrating && (i.state === 'done' || i.state === 'idle'),
-  },
-  {
-    id: 'disappointed', pose: 'shy',
-    when: (i) => Boolean(i.disappointed) && i.state === 'error',
-  },
-  {
-    id: 'shy', pose: 'shy',
-    when: (i) => (i.state === 'idle' || i.state === 'offline') && i.shy,
-  },
-  {
-    id: 'wave', pose: 'wave',
-    when: (i) => (i.state === 'idle' || i.state === 'offline') && i.poked,
-  },
-  { id: 'greeting', pose: 'wave', when: (i) => i.state === 'idle' && Boolean(i.greeting) },
-  {
-    id: 'wait', pose: 'peek',
-    when: (i) => Boolean(i.waiting) && (i.state === 'idle' || i.state === 'typing'),
-  },
-  {
-    id: 'idleVariant', pose: (i) => i.idlePose as PetPose,
-    when: (i) => i.state === 'idle' && Boolean(i.idlePose),
-  },
-  { id: 'roaming', pose: 'walk', when: (i) => i.state === 'idle' && Boolean(i.roaming) },
-  { id: 'peek', pose: 'peek', when: (i) => i.state === 'idle' && i.listening },
-  { id: 'walk', pose: 'walk', when: (i) => i.state === 'idle' && i.walking },
-];
-
-/** 兼容包装：由表推导立绘实际播放哪一层。offline 视觉复用 idle。 */
+/** 兼容包装：由注册表推导立绘实际播放哪一层。 */
 export function resolvePetPose(input: PetPoseInput): PetPose {
-  const row = PET_POSE_TABLE.find((rule) => rule.when(input));
-  if (row) {
-    return typeof row.pose === 'function' ? row.pose(input) : row.pose;
-  }
-  return input.state === 'offline' ? 'idle' : input.state;
+  return selectPetAction({ state: input.state, flags: petActionFlags(input) });
 }
 
 /** 兼容包装：由表推导当前立绘态。 */
 export function derivePetState(input: PetStateInput): PetState {
   return selectPetState(input);
 }
+
+/** 兼容旧引用名；语义上是同一张动作注册表。 */
+export const PET_POSE_TABLE = PET_ACTION_TABLE;
 
 const DEFAULT_POSE: Omit<PetPoseInput, 'state'> = {
   poked: false,
@@ -258,7 +276,7 @@ export type PetReducerResult = {
 
 /**
  * 纯 reducer：网关事实 + 交互意图 → 状态 / 立绘 / 签名 / 气泡类别。
- * 不读 Date.now、不设定时器，时间由调用方显式注入，便于确定性单测与将来事件化。
+ * 不读 Date.now、不设定时器，时间由调用方显式注入，便于确定性单测。
  */
 export function reducePetState(input: PetReducerInput): PetReducerResult {
   const now = input.now ?? input.gateway.now;

@@ -154,6 +154,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
 
   const {
     dragging,
+    dragPhase,
     dragActive,
     movedDuringDrag,
     dragRequested,
@@ -182,7 +183,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     onMenuDismiss: dismissMenu,
   });
 
-  const { blinking, greeting, roaming, facing } = usePetBehaviors({
+  const { blinking, greeting, roaming, roamLanding, facing } = usePetBehaviors({
     blinkEnabled,
     roamEnabled,
     still,
@@ -436,7 +437,10 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     welcoming: greeting,
     idlePose,
     roaming,
-    dragging,
+    // 拖拽三段各有专属序列帧：按下被提起、松手落地、随后回基态。
+    // v1.3.3 自主漂移同样走被提起 / 落地两段，闭合「飞过去 → 松手落地」。
+    dragging: dragPhase === 'lifted',
+    landing: dragPhase === 'landing' || (roamLanding && petState === 'idle'),
     waking,
     disappointed,
     // 网关当前没有「等待批准」事件，P1 事件化后从这里接入 wait 动作。
@@ -453,6 +457,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     poked ? 'poked' : '',
     petted ? 'petted' : '',
     roaming ? 'roaming' : '',
+    roamLanding ? 'pet-landed' : '',
     dragging ? 'dragging' : '',
   ].filter(Boolean).join(' ');
 
@@ -465,6 +470,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       data-state={petState}
       data-facing={facing}
       data-motion={activeMotion}
+      data-drag-phase={dragPhase}
       style={{
         ['--pet-opacity' as string]: String(petOpacity),
         // 活感层的周期与幅度全部来自 manifest.autoActions.liveliness，

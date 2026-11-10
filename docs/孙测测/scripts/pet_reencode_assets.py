@@ -10,7 +10,7 @@
 复用方式：
   - 编码（需 Pillow ≥10 且支持 webp_anim）：
       /usr/local/bin/python3.13 docs/孙测测/scripts/pet_reencode_assets.py \
-          --source <原始逐帧素材目录> [--colors 96]
+          --source <原始逐帧素材目录> [--colors 56]（省略则取 manifest.encoding.colors）
   - 校验（纯标准库，CI 可用）：
       python3 docs/孙测测/scripts/pet_reencode_assets.py --check
   - 未来 1000 帧生产：把 ComfyUI 输出的 RGBA 序列帧目录传给 --source，
