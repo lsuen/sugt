@@ -94,3 +94,20 @@ __pycache__/
 
 # 本机 Cargo 构建调优（不随项目分发，避免影响 CI/他人构建）
 /src-tauri/.cargo/
+
+# Pet design trials / concept art / huge previews — local only.
+# Shipped pet bitmaps live exclusively in src/assets/pet/.
+/docs/design/
+
+# Heavy binaries under maintenance/trace trees stay local; scripts & markdown still tracked
+# (these must come AFTER the !/docs/孙测测/** and !/docs/小精灵维护/** un-ignores)
+/docs/孙测测/**/*.png
+/docs/孙测测/**/*.webp
+/docs/孙测测/**/*.jpg
+/docs/孙测测/**/*.jpeg
+/docs/孙测测/**/*.gif
+/docs/小精灵维护/**/*.png
+/docs/小精灵维护/**/*.webp
+/docs/小精灵维护/**/*.jpg
+/docs/小精灵维护/**/*.jpeg
+/docs/小精灵维护/**/*.gif
