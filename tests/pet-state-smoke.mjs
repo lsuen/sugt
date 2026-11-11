@@ -51,6 +51,12 @@ const {
   shouldWake,
   wakeFromInteraction,
   facingFromDrag,
+  poseDurationMs,
+  poseHoldMs,
+  resultHoldMs,
+  canBeginAuto,
+  leaseFor,
+  autoWaitMs,
 } = await import(pathToFileURL(bundlePath).href);
 const { figureHitRect, pointInsideFigure } = await import(pathToFileURL(configPath).href);
 
@@ -158,7 +164,7 @@ check('状态表行序即优先级',
 check('动作注册表行序即优先级（由 manifest 生成，降序且 idle 兜底在末位）',
   PET_POSE_TABLE.map((rule) => rule.id).join(',')
     === PET_ACTIONS.map((action) => action.name).join(',')
-  && PET_POSE_TABLE.length === 24
+  && PET_POSE_TABLE.length === 25
   && PET_POSE_TABLE[PET_POSE_TABLE.length - 1].id === 'idle'
   && PET_POSE_TABLE.every((rule, i) => i === 0
     || PET_POSE_TABLE[i - 1].priority >= rule.priority));
@@ -191,14 +197,33 @@ check('done hold 过期后重算底层 idle',
   reducePetState({
     gateway: gateway({ hold: { state: 'done', until: now - 1 } }), now,
   }).state === 'idle');
-check('失败必切 error 且带 error 气泡与 6000ms 保持',
+check('失败必切 error 且带 error 气泡，保持窗口覆盖两段动作',
   (() => {
     const result = reducePetState({
       gateway: gateway({ hold: { state: 'error', until: now + 1000 } }), now,
     });
+    // v1.5：窗口由素材逐帧时长派生（error 一遍 + disappointed 一遍），不再写死 6000ms。
+    const expected = poseDurationMs('error') + poseDurationMs('disappointed');
     return result.state === 'error' && result.bubble === 'error'
-      && result.holdMs === 6000;
+      && result.holdMs === expected
+      && result.holdMs === resultHoldMs('error');
   })());
+check('动作停留按素材时长派生：完整一遍 + 尾部停留',
+  (() => {
+    const single = poseDurationMs('stretch');
+    return single > 0
+      && poseHoldMs('stretch') === single
+      && poseHoldMs('stretch', { tailMs: 120 }) === single + 120
+      && poseHoldMs('stretch', { cycles: 2 }) === single * 2
+      && poseHoldMs('stretch', { overrideMs: 900 }) === 900;
+  })(),
+  '理想：每个动作至少完整播完一遍，避免「没播完就切」');
+check('闲置动作停留不短于素材单遍时长（历史 2200ms 截断回归）',
+  AUTO.idleVariant.poses.every(
+    (pose) => poseHoldMs(pose, {
+      cycles: AUTO.idleVariant.holdCycles, tailMs: AUTO.idleVariant.tailMs,
+    }) >= poseDurationMs(pose),
+  ));
 check('burst 结束重算底层：真实请求在走则回 typing',
   (() => {
     const result = reducePetState({
@@ -254,6 +279,8 @@ check('自动动作优先级：被提起 > 欢迎 > 闲置差分 > 基态',
       state: 'idle', ...base, idlePose: 'peek', welcoming: true, dragging: true,
     }) === 'lifted'
       && resolvePetPose({ state: 'idle', ...base, idlePose: 'peek', welcoming: true }) === 'welcome'
+      && resolvePetPose({ state: 'idle', ...base, greeting: true }) === 'greeting'
+      && resolvePetPose({ state: 'idle', ...base, greeting: true, welcoming: true }) === 'welcome'
       && resolvePetPose({ state: 'done', ...base, celebrating: true, dragging: true }) === 'lifted'
       && resolvePetPose({ state: 'idle', ...base, idlePose: 'peek' }) === 'peek'
       && resolvePetPose({ state: 'idle', ...base }) === 'idle';
@@ -321,14 +348,14 @@ check('v1.4 默认画布 240×297 且命中区四边内缩、贴合人物（不�
   && (tightHit.right - tightHit.left) > 0
   && (tightHit.bottom - tightHit.top) > 0);
 
-// v1.3 帧预算与扩展契约：24 动作 × 50 帧 = 1200 张独立位图。
+// 帧预算与扩展契约：25 动作 × 50 帧 = 1250 张独立位图（v1.5）。
 const actions = petManifest.poses;
-check('动作注册表 24 项 / 精确 1200 帧 / 语义与素材均唯一',
-  actions.length === 24
-  && actions.reduce((sum, action) => sum + action.frames, 0) === 1200
-  && new Set(actions.map((action) => action.semantic)).size === 24
-  && new Set(actions.map((action) => action.loop)).size === 24
-  && new Set(actions.map((action) => action.poster)).size === 24
+check('动作注册表 25 项 / 精确 1250 帧 / 语义与素材均唯一',
+  actions.length === 25
+  && actions.reduce((sum, action) => sum + action.frames, 0) === 1250
+  && new Set(actions.map((action) => action.semantic)).size === actions.length
+  && new Set(actions.map((action) => action.loop)).size === actions.length
+  && new Set(actions.map((action) => action.poster)).size === actions.length
   && actions.every((action) => Array.isArray(action.frameOrder)
     && action.frameOrder.length === action.frames
     && new Set(action.frameOrder).size === action.frames),
@@ -339,10 +366,13 @@ check('动作注册表声明了 trigger / priority / group / motion / playback �
     && typeof action.group === 'string'
     && typeof action.motion === 'string'
     && ['loop', 'once'].includes(action.playback))
-  && petManifest.actionRegistry.frameBudget.total === 1200
+  && petManifest.actionRegistry.frameBudget.total === 1250
   && petManifest.actionRegistry.frameBudget.uniqueBitmapFrames === true
   && petManifest.actionRegistry.semanticUniqueness === true);
 
+const lease = leaseFor(1_000, 4_000);
+check('自动表演租约未结束时不能开下一段', canBeginAuto(lease, 4_999) === false && canBeginAuto(lease, 5_000) === true);
+check('下一次自动表演等到租约结束再留空隙', autoWaitMs(lease, 3_000, 200) === 2_200 && autoWaitMs(null, 3_000, 200) === 200);
 rmSync(workDir, { recursive: true, force: true });
 if (failed) {
   console.error(`pet-state smoke: ${failed} failed`);

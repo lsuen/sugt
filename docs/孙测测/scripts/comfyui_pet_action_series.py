@@ -167,6 +167,9 @@ _POSE_PROMPTS = {
     "wiggleDance": ("playful little hip wiggle dance in place, arms swaying left and right, light bounce in the knees, cheerful expression, full body visible"),
     "kickflip": ("mid-air skateboard kickflip at the apex of the trick: crouch then pop the tail, front foot flicks off the nose, the board rolls one full 360 degrees along its long axis beneath both feet, knees tucked, arms wide for balance, board fully visible, full body visible"),
     "miniGame": ("holding a tiny handheld game console with both hands, both thumbs pressing buttons, looking down at the small screen, slight forward lean, relaxed posture, full body visible"),
+    "yawn": ("yawning sleepily, one hand gently covering the mouth, "
+               "head tilted slightly back, eyes half closed, shoulders relaxed, "
+               "standing upright, full body visible"),
 }
 
 # 腾空 / 带大型道具的动作：白鞋常被滑板遮挡，或随收膝抬到与脸齐平，
@@ -794,13 +797,34 @@ def do_frames(state, actions, args):
             ("下", avail_y / (0.5 + ext_b / core_h)),
         ):
             bounds.append((value, name, label))
-    h_ref = min(item[0] for item in bounds)
-    print("  [约束瓶颈] %s" % " / ".join(
-        "%s-%s=%.1f" % (name, label, value)
-        for value, name, label in sorted(bounds)[:5]), flush=True)
+    baseline_file = _ROOT / "docs" / "小精灵维护" / "config" / "normalize-baseline.json"
+    locked = bool(getattr(args, "h_ref", None) is not None
+                  or getattr(args, "foot_y", None) is not None
+                  or getattr(args, "lock_baseline", False))
+    baseline_data = {}
+    if getattr(args, "lock_baseline", False):
+        if not baseline_file.is_file():
+            raise FileNotFoundError("归一化基准缺失：%s" % baseline_file)
+        baseline_data = json.loads(baseline_file.read_text(encoding="utf-8"))
+    if getattr(args, "h_ref", None) is not None:
+        h_ref = float(args.h_ref)
+    elif baseline_data:
+        h_ref = float(baseline_data["hRef"])
+    else:
+        # 定版行为：全量动作四向约束取最小值，单动作重跑会重算，故 P-01 期望
+        # 不对单动作跑 frames；新增动作走 P-02 锁定基准。
+        h_ref = min(item[0] for item in bounds)
+        print("  [约束瓶颈] %s" % " / ".join(
+            "%s-%s=%.1f" % (name, label, value)
+            for value, name, label in sorted(bounds)[:5]), flush=True)
     scale = {name: h_ref / (rep[name][3] - rep[name][1]) for name in rep}
-    # 脚线：人物代表高度上下居中，而非沉底。
-    foot_y = round((target[1] + h_ref) / 2)
+    # 脚线：人物代表高度上下居中，而非沉底；锁定基准时直接用基准脚线。
+    if getattr(args, "foot_y", None) is not None:
+        foot_y = int(args.foot_y)
+    elif baseline_data:
+        foot_y = int(baseline_data["footY"])
+    else:
+        foot_y = round((target[1] + h_ref) / 2)
     offset = {}
     for name in rep:
         left, _top, right, bottom = rep[name]
@@ -916,6 +940,7 @@ def do_frames(state, actions, args):
         "algorithm": "v1.3.2 并集安全框 + 全局目标身高（纯缩放，不裁人物）",
         "canvas": list(target), "h_ref": round(h_ref, 2),
         "safe": [safe_x, safe_y], "foot_y": foot_y,
+        "locked": locked, "lockedSource": str(baseline_file) if baseline_data else "cli/auto",
         "min_edge": min_edge, "height_spread": round(spread, 4),
         "max_hidden": round(max_hidden, 5),
         "heights": action_heights, "per_action": per_action,
@@ -1029,6 +1054,14 @@ def parse_args():
     parser.add_argument("--recut", action="store_true",
                         help="忽略 cutouts 缓存，从原始视频重新逐帧抠图（离线，不调 ComfyUI）")
     parser.add_argument("--out", type=Path, default=None, help="留痕路径")
+    group = parser.add_argument_group("归一化基准锁定（默认仍按全量动作自动求解）")
+    group.add_argument("--h-ref", type=float, default=None,
+                       help="显式锁定目标人物身高 px；不传则由全量动作四向约束求解")
+    group.add_argument("--foot-y", type=int, default=None,
+                       help="显式锁定脚底同线 y；不传则按画布与 h_ref 居中计算")
+    group.add_argument("--lock-baseline", action="store_true",
+                       help="从 config/normalize-baseline.json 读 hRef/footY 锁定，"
+                            "用于只重做单个动作时避免人物忽高忽矮")
     return parser.parse_args()
 
 

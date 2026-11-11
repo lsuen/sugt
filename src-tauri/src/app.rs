@@ -44,6 +44,8 @@ pub fn run() {
             pet::pet_finish_drag,
             pet::pet_global_cursor,
             pet::pet_roam_to,
+            pet::pet_open_menu,
+            pet::pet_close_menu,
             pet::pet_set_clickable,
             pet::open_settings_tab,
             commands::open_config_dir,
@@ -160,10 +162,18 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
+                // 只有主窗口关到托盘。菜单和悬浮窗是临时窗，关闭请求必须放行。
+                if window.label() != "main" {
+                    return;
+                }
                 api.prevent_close();
                 tray::hide_main_window(window.app_handle());
             }
             WindowEvent::Resized(size) => {
+                // 尺寸记忆只属于主窗口。菜单开合也会触发 Resized，不能写进主窗口记录。
+                if window.label() != "main" {
+                    return;
+                }
                 // 记住用户手动调整后的尺寸；物理像素换算回逻辑像素再落盘。
                 if let Some(runtime) = window.app_handle().try_state::<AppRuntime>() {
                     let scale = window.scale_factor().unwrap_or(1.0).max(0.1);

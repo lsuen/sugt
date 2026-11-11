@@ -48,7 +48,9 @@ scripts/.notify-*.json
 /.task/
 /运行调试.md
 
-# Local agent memory (project data, kept on disk but never committed)
+# 本地智能体记忆与技能包：只留本机，不入库
+# 期望技能包随用随调（用户级软链指向本目录），其知识基线由仓库内 config/ 与 docs/ 各自承载；
+# 若把技能包入库，用户级软链与仓库副本会形成两份真相源，改动容易漏同步。
 /.workbuddy/
 
 # Editor / AI-agent guidance (local, not part of the product)

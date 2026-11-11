@@ -122,7 +122,7 @@ for (const pose of manifest.poses) {
     `${pose.frames} 帧 / 总 ${totalMs}ms`);
   // v1.3：帧序就是 0..frames-1 的独立位图排列；闭环由 H3 首尾同源关键帧
   // 在像素层面保证，不能用「首尾 index 相邻」来判断（那正是重复帧冒充扩容）。
-  check(`${name} 帧序为无重复排列（1200 帧均为独立位图）`,
+  check(`${name} 帧序为无重复排列（1250 帧均为独立位图）`,
     order.every((value, i) => value === i)
     && new Set(order).size === pose.frames
     && pose.sourceFrames === pose.frames,
@@ -144,20 +144,21 @@ for (const extra of manifest.extraFrames || []) {
   check(`附加帧 ${extra} 落盘`, existsSync(join(root, 'src/assets/pet', extra)));
 }
 
-// v1.3 动作注册表：可扩展、语义唯一、总帧精确 1200。
+// 动作注册表：可扩展、语义唯一、帧预算由 framesPerAction × poses 推导。
+// 25 动作 / 1250 帧为 v1.5 现行口径；数字只在这里硬断言一次，其余按表推导。
 const registry = manifest.actionRegistry;
 check('动作注册表声明帧预算与扩展规则', registry?.version === 1
-  && registry.frameBudget.total === 1200
+  && registry.frameBudget.total === poses.length * registry.frameBudget.framesPerAction
   && registry.frameBudget.uniqueBitmapFrames === true
   && registry.semanticUniqueness === true
   && typeof registry.extension === 'string');
-check('24 动作 / 1200 帧 / 语义、素材、优先级、触发词均唯一',
-  poses.length === 24
-  && manifest.poses.reduce((sum, pose) => sum + pose.frames, 0) === 1200
-  && new Set(manifest.poses.map((pose) => pose.semantic)).size === 24
-  && new Set(manifest.poses.map((pose) => pose.loop)).size === 24
-  && new Set(manifest.poses.map((pose) => pose.poster)).size === 24
-  && new Set(manifest.poses.map((pose) => pose.priority)).size === 24);
+check('25 动作 / 1250 帧 / 语义、素材、优先级、触发词均唯一',
+  poses.length === 25
+  && manifest.poses.reduce((sum, pose) => sum + pose.frames, 0) === 1250
+  && new Set(manifest.poses.map((pose) => pose.semantic)).size === poses.length
+  && new Set(manifest.poses.map((pose) => pose.loop)).size === poses.length
+  && new Set(manifest.poses.map((pose) => pose.poster)).size === poses.length
+  && new Set(manifest.poses.map((pose) => pose.priority)).size === poses.length);
 check('拖拽三段在注册表中各有专属动作，不再复用走路姿',
   ['lifted', 'landing'].every((name) => manifest.poses.some((pose) => pose.name === name
     && pose.group === 'interaction'))

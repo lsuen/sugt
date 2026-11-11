@@ -170,14 +170,32 @@ export function pruneNotices(list: Notice[], nowMs: number): Notice[] {
   return list.filter((item) => nowMs - item.updatedAt < item.ttlMs);
 }
 
-/** 暂停恢复后把所有消息的更新时间顺延，避免一恢复就整批消失。 */
-export function shiftNoticeDeadlines(list: Notice[], deltaMs: number): Notice[] {
+/**
+ * 暂停恢复后顺延消息时间基准，避免悬停过的消息一恢复就整批消失。
+ * - beforeMs：暂停起点。只顺延 createdAt <= beforeMs 的消息；暂停期间新建的消息按原 TTL 计时，
+ *   若一并顺延会把 updatedAt 推到未来，导致 pruneNotices 恒真、mergeNotices 窗口恒真（QD-01）。
+ * - resumedAtMs：恢复时刻。暂停中发生合并会刷新 updatedAt，顺延后可能超过恢复时刻，
+ *   需钳到恢复时刻，保证任何消息的 updatedAt 都不落在未来。
+ * createdAt 在合并时不会被刷新，因此用它判定「暂停前已存在」比 updatedAt 稳定。
+ */
+export function shiftNoticeDeadlines(
+  list: Notice[],
+  deltaMs: number,
+  beforeMs?: number,
+  resumedAtMs?: number,
+): Notice[] {
   if (deltaMs <= 0) return list;
-  return list.map((item) => ({
-    ...item,
-    createdAt: item.createdAt + deltaMs,
-    updatedAt: item.updatedAt + deltaMs,
-  }));
+  return list.map((item) => {
+    if (typeof beforeMs === 'number' && item.createdAt > beforeMs) return item;
+    const shiftedUpdatedAt = item.updatedAt + deltaMs;
+    return {
+      ...item,
+      createdAt: item.createdAt + deltaMs,
+      updatedAt: typeof resumedAtMs === 'number'
+        ? Math.min(shiftedUpdatedAt, resumedAtMs)
+        : shiftedUpdatedAt,
+    };
+  });
 }
 
 export interface VisibleResult {

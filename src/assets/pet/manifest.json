@@ -44,7 +44,7 @@
   "actionRegistry": {
     "version": 1,
     "frameBudget": {
-      "total": 1200,
+      "total": 1250,
       "framesPerAction": 50,
       "uniqueBitmapFrames": true,
       "note": "frameOrder 必须是 0..frames-1 的无重复排列，禁止用重复帧冒充扩容。"
@@ -3085,6 +3085,132 @@
       "states": [
         "idle"
       ]
+    },
+    {
+      "name": "yawn",
+      "semantic": "困了打个哈欠，抬手轻捂嘴、微微后仰再放松",
+      "trigger": "yawn",
+      "group": "idleVariant",
+      "priority": 42,
+      "poster": "su-yawn.webp",
+      "loop": "su-yawn-loop.webp",
+      "sourceFrames": 50,
+      "frames": 50,
+      "frameOrder": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "frameMs": [
+        126,
+        120,
+        120,
+        115,
+        110,
+        105,
+        105,
+        99,
+        94,
+        89,
+        84,
+        84,
+        78,
+        73,
+        73,
+        68,
+        68,
+        68,
+        68,
+        68,
+        68,
+        68,
+        68,
+        68,
+        73,
+        73,
+        78,
+        84,
+        84,
+        89,
+        94,
+        99,
+        105,
+        105,
+        110,
+        115,
+        120,
+        120,
+        126,
+        126,
+        131,
+        131,
+        136,
+        136,
+        136,
+        136,
+        136,
+        131,
+        131,
+        126
+      ],
+      "playback": "loop",
+      "motion": "bob",
+      "hitBox": [
+        0.1958,
+        0.202,
+        0.7792,
+        0.798
+      ],
+      "states": [
+        "idle"
+      ]
     }
   ],
   "statePriority": [
@@ -3114,6 +3240,7 @@
     "wiggleDance",
     "kickflip",
     "miniGame",
+    "yawn",
     "typing",
     "error",
     "done",
@@ -3133,7 +3260,8 @@
     "idleVariant": {
       "minMs": 12000,
       "maxMs": 30000,
-      "holdMs": 2200,
+      "holdCycles": 1,
+      "tailMs": 120,
       "poses": [
         "stretch",
         "lookAround",
@@ -3142,7 +3270,8 @@
         "squatDraw",
         "wiggleDance",
         "kickflip",
-        "miniGame"
+        "miniGame",
+        "yawn"
       ]
     },
     "wander": {
@@ -3150,20 +3279,30 @@
       "maxMs": 40000
     },
     "welcome": {
-      "holdMs": 6000,
-      "pose": "welcome"
+      "pose": "welcome",
+      "holdCycles": 1,
+      "tailMs": 1200
+    },
+    "greeting": {
+      "pose": "greeting",
+      "holdCycles": 1,
+      "tailMs": 200,
+      "cooldownMs": 6000
     },
     "celebrate": {
-      "holdMs": 3500,
-      "pose": "celebrate"
+      "pose": "celebrate",
+      "holdCycles": 1,
+      "tailMs": 200
     },
     "disappointed": {
-      "holdMs": 3000,
-      "pose": "disappointed"
+      "pose": "disappointed",
+      "holdCycles": 1,
+      "tailMs": 0
     },
     "wake": {
-      "holdMs": 1600,
-      "pose": "wake"
+      "pose": "wake",
+      "holdCycles": 1,
+      "tailMs": 0
     },
     "wait": {
       "pose": "wait"
@@ -3171,7 +3310,8 @@
     "drag": {
       "pose": "lifted",
       "releasePose": "landing",
-      "holdMs": 420
+      "holdCycles": 1,
+      "tailMs": 0
     },
     "zeroNegativeFeedback": true,
     "liveliness": {

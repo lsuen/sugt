@@ -409,7 +409,7 @@ fn prune_sugt_fields(
         return Ok(());
     }
     let raw = std::fs::read_to_string(config_path)?;
-    let mut doc: toml_edit::Document = raw.parse().with_context(|| {
+    let mut doc: toml_edit::DocumentMut = raw.parse().with_context(|| {
         format!(
             "{} 不是合法 TOML，已中止写入以免覆盖原文件",
             config_path.display()
@@ -425,8 +425,8 @@ fn prune_sugt_fields(
     let web_search_injected = state.is_some_and(|s| s.web_search_injected);
     let before_doc = state
         .and_then(|s| s.config_before.as_deref())
-        .and_then(|text| text.parse::<toml_edit::Document>().ok());
-    let after_doc = state.and_then(|s| s.config_after.parse::<toml_edit::Document>().ok());
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok());
+    let after_doc = state.and_then(|s| s.config_after.parse::<toml_edit::DocumentMut>().ok());
     let mut changed = false;
 
     if doc

@@ -8,18 +8,61 @@
 //! 精灵专属命令与一次性迁移，不污染通用的 `commands.rs`。
 
 use crate::commands::AppRuntime;
-use tauri::{AppHandle, Emitter, Manager, State};
+use crate::model::OverlayConfig;
+use std::time::{Duration, Instant};
+
+use tauri::{
+    window::Color, AppHandle, Emitter, Manager, State, WebviewUrl, WindowEvent,
+    WebviewWindowBuilder,
+};
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.01
+}
+
+/// 旧的宽扁流量窗。现行立绘三档和用户自定义尺寸不是这种形状。
+pub(crate) fn is_legacy_hud_frame(width: f64, height: f64) -> bool {
+    height <= 120.0 || (near(width, 200.0) && near(height, 160.0))
+}
+
+/// 只把旧 HUD 收成现行立绘默认尺寸。已有落点保留。
+pub(crate) fn migrate_legacy_hud_frame(overlay: &mut OverlayConfig) -> bool {
+    if !is_legacy_hud_frame(overlay.width, overlay.height) {
+        return false;
+    }
+    let defaults = OverlayConfig::default();
+    overlay.width = defaults.width;
+    overlay.height = defaults.height;
+    overlay.layout = "column".to_string();
+    if overlay.x < 0 || overlay.y < 0 {
+        overlay.x = -1;
+        overlay.y = -1;
+    }
+    true
+}
+
+/// 光标相对窗口左上角的物理像素。
+/// Tauri 的 `cursor_position` 是桌面坐标，不减窗口原点就会落在命中框外面，人永远点不中。
+pub(crate) fn cursor_local(cursor: (f64, f64), origin: (f64, f64)) -> (f64, f64) {
+    (cursor.0 - origin.0, cursor.1 - origin.1)
+}
 
 /// 相对 overlay 窗口左上角的光标位置（物理像素）。
-/// 前端再除以 `scaleFactor` 得到 CSS 像素，即可驱动 `--gaze-*` / 靠近倾听。
+/// 前端再除以 `scaleFactor` 得到 CSS 像素，即可驱动视线和身体命中。
 pub fn cursor_in_overlay(app: &AppHandle) -> Result<(f64, f64), String> {
     let window = app
         .get_webview_window("overlay")
         .ok_or_else(|| "悬浮窗不存在".to_string())?;
-    let pos = window
+    let cursor = window
         .cursor_position()
         .map_err(|e| format!("读取光标失败: {e}"))?;
-    Ok((pos.x, pos.y))
+    let origin = window
+        .outer_position()
+        .map_err(|e| format!("读取窗口位置失败: {e}"))?;
+    Ok(cursor_local(
+        (cursor.x, cursor.y),
+        (f64::from(origin.x), f64::from(origin.y)),
+    ))
 }
 
 /// 元素级鼠标穿透：只有立绘/菜单拦点击时才解除穿透，空白区照常透给桌面。
@@ -76,8 +119,107 @@ pub fn pet_roam_to(app: AppHandle, x: i32, y: i32) -> Result<[i32; 2], String> {
     crate::overlay::roam_to(&app, x, y)
 }
 
-/// 一次性迁移：产品默认开启小酥全功能（精灵 + 互动 + 视线/眨眼），并收紧透明窗。
-/// 仅在用户尚未自定义精灵落点时覆盖；已手动摆过位置的保留坐标。
+const MENU_LABEL: &str = "pet-menu";
+const MENU_W: f64 = 208.0;
+const MENU_H: f64 = 252.0;
+
+/// 菜单窗放在人物窗口正上方，右边对齐。上面放不下由调用方改到脚下。
+pub(crate) fn menu_origin(pet_x: f64, pet_y: f64, pet_w: f64) -> (f64, f64) {
+    (pet_x + pet_w - MENU_W, pet_y - MENU_H - 6.0)
+}
+
+fn dismiss_menu(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MENU_LABEL) {
+        // destroy 不走 CloseRequested。主窗口会拦住 close，菜单用 close 会留在屏幕上。
+        let _ = window.destroy();
+    }
+}
+
+/// 右键菜单是独立小窗，不改精灵透明窗的大小和底色。再点一次则关掉。
+#[tauri::command]
+pub fn pet_open_menu(app: AppHandle) -> Result<(), String> {
+    if app.get_webview_window(MENU_LABEL).is_some() {
+        dismiss_menu(&app);
+        return Ok(());
+    }
+    let overlay = app
+        .get_webview_window("overlay")
+        .ok_or_else(|| "悬浮窗不存在".to_string())?;
+    let origin = overlay
+        .outer_position()
+        .map_err(|e| format!("读取窗口位置失败: {e}"))?;
+    let size = overlay
+        .outer_size()
+        .map_err(|e| format!("读取窗口尺寸失败: {e}"))?;
+    let scale = overlay
+        .scale_factor()
+        .map_err(|e| format!("读取缩放失败: {e}"))?;
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let pet_x = f64::from(origin.x) / scale;
+    let pet_y = f64::from(origin.y) / scale;
+    let pet_w = f64::from(size.width) / scale;
+    let pet_h = f64::from(size.height) / scale;
+    let (mut x, mut y) = menu_origin(pet_x, pet_y, pet_w);
+    if let Ok(Some(mon)) = overlay.current_monitor() {
+        let ms = mon.scale_factor();
+        let ms = if ms > 0.0 { ms } else { scale };
+        let left = f64::from(mon.position().x) / ms;
+        let top = f64::from(mon.position().y) / ms;
+        let right = left + f64::from(mon.size().width) / ms;
+        let bottom = top + f64::from(mon.size().height) / ms;
+        if y < top {
+            y = pet_y + pet_h + 6.0;
+        }
+        if x < left {
+            x = left;
+        }
+        if x + MENU_W > right {
+            x = right - MENU_W;
+        }
+        if y + MENU_H > bottom {
+            y = (bottom - MENU_H).max(top);
+        }
+    }
+    let window = WebviewWindowBuilder::new(&app, MENU_LABEL, WebviewUrl::App("menu.html".into()))
+        .title("小su")
+        .decorations(false)
+        .transparent(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .accept_first_mouse(true)
+        .inner_size(MENU_W, MENU_H)
+        .position(x, y)
+        .background_color(Color(16, 29, 43, 255))
+        .build()
+        .map_err(|e| format!("打开菜单失败: {e}"))?;
+    let app_for_blur = app.clone();
+    let opened = Instant::now();
+    window.on_window_event(move |event| {
+        if !matches!(event, WindowEvent::Focused(false)) {
+            return;
+        }
+        // 刚打开时焦点还会在精灵窗上晃一下，这段时间丢掉焦点不算点到外面。
+        if opened.elapsed() < Duration::from_millis(400) {
+            return;
+        }
+        let app = app_for_blur.clone();
+        let target = app.clone();
+        let _ = app.run_on_main_thread(move || dismiss_menu(&target));
+    });
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pet_close_menu(app: AppHandle) -> Result<(), String> {
+    dismiss_menu(&app);
+    Ok(())
+}
+
+/// 一次性迁移：产品默认开启小酥全功能（精灵 + 互动 + 视线/眨眼）。
+/// 尺寸只收紧旧的宽扁 HUD；现行三档和已经摆好的坐标不动。
 pub async fn migrate_pet_full_defaults(runtime: &AppRuntime) -> Result<(), String> {
     let marker = runtime.paths.config_dir.join("migrated-pet-full-v1");
     if marker.exists() {
@@ -86,7 +228,6 @@ pub async fn migrate_pet_full_defaults(runtime: &AppRuntime) -> Result<(), Strin
     {
         let mut config = runtime.config.write().await;
         let o = &mut config.overlay;
-        let unpositioned = o.x < 0 || o.y < 0;
         o.enabled = true;
         o.pet_enabled = true;
         o.pet_interactive = true;
@@ -96,14 +237,7 @@ pub async fn migrate_pet_full_defaults(runtime: &AppRuntime) -> Result<(), Strin
         o.pet_snap = true;
         o.pet_quiet = false;
         o.pet_roam = true;
-        // 旧默认 200×160 / 280×108 等宽窗 → 收成贴身立绘框
-        if unpositioned || o.width >= 190.0 || o.height <= 120.0 {
-            o.width = 148.0;
-            o.height = 168.0;
-            o.x = -1;
-            o.y = -1;
-            o.layout = "column".to_string();
-        }
+        migrate_legacy_hud_frame(o);
     }
     runtime.persist().await.map_err(|e| e.to_string())?;
     let _ = std::fs::write(&marker, b"1");
@@ -112,9 +246,57 @@ pub async fn migrate_pet_full_defaults(runtime: &AppRuntime) -> Result<(), Strin
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn module_links() {
-        // 纯链接冒烟：真正的窗口探测 / 穿透需 GUI 会话。
-        assert!(true);
+    fn menu_sits_above_the_pet() {
+        let (x, y) = menu_origin(800.0, 400.0, 240.0);
+        assert_eq!(x, 800.0 + 240.0 - 208.0);
+        assert!(y < 400.0);
+    }
+
+    #[test]
+    fn cursor_local_is_window_relative() {
+        let (x, y) = cursor_local((1800.0, 900.0), (1600.0, 700.0));
+        assert_eq!((x, y), (200.0, 200.0));
+    }
+
+    #[test]
+    fn legacy_hud_frame_does_not_touch_current_presets() {
+        for (width, height) in [(160.0, 136.0), (198.0, 168.0), (240.0, 204.0), (220.0, 180.0)] {
+            let mut overlay = OverlayConfig::default();
+            overlay.width = width;
+            overlay.height = height;
+            overlay.x = 40;
+            overlay.y = 80;
+            assert!(!migrate_legacy_hud_frame(&mut overlay), "{width}x{height}");
+            assert_eq!(overlay.width, width);
+            assert_eq!(overlay.height, height);
+            assert_eq!((overlay.x, overlay.y), (40, 80));
+        }
+    }
+
+    #[test]
+    fn legacy_hud_frame_tightens_to_current_default_and_keeps_position() {
+        let mut placed = OverlayConfig::default();
+        placed.width = 280.0;
+        placed.height = 108.0;
+        placed.x = 12;
+        placed.y = 34;
+        assert!(migrate_legacy_hud_frame(&mut placed));
+        let defaults = OverlayConfig::default();
+        assert_eq!(placed.width, defaults.width);
+        assert_eq!(placed.height, defaults.height);
+        assert_eq!((placed.x, placed.y), (12, 34));
+
+        let mut fresh = OverlayConfig::default();
+        fresh.width = 200.0;
+        fresh.height = 160.0;
+        fresh.x = -1;
+        fresh.y = -1;
+        assert!(migrate_legacy_hud_frame(&mut fresh));
+        assert_eq!(fresh.width, defaults.width);
+        assert_eq!(fresh.height, defaults.height);
+        assert_eq!((fresh.x, fresh.y), (-1, -1));
     }
 }

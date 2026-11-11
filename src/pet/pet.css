@@ -4,10 +4,10 @@
    禁止再给 .pet-stage 或环境层铺任何径向/纯色「假桌面」。
    结构：
      舞台（视线 3D / 靠近度）—— background 必须 transparent !important
-       ├ 环境层：仅粒子 / 完成火花（无 halo / ground）
+       ├ 环境层：空层（无粒子、无火花、无雾）
        ├ 信息层：气泡 + 脚底胶囊 + 思考云
        ├ 角色层：单层动画 WebP
-       └ 右键菜单
+       └ 右键菜单在另一扇不透明小窗里，不画进这个舞台
    连续缓动由 JS rAF 写变量；每个姿势只挂一张素材。 */
 .pet-stage {
   --pet-accent: #4ade80;
@@ -255,8 +255,8 @@
 }
 
 /* ---- 角色层：四层互不覆盖，每层只挂一张素材 ----
-   铁律：禁止 drop-shadow / box-shadow。透明窗里阴影会被 overflow 裁成矩形底板，
-   拖动/漫游时必出重影与「背景边框」。色调只用 brightness/grayscale/saturate。
+   铁律：禁止 drop-shadow / box-shadow / brightness / grayscale。
+   透明窗里滤镜和阴影会被 overflow 裁成矩形底板。
    活感分层：figure(朝向 + 头跟随) → weight(重心 7.9s + 身延迟)
              → motion(呼吸 3.1s) → secondary(发梢 5.3s) → loops(逐帧/一次性动效)。
    3.1 / 5.3 / 7.9s 按 0.1s 为单位两两互质，合成周期约 3.6 小时，盯不出循环点。 */
@@ -277,17 +277,8 @@
   filter: none;
 }
 .pet-stage.interactive .pet-figure { pointer-events: auto; cursor: grab; }
-.pet-stage.interactive .pet-figure:hover {
-  filter: brightness(1.07);
-}
 .pet-stage.interactive .pet-figure:active,
 .pet-figure.dragging { cursor: grabbing; }
-.pet-stage[data-state="offline"] .pet-figure {
-  filter: grayscale(0.55);
-}
-.pet-stage[data-state="sleep"] .pet-figure {
-  filter: saturate(0.72);
-}
 
 /* 重心层：身延迟用独立 translate 属性，与 animation 的 transform 叠加而不互相覆盖 */
 .pet-weight {
@@ -386,6 +377,7 @@
 .pet-loop[data-loop="wiggleDance"] { background-image: url('../assets/pet/su-wiggleDance-loop.webp'); }
 .pet-loop[data-loop="kickflip"] { background-image: url('../assets/pet/su-kickflip-loop.webp'); }
 .pet-loop[data-loop="miniGame"] { background-image: url('../assets/pet/su-miniGame-loop.webp'); }
+.pet-loop[data-loop="yawn"] { background-image: url('../assets/pet/su-yawn-loop.webp'); }
 .pet-poster[data-frame="lifted"] { background-image: url('../assets/pet/su-lifted.webp'); }
 .pet-poster[data-frame="landing"] { background-image: url('../assets/pet/su-landing.webp'); }
 .pet-poster[data-frame="typing"] { background-image: url('../assets/pet/su-typing.webp'); }
@@ -410,6 +402,7 @@
 .pet-poster[data-frame="wiggleDance"] { background-image: url('../assets/pet/su-wiggleDance.webp'); }
 .pet-poster[data-frame="kickflip"] { background-image: url('../assets/pet/su-kickflip.webp'); }
 .pet-poster[data-frame="miniGame"] { background-image: url('../assets/pet/su-miniGame.webp'); }
+.pet-poster[data-frame="yawn"] { background-image: url('../assets/pet/su-yawn.webp'); }
 /* @generated:pet-assets end */
 
 /* 非激活循环跳过合成；sleep/offline 时彻底藏起非当前帧以省解码 */
@@ -457,9 +450,8 @@
 .pet-stage.still .pet-secondary,
 .pet-stage.still .pet-mote { animation-play-state: paused; }
 
-/* listening：靠近 idle 时侧耳提亮，不切换真实 typing 状态 */
+/* listening：靠近 idle 时侧耳，不切换真实 typing 状态，也不加滤镜底板 */
 .pet-stage.pet-listening .pet-figure {
-  filter: brightness(1.08) saturate(1.06);
   transform:
     scaleX(var(--face-x))
     translate3d(calc(var(--head-x) * 3px), calc(var(--head-y) * 1.8px), 0)
@@ -622,29 +614,19 @@
   display: none;
 }
 
-/* 眼神高光：随视线轻微移动；移动中关闭，避免径向光斑拖成底板 */
-.pet-gaze {
-  position: absolute;
-  left: 43%;
-  top: 19%;
-  width: 22%;
-  height: 12%;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at 50% 45%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 62%);
-  mix-blend-mode: screen;
-  opacity: calc(0.14 + var(--near) * 0.42);
-  transform: translate(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.8px));
-  transition: none;
-  pointer-events: none;
-}
+/* 眼神高光会在透明窗上铺一层雾，关掉。选择器留着，避免旧样式回潮。 */
+.pet-gaze { display: none; }
 
-/* ---- 右键快捷菜单：紧凑面板贴在立绘上，禁止铺满整窗（否则解穿透=透明墙） ---- */
+/* ---- 右键菜单：独立小窗里铺满，不再挂进精灵透明窗 ---- */
 .pet-menu {
-  position: absolute;
-  left: calc(var(--pet-side-w) + 6%);
-  right: 6%;
-  top: 14%;
-  bottom: auto;
+  --pet-panel-solid: #101d2b;
+  --pet-ink: #eaf6ff;
+  --pet-line-strong: rgba(140, 200, 232, 0.46);
+  position: static;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
   z-index: 10;
   display: flex;
   flex-direction: column;
@@ -654,12 +636,16 @@
   border: 1px solid var(--pet-line-strong);
   border-radius: 12px;
   background: var(--pet-panel-solid);
+  color: var(--pet-ink);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   pointer-events: auto;
   animation: pet-menu-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pet-menu-item {
+  appearance: none;
   display: block;
   width: 100%;
+  font-family: inherit;
   padding: 4px 8px;
   border: 0;
   border-radius: 7px;

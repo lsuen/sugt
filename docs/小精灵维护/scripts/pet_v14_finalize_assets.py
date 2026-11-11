@@ -9,7 +9,13 @@
 创建日期：2026-11-11
 复用方式：/usr/local/bin/python3.13 docs/孙测测/scripts/pet_v14_finalize_assets.py
            --phase assess|build|apply --root <仓库根> [阶段专属参数]
+           --h-ref 180 --foot-y 240 --union-pad 16 ...（归一化传参均可 CLI 覆盖）
 退出码约定：0 全部通过 / 1 自检不通过 / 2 读取、解析或子命令异常
+
+v1.5 参数化：归一化常量不再只能改源码。优先读仓库唯一真相源
+`docs/小精灵维护/config/normalize-baseline.json`，再由 CLI 逐项覆盖；不传任何
+覆盖参数时取值与 v1.4 定版完全一致。`--no-baseline` 可忽略基准文件，用脚本
+内置常量复跑 v1.4 定版行为，用来证明参数化没有改变默认结果。
 
 三个阶段：
   assess  只读：解析批次日志与 state.json，给每个候选版本打分，产出 picks.json
@@ -45,7 +51,89 @@ MIN_EDGE_PX = 6
 MAX_HEIGHT_SPREAD = 0.08
 MAX_HIDDEN_RATIO = 0.02
 
-# 本轮落包范围（2026-11-11 已全部落包）：4 个新闲置动作 + 用 640×768 重生成修双臂的 stretch
+BASELINE_REL = Path("docs") / "小精灵维护" / "config" / "normalize-baseline.json"
+
+# 由 CLI 覆盖的模块级参数名 → 基准 JSON 键（缺省用上方定版常量）。
+PARAM_KEYS = (
+    ("CANVAS_W", None), ("CANVAS_H", None), ("CENTER_X", "centerX"),
+    ("H_REF", "hRef"), ("FOOT_Y", "footY"),
+    ("SAFE_X", "safeX"), ("SAFE_Y", "safeY"),
+    ("WANTED_FRAMES", None), ("ALPHA_THRESHOLD", "alphaThreshold"),
+    ("UNION_PAD", "unionPad"), ("MIN_EDGE_PX", "minEdgePx"),
+    ("MAX_HEIGHT_SPREAD", "heightSpreadMax"),
+    ("MAX_HIDDEN_RATIO", "maxHiddenRatio"),
+)
+
+
+def load_normalize_params(root: Path, args) -> dict:
+    """归一化传参：仓库基准 → CLI 覆盖 → 返回本次参数快照。
+
+    返回 dict 的键与模块级常量同名，由 main 在入口一次性注入；build / apply
+    的定版算法一行不改，保证「不传覆盖参数 = v1.4 定版行为」可复现。
+    """
+    values = {name: globals()[name] for name, _ in PARAM_KEYS}
+    baseline_path = Path(args.normalize_baseline)
+    if not baseline_path.is_absolute():
+        baseline_path = root / baseline_path
+    if args.no_baseline:
+        source = "脚本内置 v1.4 定版常量（--no-baseline）"
+    elif baseline_path.is_file():
+        data = json.loads(baseline_path.read_text(encoding="utf-8"))
+        limits = data.get("limits", {})
+        canvas = data.get("canvas", [CANVAS_W, CANVAS_H])
+        values.update({
+            "CANVAS_W": canvas[0], "CANVAS_H": canvas[1],
+            "CENTER_X": data.get("centerX", CENTER_X),
+            "H_REF": data.get("hRef", H_REF),
+            "FOOT_Y": data.get("footY", FOOT_Y),
+            "SAFE_X": data.get("safeX", SAFE_X),
+            "SAFE_Y": data.get("safeY", SAFE_Y),
+            "ALPHA_THRESHOLD": data.get("alphaThreshold", ALPHA_THRESHOLD),
+            "UNION_PAD": data.get("unionPad", UNION_PAD),
+            "MIN_EDGE_PX": data.get("minEdgePx", MIN_EDGE_PX),
+            "MAX_HEIGHT_SPREAD": limits.get("heightSpreadMax", MAX_HEIGHT_SPREAD),
+            "MAX_HIDDEN_RATIO": data.get("maxHiddenRatio", MAX_HIDDEN_RATIO),
+        })
+        source = str(baseline_path.relative_to(root)) if baseline_path.is_relative_to(root) \
+            else str(baseline_path)
+    else:
+        source = "脚本内置 v1.4 定版常量（未找到基准文件）"
+
+    overrides = {
+        "H_REF": args.h_ref, "FOOT_Y": args.foot_y,
+        "CENTER_X": args.center_x, "SAFE_X": args.safe_x, "SAFE_Y": args.safe_y,
+        "UNION_PAD": args.union_pad, "ALPHA_THRESHOLD": args.alpha_threshold,
+        "WANTED_FRAMES": args.wanted_frames, "MIN_EDGE_PX": args.min_edge,
+        "MAX_HIDDEN_RATIO": args.max_hidden,
+        "MAX_HEIGHT_SPREAD": args.max_height_spread,
+    }
+    if args.canvas:
+        width, height = (int(item) for item in args.canvas.lower().split("x"))
+        values["CANVAS_W"], values["CANVAS_H"] = width, height
+        overrides["CANVAS_W"], overrides["CANVAS_H"] = width, height
+    changed = []
+    for key, value in overrides.items():
+        if value is not None and values[key] != value:
+            values[key] = value
+            changed.append("%s=%s" % (key, value))
+    values["_source"] = source
+    values["_cliOverrides"] = changed
+    return values
+
+
+def param_trace_lines(params: dict) -> list[str]:
+    """给 build 留痕写「本次归一化传参」块，便于逐项复核。"""
+    shown = {key: value for key, value in params.items()
+             if not key.startswith("_")}
+    return ["", "## 本次归一化传参（可由 CLI 覆盖）", "",
+            "- 来源：`%s`" % params.get("_source", "脚本内置 v1.4 定版常量"),
+            "- CLI 覆盖：%s" % ("、".join(params.get("_cliOverrides", []))
+                              if params.get("_cliOverrides") else "无（与定版一致）"),
+            "", "```json", json.dumps(shown, ensure_ascii=False, indent=2), "```"]
+
+# 默认落包范围（2026-11-11 v1.4 已全部落包）：4 个新闲置动作 + 用 640×768 重生成修双臂的 stretch。
+# 期望后续新增动作时通过 --actions 覆盖本元组，让同一套「锁定 h_ref」归一化算法可复用；
+# 不传 --actions 时行为与 v1.4 定版完全一致，用 petctl.py doctor 的副本校验与旧留痕复跑验证。
 TARGET_ACTIONS = ("stretch", "squatDraw", "wiggleDance", "kickflip", "miniGame")
 NEW_ACTIONS = frozenset(("squatDraw", "wiggleDance", "kickflip", "miniGame"))
 
@@ -262,7 +350,8 @@ def reference_heights(padded: Path, manifest: dict) -> dict:
     return result
 
 
-def build(root: Path, picks_file: Path, source_out: Path, padded: Path) -> int:
+def build(root: Path, picks_file: Path, source_out: Path, padded: Path,
+          params: dict | None = None) -> int:
     """按 picks 归一化到 240×297，与老动作做同高交叉量测，输出源帧与留痕。"""
     prod, key_module = load_prod(root)
     picks = json.loads(picks_file.read_text(encoding="utf-8"))
@@ -404,9 +493,12 @@ def build(root: Path, picks_file: Path, source_out: Path, padded: Path) -> int:
                 shutil.copy2(path, dst)
                 added += 1
     count = len(list(source_out.glob("*.webp")))
-    if len(chosen) == len(TARGET_ACTIONS) and count != 49:
-        problems.append("全量落包时源目录应有 49 张，实际 %d 张（新增拷贝 %d）" % (
-            count, added))
+    # 期望张数由 manifest 推导：每个动作 poster + loop，再加 extraFrames。
+    # 这样新增动作后不必再改一处硬编码，用 build 的留痕张数与 doctor 核对验证。
+    expected_count = 2 * len(manifest["poses"]) + len(manifest.get("extraFrames", []))
+    if len(chosen) == len(TARGET_ACTIONS) and count != expected_count:
+        problems.append("全量落包时源目录应有 %d 张，实际 %d 张（新增拷贝 %d）" % (
+            expected_count, count, added))
 
     out = trace_path(root, "精灵v1.4新动作归一化")
     md = [
@@ -427,6 +519,7 @@ def build(root: Path, picks_file: Path, source_out: Path, padded: Path) -> int:
         md.append("| %s | `%s` | %.4f | %s | %d | %d | %.3f%% |" % (
             action, Path(s["work"]).name, s["scale"], s["offset"], s["height"],
             s["min_edge"], s["hidden"] * 100))
+    md += param_trace_lines(params or {})
     md += ["", "## 与老 20 动作同高交叉量测", ""]
     if refs:
         md.append("老动作基准（alpha 高度中位数）：%d~%d px，共 %d 个；"
@@ -440,7 +533,7 @@ def build(root: Path, picks_file: Path, source_out: Path, padded: Path) -> int:
     else:
         md.append("未执行（补边源目录不存在）。")
     md += ["", "## 自检结论", ""]
-    md.append("源目录共 %d 张（期望 49）。" % count)
+    md.append("源目录共 %d 张（期望 %d）。" % (count, expected_count))
     md.append("结论：%s" % ("全部通过" if not problems else "不通过：" + "；".join(problems)))
     md += ["", "> 需人工目视复核 kickflip 滑板与 stretch 双臂后再 --phase apply。", ""]
     out.write_text("\n".join(md), encoding="utf-8")
@@ -456,9 +549,9 @@ def build(root: Path, picks_file: Path, source_out: Path, padded: Path) -> int:
 # ----------------------------------------------------------------- apply
 
 
-def apply(root: Path, source_out: Path, backup: Path) -> int:
-    """临时 root 编码 5 个动作，把 10 张产物落回真实进包目录，凑齐 49 张。"""
-    py = "/usr/local/bin/python3.13"
+def apply(root: Path, source_out: Path, backup: Path,
+          py: str = "/usr/local/bin/python3.13") -> int:
+    """临时 root 编码目标动作，把产物落回真实进包目录，凑齐 manifest 张数。"""
     assets = root / "src" / "assets" / "pet"
     real_manifest = assets / "manifest.json"
     data = json.loads(real_manifest.read_text(encoding="utf-8"))
@@ -476,7 +569,11 @@ def apply(root: Path, source_out: Path, backup: Path) -> int:
     for path in assets.glob("*.webp"):
         shutil.copy2(path, backup / path.name)
 
-    tmp_root = source_out.parent / "finalize-root"
+    # 期望每次落包用独立临时 root：v1.4 定版写死 `finalize-root`，重跑时
+    # 旧批次的 .webp 会残留并被算进「编码产物张数」，实测 2 张被误判成 12 张。
+    # 用目录名 + 时间戳隔离，不删任何历史产物，用 apply 的产物张数断言验证。
+    tmp_root = source_out.parent / ("finalize-root-%s-%s" % (
+        source_out.name, datetime.now().strftime("%H%M%S")))
     tmp_assets = tmp_root / "src" / "assets" / "pet"
     tmp_assets.mkdir(parents=True, exist_ok=True)
     (tmp_root / "docs" / "孙测测" / "traces").mkdir(parents=True, exist_ok=True)
@@ -490,7 +587,7 @@ def apply(root: Path, source_out: Path, backup: Path) -> int:
     subset["actionRegistry"]["frameBudget"]["total"] = sum(
         p["frames"] for p in subset["poses"])
     if len(subset["poses"]) != len(TARGET_ACTIONS):
-        raise AssertionError("临时清单动作数应为 5")
+        raise AssertionError("临时清单动作数应为 %d" % len(TARGET_ACTIONS))
     (tmp_assets / "manifest.json").write_text(
         json.dumps(subset, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -523,33 +620,75 @@ def apply(root: Path, source_out: Path, backup: Path) -> int:
                 bad.append("%s 帧数 %d ≠ %d" % (path.name, frames, expected))
     total = sum(path.stat().st_size for path in assets.glob("*.webp"))
     count = len(list(assets.glob("*.webp")))
-    if bad or count != 49:
-        raise AssertionError("落包复核不通过：%s；张数 %d" % (
-            "；".join(bad[:6]), count))
+    expected_count = 2 * len(data["poses"]) + len(data.get("extraFrames", []))
+    if bad or count != expected_count:
+        raise AssertionError("落包复核不通过：%s；张数 %d（期望 %d）" % (
+            "；".join(bad[:6]), count, expected_count))
     print("落包完成：%d 张 / 240×297 / 合计 %d B（%.2f MiB）" % (
         count, total, total / 1024 ** 2))
     print("回滚备份：%s" % backup)
-    print("下一步：跑 gen_pet_from_manifest.py 写模式回填 24 个 hitBox（不要用 --emit-only）")
+    print("下一步：跑 gen_pet_from_manifest.py 写模式回填 %d 个 hitBox（不要用 --emit-only）"
+          % len(data["poses"]))
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v1.4 新动作挑版 / 归一化 / 落包桥接")
+    global TARGET_ACTIONS, CANVAS_W, CANVAS_H, CENTER_X, H_REF, FOOT_Y
+    global SAFE_X, SAFE_Y, WANTED_FRAMES, ALPHA_THRESHOLD, UNION_PAD
+    global MIN_EDGE_PX, MAX_HEIGHT_SPREAD, MAX_HIDDEN_RATIO
+    parser = argparse.ArgumentParser(
+        description="新动作挑版 / 归一化 / 落包桥接（锁定 h_ref，v1.4 定版算法）")
     parser.add_argument("--phase", required=True, choices=("assess", "build", "apply"))
     parser.add_argument("--root", required=True, help="仓库根目录绝对路径")
+    parser.add_argument("--actions", default="",
+                        help="逗号分隔的动作名，覆盖 v1.4 默认 5 个；新增动作时指定，"
+                             "不传则与 v1.4 定版行为一致")
     parser.add_argument("--batch-log", default="/tmp/sugt-pet-v14-batch.log")
     parser.add_argument("--picks", default="/tmp/sugt-pet-v14-picks.json")
     parser.add_argument("--source-out", default="/tmp/sugt-pet-v14-final-source")
     parser.add_argument("--padded-source", default="/tmp/sugt-pet-v14-padded/source")
     parser.add_argument("--backup", default="/tmp/sugt-pet-v14-backup-41")
+    parser.add_argument("--python", default="/usr/local/bin/python3.13",
+                        help="apply 阶段调用重编码脚本的解释器")
+    parser.add_argument("--normalize-baseline", default=str(BASELINE_REL),
+                        help="归一化基准 JSON（默认仓库 config 下的唯一真相源）")
+    parser.add_argument("--no-baseline", action="store_true",
+                        help="忽略基准文件，用脚本内置 v1.4 常量复跑定版行为")
+    group = parser.add_argument_group("归一化传参（覆盖基准 / 内置常量）")
+    group.add_argument("--canvas", default="", help="画布，形如 240x297")
+    group.add_argument("--h-ref", type=float, default=None, help="目标人物身高 px")
+    group.add_argument("--foot-y", type=int, default=None, help="脚底同线 y")
+    group.add_argument("--center-x", type=float, default=None, help="水平中心")
+    group.add_argument("--safe-x", type=int, default=None, help="水平安全边")
+    group.add_argument("--safe-y", type=int, default=None, help="垂直安全边")
+    group.add_argument("--union-pad", type=int, default=None, help="并集框外扩像素")
+    group.add_argument("--alpha-threshold", type=int, default=None, help="alpha 实体阈值")
+    group.add_argument("--wanted-frames", type=int, default=None, help="每动作帧数")
+    group.add_argument("--min-edge", type=int, default=None, help="最小四边留白")
+    group.add_argument("--max-hidden", type=float, default=None,
+                       help="并集框外实体占比上限")
+    group.add_argument("--max-height-spread", type=float, default=None,
+                       help="跨动作身高极差上限（定版 0.08，不放宽）")
     args = parser.parse_args()
+    if args.actions:
+        names = tuple(item.strip() for item in args.actions.split(",") if item.strip())
+        if not names:
+            raise ValueError("--actions 解析后为空")
+        TARGET_ACTIONS = names
+        print("本次落包动作（--actions）：%s" % "、".join(names), flush=True)
     root = Path(args.root).resolve()
+    params = load_normalize_params(root, args)
+    # 归一化参数在入口一次性注入；build / apply 的算法主体保持 v1.4 定版不变。
+    for name, _key in PARAM_KEYS:
+        globals()[name] = params[name]
+    print("归一化传参来源：%s | CLI 覆盖：%s" % (
+        params["_source"], "、".join(params["_cliOverrides"]) or "无"), flush=True)
     if args.phase == "assess":
         return assess(root, Path(args.batch_log), Path(args.picks))
     if args.phase == "build":
         return build(root, Path(args.picks), Path(args.source_out),
-                     Path(args.padded_source))
-    return apply(root, Path(args.source_out), Path(args.backup))
+                     Path(args.padded_source), params)
+    return apply(root, Path(args.source_out), Path(args.backup), args.python)
 
 
 if __name__ == "__main__":

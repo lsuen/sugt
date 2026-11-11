@@ -4,9 +4,9 @@
 作用用途：从 src/pet/pet.css 抽取桌面精灵样式，内联真实 WebP 素材（含带 alpha 的
          动画 WebP），生成可点、可鼠标交互的离线演示页；同时校验关键选择器齐全，
          避免演示页与产品样式漂移。
-适用项目：SUGT（桌面精灵 小su）v1.4（演示页脚本自 v1.0 起，口径以 v1.4 为准）
+适用项目：SUGT（桌面精灵 小su）v1.5（演示页脚本自 v1.0 起，口径以 v1.5 为准；v1.4 为历史）
 创建日期：2026-11-08（v0.7 于同日重写；2026-11-09 同步 v0.9 十动作 / v1.0 互动层，均为历史沿革）
-v1.4 口径：24 动作 / 1200 帧；进包画布由历史 180×297 扩边到 240×297（左右各补 30px
+v1.5 口径：25 动作 / 1250 帧（v1.4 为 24 动作 / 1200 帧）；进包画布由历史 180×297 扩边到 240×297（左右各补 30px
           全透明、纯 paste 不缩放不裁切）；三档窗口 160×136 / 198×168 / 240×204
           （height 不变，靠窗口加宽满足「高度主导不变式」，人物屏幕像素高不变）；
           生成画布仍 640×768、h_ref 仍 176.0px 不重算、56 色 palette-lossless 不变。
@@ -98,7 +98,7 @@ __PET_CSS_RAW__
 </head>
 <body>
 <div class="wrap">
-<h1>小su 桌面精灵 v1.4 · 动作注册表互动演示（24 动作 / 1200 帧）</h1>
+<h1>小su 桌面精灵 v1.5 · 动作注册表互动演示（25 动作 / 1250 帧）</h1>
 <p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。静态海报 + 带 alpha 的逐帧动画 WebP 全部内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
 <span class="badge">生成时间 __GENERATED_AT__</span>
 <span class="badge">源 CSS sha256 __CSS_HASH__</span>
@@ -150,12 +150,13 @@ __PET_CSS_RAW__
       </div>
     </div>
     <div class="group">
-      <label>v1.4 新增动作（24 动作 / 1200 帧）</label>
+      <label>闲置新增动作（v1.4 四个 + v1.5 打哈欠；共 25 动作 / 1250 帧）</label>
       <div class="btnrow">
         <button type="button" data-action="squatDraw">蹲下画画</button>
         <button type="button" data-action="wiggleDance">扭扭跳舞</button>
         <button type="button" data-action="kickflip">滑板翻板</button>
         <button type="button" data-action="miniGame">掌机小游戏</button>
+        <button type="button" data-action="yawn">困了打哈欠</button>
       </div>
     </div>
     <div class="group">
@@ -215,7 +216,8 @@ __PET_LOOP_NODES__
 <tr><td>自主走动</td><td>演示里窗口真的左右位移并播 walk 逐帧动画；产品侧只在 idle 且久无操作时小范围缓动，后端按当前显示器硬夹边</td></tr>
 <tr><td>请求级思考云</td><td>typing 时只有三个装饰点、不吐文案；状态仍以后端真实在途请求为准，结果级事件才出泡</td></tr>
 <tr><td>单层背景红线</td><td>__POSE_COUNT__ 个动作各只挂一张动画 WebP + 一张静态海报，带 alpha 的透明区域不会露出第二层立绘</td></tr>
-<tr><td>v1.3 动作注册表</td><td>__POSE_COUNT__ 个动作 × 50 帧 = 1200 张独立位图（v1.4：24 动作 / 1200 帧，进包素材 49 张 = 24 poster + 24 loop + su-blink）；每个动作有专属语义、专属素材、专属 trigger 与 priority，新增动作只在 manifest 追加一条，前端按 priority 降序查表、代码零改动</td></tr>
+<tr><td>v1.3 动作注册表（历史沿革标签）</td><td>__POSE_COUNT__ 个动作 × 50 帧；v1.4 历史为 24 动作 / 1200 帧 / 49 张；每个动作有专属语义、专属素材、专属 trigger 与 priority</td></tr>
+<tr><td>v1.5 现行动作注册表</td><td>__POSE_COUNT__ 个动作 × 50 帧 = 1250 张独立位图；进包素材 51 张 = 25 poster + 25 loop + su-blink；新增动作只在 manifest 追加一条，前端按 priority 降序查表、代码零改动（v1.5 新增闲置动作 yawn，本地 ComfyUI 生成）</td></tr>
 <tr><td>v1.3 拖拽三段</td><td>按住 → <code>lifted</code>（双脚离地、头发与双腿垂摆、整只上移 10px）；松手 → <code>landing</code>（落地缓冲）；随后回 <code>idle</code>。三段各有专属 50 帧序列，不再复用走路姿</td></tr>
 </table>
 
@@ -223,7 +225,7 @@ __PET_LOOP_NODES__
 </div>
 
 <script>
-// 状态与动作清单全部取自 manifest 注册表（v1.4 口径：24 动作 / 1200 帧），
+// 状态与动作清单全部取自 manifest 注册表（v1.5 口径：25 动作 / 1250 帧），
 // 这里只列演示入口，第三项必须是注册表里真实存在的动作名。
 const STATES = [
   ['idle', '待机中', 'idle'], ['typing', '处理中', 'typing'], ['done', '已完成', 'done'],
@@ -253,8 +255,12 @@ const BUBBLES = {
 };
 // 每个动作都是「一段可观察的表演」，不是常驻开关：pose / 气泡 / 状态文字 / CSS 反馈类
 // / 持续时间 / 是否真的移动窗口。pose 为 null 表示沿用当前状态的立绘。
+// 演示停留时长按素材真实时长取：最长动作 squatDraw 5018ms，统一用 5200ms 兜住，
+// 让预览页也能看到「播完整」的效果（旧值 1600~2600ms 会把动作切掉一半）。
+// 作者：孙文龙 sun
+const FULL_ACTION_MS = 5200;
 const ACTIONS = {
-  hello: { label: '挥手打招呼', pose: 'welcome', bubble: 'hello', ms: 2200 },
+  hello: { label: '挥手打招呼', pose: 'welcome', bubble: 'hello', ms: FULL_ACTION_MS },
   pat:   { label: '被摸头啦', pose: 'petted', bubble: 'pat', cls: 'petted', ms: 2000 },
   poke:  { label: '轻碰回应', pose: 'poked', bubble: 'poke', fig: 'poked', ms: 1800 },
   blink: { label: '眨了下眼', pose: null, bubble: null, cls: 'blinking', ms: 320 },
@@ -264,20 +270,22 @@ const ACTIONS = {
   drag:  { label: '按住提起', pose: 'lifted', bubble: 'drag', cls: 'dragging',
            phase: 'lifted', ms: 1800 },
   land:  { label: '松手放下', pose: 'landing', bubble: 'land', cls: 'pet-landed',
-           phase: 'landing', ms: 1500 },
+           phase: 'landing', ms: FULL_ACTION_MS },
   // v1.1 自动交互动作（参考 whale-girl）：事件反馈 / 陪伴 / 用户互动，零负反馈。
-  cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: 2600 },
-  wake:  { label: '睡醒伸懒腰', pose: 'wake', bubble: 'wake', ms: 1600 },
-  failed:{ label: '失败失落尾段', pose: 'disappointed', bubble: 'disappointed', ms: 2200 },
+  cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: FULL_ACTION_MS },
+  wake:  { label: '睡醒伸懒腰', pose: 'wake', bubble: 'wake', ms: FULL_ACTION_MS },
+  failed:{ label: '失败失落尾段', pose: 'disappointed', bubble: 'disappointed', ms: FULL_ACTION_MS },
   wait:  { label: '等待批准', pose: 'wait', bubble: 'wait', cls: 'pet-walking', ms: 2000 },
-  idle:  { label: '闲置伸懒腰', pose: 'stretch', bubble: 'idleVariant', ms: 2200 },
-  turn:  { label: '转身张望', pose: 'lookAround', bubble: 'turn', cls: 'pet-listening', ms: 1800 },
-  greet: { label: '点头打招呼', pose: 'greeting', bubble: 'hello', ms: 1800 },
-  // v1.4 新增 4 个动作演示入口（manifest 注册表名，24 动作扩容）。
-  squatDraw:   { label: '蹲下画画', pose: 'squatDraw', bubble: 'think', ms: 2200 },
-  wiggleDance: { label: '扭扭跳舞', pose: 'wiggleDance', bubble: 'cheer', ms: 2400 },
-  kickflip:    { label: '滑板翻板', pose: 'kickflip', bubble: 'hello', ms: 2200 },
-  miniGame:    { label: '掌机小游戏', pose: 'miniGame', bubble: 'idleVariant', ms: 2200 },
+  idle:  { label: '闲置伸懒腰', pose: 'stretch', bubble: 'idleVariant', ms: FULL_ACTION_MS },
+  turn:  { label: '转身张望', pose: 'lookAround', bubble: 'turn', cls: 'pet-listening', ms: FULL_ACTION_MS },
+  greet: { label: '点头打招呼', pose: 'greeting', bubble: 'hello', ms: FULL_ACTION_MS },
+  // v1.4 新增 4 个动作演示入口（manifest 注册表名）。
+  squatDraw:   { label: '蹲下画画', pose: 'squatDraw', bubble: 'think', ms: FULL_ACTION_MS },
+  wiggleDance: { label: '扭扭跳舞', pose: 'wiggleDance', bubble: 'cheer', ms: FULL_ACTION_MS },
+  kickflip:    { label: '滑板翻板', pose: 'kickflip', bubble: 'hello', ms: FULL_ACTION_MS },
+  miniGame:    { label: '掌机小游戏', pose: 'miniGame', bubble: 'idleVariant', ms: FULL_ACTION_MS },
+  // v1.5 新增：打哈欠（本地 ComfyUI 生成，锁定 h_ref 归一化落包）。
+  yawn:        { label: '困了打哈欠', pose: 'yawn', bubble: 'idleVariant', ms: FULL_ACTION_MS },
 };
 
 let currentState = 'idle';

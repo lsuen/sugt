@@ -106,6 +106,57 @@ export const readPetSize = (): (typeof PET_SIZES)[number] => {
   }
 };
 
+export type PetSizePreset = (typeof PET_SIZES)[number];
+
+/** 关掉精灵后回到的流量窗。不是立绘档位。 */
+export const HUD_OVERLAY_SIZE = { width: 280, height: 108 } as const;
+
+export function writePetSize(size: PetSizePreset): void {
+  try {
+    window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
+  } catch {
+    // 隐私模式无 localStorage 时仍应用本次尺寸
+  }
+}
+
+/** 只改立绘档位。停靠才动坐标。 */
+export function petSizePatch(size: PetSizePreset): Pick<OverlayConfigView, 'width' | 'height'> {
+  writePetSize(size);
+  return { width: size.width, height: size.height };
+}
+
+/**
+ * 精灵模式和流量窗形状不同，切换时交回未定位，由后端按新尺寸重算落点。
+ * 关掉时记住的立绘档位留在 localStorage，下次打开用 readPetSize()。
+ */
+export function petModePatch(
+  enabled: boolean,
+  overlay: Pick<OverlayConfigView, 'enabled'> | undefined,
+  petSize: PetSizePreset = readPetSize(),
+): Partial<OverlayConfigView> {
+  const size = enabled ? petSize : HUD_OVERLAY_SIZE;
+  return {
+    pet_enabled: enabled,
+    enabled: enabled ? true : (overlay?.enabled ?? false),
+    width: size.width,
+    height: size.height,
+    x: -1,
+    y: -1,
+    layout: 'column',
+    ...(enabled
+      ? {
+          pet_interactive: true,
+          pet_always_interactive: true,
+          pet_gaze: true,
+          pet_blink: true,
+          pet_snap: true,
+          pet_roam: true,
+          opacity: 1,
+        }
+      : { pet_interactive: false, pet_always_interactive: false }),
+  };
+}
+
 export const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 

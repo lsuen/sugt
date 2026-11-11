@@ -1,5 +1,8 @@
 # 小酥桌面精灵 · 进包素材留痕（v4 / v0.9 素材 + v1.0 互动层）
 
+> **v1.5 现行口径（2026-11-12 实测）**：25 动作 × 50 帧 = **1250 帧**、`240×297`、56 色 palette-lossless、**51 张 / 5898798 B = 5.899 MB = 5.63 MiB**（预算 ≤8 MB）；逐帧 **154/154**、静态契约 **84/84**、生成器 5/5、编码 2/2、预览页 4/4、`npm test` 295 条、Rust 275 passed / 1 ignored、dist **51 张 / 5760.5 KB**；新增闲置动作 `yawn`（本地 ComfyUI 生成，锁定 h_ref 归一化落包；关键帧与视频首/中/末帧目视通过）。
+> 下文出现的 `24 动作 / 1200 帧 / 49 张 / 5669500 B / 148/148 / 5536.62 KB` 均为 **v1.4 历史值**，按沿革保留、不回填改数字；现行操作以本段、《动作表》第一节与 `docs/小精灵维护/README.md` 流程 B 为准。
+
 生成日期：2026-11-08（v0.8 / v0.9 / v1.0 增补 2026-11-09）　|　编写：孙测测　|　生成方式：**全部本地 ComfyUI，零云端额度**
 
 > v4 修订（对应「头发没抠干净 / 在想时奇怪摇晃 / 别只是图片叠加」三轮反馈）：
@@ -367,3 +370,29 @@ v1.3.2 未产生新的生成素材，仅对既有本地生成帧做确定性几�
 - **新动作归一化实测**：5 个动作人物高 `176~178px`、与老 19 动作交叉极差 **1.14%**（阈值 8%）；最小四边留白 `stretch 36 / squatDraw 33 / wiggleDance 50 / kickflip 35 / miniGame 59 px`；并集框外实体 **0.000%**。24 个 hitBox 已由生成器写模式回填实测 alpha 并集，占位 `[0.2,0.2,0.8,0.8]` 已消失；新 5 个动作 hitBox：`stretch [0.15,0.1785,0.7792,0.8047]`、`squatDraw [0.1542,0.202,0.8625,0.798]`、`wiggleDance [0.2083,0.1818,0.775,0.8013]`、`kickflip [0.1458,0.1953,0.8542,0.8148]`、`miniGame [0.2667,0.2054,0.7375,0.8013]`。
 - **最终挑版**：`stretch v1 / squatDraw v1 / wiggleDance v1 / kickflip v2 / miniGame v3`（量化初筛 → 人工目视覆盖 2 处，留痕 `docs/孙测测/traces/精灵v1.4人工挑版覆盖-20261111-053632.md`）；`kickflip v1` 因源画布右侧触边被门禁拒绝。
 - **阶段过程留痕（历史）**：阶段 C 零污染试跑（2026-11-11 04:10）用 3 个候选（`stretch v1` / `squatDraw v1` / `wiggleDance v2`）跑「锁定 `h_ref=176.04` 归一化」→ 人物高 `177/176/178 px`、最小四边留白 `36/33/52 px`、框外实体 `0.000%`、交叉量测极差 1.14%，临时 root 编码链 6/6 通过，留痕 `traces/精灵v1.4新动作归一化-20261111-041030.md`；4 个新动作与 `stretch` 重生成共 15 段候选（各 3 版）期间 ComfyUI 服务短暂中断后恢复、原批次卡住的 `wiggleDance v3` 由 `/tmp/sugt-pet-v14-resume.sh` 补跑，均为落包前中间态，现已全部落包并通过上列门禁。
+
+
+---
+
+## v1.5 新增动作 `yawn` 素材留痕（2026-11-12）
+
+- **生成方式**：本地 ComfyUI `http://192.168.31.84:8188`（0.36.0，Windows，
+  RTX 5080 Laptop），绕办公代理访问；云端生成未参与，素材无水印、带 alpha。
+- **链路与模型**：Qwen-Image-Edit 2509（4 steps + Lightning LoRA）出关键姿态 →
+  MiniMax H3 FL2VA（4 steps + turbo LoRA）补间 56 帧 → 自适应色键抠图 →
+  锁定 `h_ref=176.04` / `foot_y=237` 纯 LANCZOS 缩放平移到 `240×297` →
+  56 色 palette-lossless 编码。
+- **种子与工作目录**：`SUGT_PET_SEED_OFFSET=5000`，
+  `SUGT_PET_WORK=/tmp/sugt-pet-v15-yawn-v1`；loop 首尾同源。
+- **提示词**：`yawning sleepily, one hand gently covering the mouth, head tilted
+  slightly back, eyes half closed, shoulders relaxed, standing upright, full body visible`。
+- **门禁实测**：关键帧 86.1s，朝向 + 四边通过；补间 239.2s，四边实体
+  `L/R/T/B=[0,0,0,0]`、`rejected=[]`；归一化人物高 `177px`、最小留白 `47px`、
+  框外实体 `0.000%`，与老 19 动作交叉极差 `1.14%`；目视关键帧与视频
+  首 / 中 / 末帧四格均正面站立、全身到鞋、无倒挂与裁切。
+- **产物**：`su-yawn.webp`（poster）、`su-yawn-loop.webp`（50 帧 / 5018ms）；
+  整包由 49 张 / `5669500 B` 变为 **51 张 / `5898798 B`**（≤8 MB）。
+- **许可口径**：沿用本文件第六节（本地生成、中国大陆分发，
+  MiniMax H3 Community License 地域限制已登记）。
+- **回退锚点**：改动前 140 文件全量备份 `/tmp/sugt-pet-v15-pre-011819/`，
+  落包前 49 张素材备份 `/tmp/sugt-pet-v15-backup-49/`；恢复不需重跑 ComfyUI。

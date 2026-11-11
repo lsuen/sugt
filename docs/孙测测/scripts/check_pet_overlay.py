@@ -52,8 +52,6 @@ SOURCE_CHECKS = [
     ("C08", "吸附按中心选屏 / 回位按完整窗口", "src-tauri/src/overlay.rs",
      ["let center_x", "fn window_fully_inside", "monitor_lookup_uses_window_center", "window_visibility_requires_all_corners_inside"]),
     # v0.9 起精灵设置迁到独立子页，草稿防竞态留在主设置面板，两者都要在
-    ("C09", "档位记忆在精灵子页", "src/PetSettingsSection.tsx",
-     ["PET_SIZE_STORAGE_KEY", "readPetSize", "localStorage.setItem"]),
     ("C09b", "设置写入防竞态仍在主面板", "src/SettingsPanel.tsx",
      ["overlayDraft", "pendingWrites"]),
     ("C11", "吸附文案 zh/en 同步为阈值口径", "src/i18n.ts",
@@ -67,13 +65,13 @@ SOURCE_CHECKS = [
     ("C12", "悬浮窗 ACL 含全部精灵命令（含 v1.0 走动与元素穿透）",
      "src-tauri/permissions/app-commands.toml",
      ["get_overlay_config", "set_overlay_config", "overlay_start_drag", "focus_main_window",
-      "pet_finish_drag", "pet_global_cursor", "pet_roam_to", "pet_set_clickable", "open_settings_tab"]),
-    ("C13", "悬浮窗能力含 core:default", "src-tauri/capabilities/overlay.json", ["core:default"]),
+      "pet_finish_drag", "pet_global_cursor", "pet_roam_to", "pet_open_menu", "pet_close_menu", "pet_set_clickable", "open_settings_tab"]),
+    ("C13", "悬浮窗能力含 core:default，菜单窗同权", "src-tauri/capabilities/overlay.json", ["core:default", "pet-menu"]),
     ("C20b", "后端走动夹边命令与跨平台单测", "src-tauri/src/overlay.rs",
      ["pub fn roam_to", "fn clamp_roam_position", "roam_never_leaves_screen_edges",
       "roam_respects_negative_secondary_monitor_origin"]),
     ("C20c", "走动命令注册与 ACL 放行", "src-tauri/src/app.rs",
-     ["pet::pet_roam_to", "pet::pet_global_cursor", "pet::pet_set_clickable"]),
+     ["pet::pet_roam_to", "pet::pet_open_menu", "pet::pet_close_menu", "pet::pet_global_cursor", "pet::pet_set_clickable"]),
     ("C21", "视线以头部为轴且移动中关掉 3D/滤镜", "src/pet/pet.css",
      ["transform-origin: 55% 32%", "rotateY(calc(var(--head-x) * 9deg))",
       "filter: none", "transform: scaleX(var(--face-x))",
@@ -105,7 +103,8 @@ SOURCE_CHECKS = [
       "dragging: dragPhase === 'lifted'", "landing: dragPhase === 'landing'"]),
     ("C37b", "拖拽状态机三段与 manifest 落地时长", "src/pet/hooks/usePetDrag.ts",
      ["setDragPhase('lifted')", "setDragPhase('landing')",
-      "setDragPhase('idle')", "AUTO.drag.holdMs"]),
+      "setDragPhase('idle')", "poseHoldMs('landing'",
+      "AUTO.drag.holdCycles"]),
     ("C37c", "拖拽物理感：离地提摆 + 落地缓冲", "src/pet/pet.css",
      ['data-drag-phase="lifted"', "data-drag-phase=\"landing\"",
       "@keyframes pet-lift-dangle"]),
@@ -124,7 +123,7 @@ SOURCE_CHECKS = [
      ["Boolean(input.roaming) && input.state === 'idle'",
       "walk: Boolean(input.walking)"]),
     ("C46b", "漂移落点播一次 landing 且不虚报请求态", "src/pet/hooks/usePetBehaviors.ts",
-     ["setRoamLanding(true)", "AUTO.drag.holdMs", "roamLanding"]),
+     ["setRoamLanding(true)", "poseHoldMs('landing'", "roamLanding"]),
     ("C46c", "落地接线到渲染层与 CSS 缓冲", "src/pet/PetStage.tsx",
      ["roamLanding && petState === 'idle'", "roamLanding ? 'pet-landed' : ''"]),
     ("C46d", "漂移期离地提摆，不再用走路步频动画", "src/pet/pet.css",
@@ -141,8 +140,8 @@ SOURCE_CHECKS = [
     ("C35", "穿透命中区按姿势 alpha 包围盒收紧", "src/pet/hooks/usePetGaze.ts",
      ["figureHitRect(", "PET_HITBOXES", "PET_IMAGE_SIZE",
       "overFigure || overMenu || dragActive.current"]),
-    ("C26", "右键菜单 Esc 关闭且不整窗解穿透", "src/pet/PetStage.tsx",
-     ["setMenuOpen(false)", "Escape", "onMenuDismiss"]),
+    ("C26", "右键菜单是独立窗口，Esc 关掉", "src/menu.tsx",
+     ["Escape", "pet_close_menu", "sugt://pet-show-info"]),
     ("C27", "舞台写死零底色", "src/pet/pet.css",
      ["background: transparent !important", "background-color: transparent !important",
       "background-image: none !important"]),
@@ -151,8 +150,8 @@ SOURCE_CHECKS = [
     ("C29", "姿势硬切且眨眼不叠全身帧", "src/pet/pet.css",
      ["transition: none", ".pet-stage.blinking .pet-loop.is-active",
       "visibility: hidden"]),
-    ("C29b", "右键菜单为紧凑面板非整窗铺满", "src/pet/pet.css",
-     ["left: calc(var(--pet-side-w) + 6%)", "bottom: auto"]),
+    ("C29b", "右键菜单铺满自己的窗口", "src/pet/pet.css",
+     ["position: static", "独立小窗", "background: var(--pet-panel-solid)"]),
     ("C30", "立绘透明度变量且舞台无边框", "src/pet/pet.css",
      ["--pet-opacity", "border: 0 !important", "outline: 0 !important",
       "box-shadow: none !important", "opacity: var(--pet-opacity)"]),
@@ -161,30 +160,31 @@ SOURCE_CHECKS = [
     ("C32", "立绘禁止 drop-shadow 拖影底板", "src/pet/pet.css",
      ["禁止 drop-shadow", "filter: none"]),
     # ---- v1.1：尺寸档位 / 穿透设置项 / 自动交互动作 / manifest v2 ----
-    ("C36", "鼠标穿透为设置项且默认关闭", "src-tauri/src/model.rs",
+    ("C36", "穿透字段保留给旧配置，默认 false 不再打开整窗", "src-tauri/src/model.rs",
      ["pub pet_click_through: bool", "pet_click_through: false", "#[serde(default)]"]),
-    ("C36b", "新建窗口按穿透开关决定初始穿透", "src-tauri/src/overlay.rs",
-     ["cfg.pet_click_through && !cfg.edit"]),
-    ("C36c", "默认不穿透时整窗常驻可交互", "src/pet/hooks/usePetGaze.ts",
-     ["clickThrough: boolean",
-      "const passthrough = clickThrough && interactive && !edit",
-      "if (!passthrough) setClickable(true)"]),
-    ("C36d", "设置页穿透开关与前端字段接线", "src/PetSettingsSection.tsx",
-     ["set.petClickThrough", "pet_click_through: e.target.checked"]),
+    ("C36b", "新建精灵窗口透明区始终穿透", "src-tauri/src/overlay.rs",
+     ["let ignore = if cfg.pet_enabled { !cfg.edit } else { !hud_interactive };"]),
+    ("C36c", "只有身体、菜单和拖动可点击", "src/pet/hooks/usePetGaze.ts",
+     ["const passthrough = interactive && !edit",
+      "if (!passthrough) setClickable(edit)",
+      "透明区始终穿透"]),
+    ("C36d", "设置页说明透明区始终穿透", "src/PetSettingsSection.tsx",
+     ["set.petClickThroughHint"]),
     ("C36e", "穿透设置 zh/en 文案同步", "src/i18n.ts",
-     ["'set.petClickThrough': '鼠标穿透（默认关）'",
-      "'set.petClickThrough': 'Mouse click-through (off by default)'"]),
+     ["'set.petClickThrough': '透明区域穿透'",
+      "'set.petClickThrough': 'Transparent areas pass clicks'"]),
     ("C37", "v1.4 三档窗口按画布 4/3 加宽（160/198/240 × 136/168/204）", "src/pet/config.ts",
      ["width: 160,", "height: 136", "width: 198,", "height: 168",
       "width: 240,", "height: 204", "PET_SIZES"]),
     ("C37b", "后端默认尺寸与前端最小档一致", "src-tauri/src/model.rs",
      ["198.0", "168.0", "default_pet_width"]),
-    ("C38", "自动交互动作接入舞台（庆祝 / 睡醒 / 失落 / 拖拽）", "src/pet/PetStage.tsx",
-     ["welcoming: greeting", "shouldWake(", "AUTO.celebrate.holdMs",
+    ("C38", "自动交互动作接入舞台（庆祝 / 睡醒 / 失落 / 开场挥手 / 靠近点头）", "src/pet/PetStage.tsx",
+     ["greeting,", "welcoming,", "cursorNear:", "shouldWake(", "autoHold('celebrate'",
       "setDisappointed(", "waking,", "disappointed,", "dragging,"]),
     ("C38b", "行为钩子按 manifest 节奏调度并支持随机转身", "src/pet/hooks/usePetBehaviors.ts",
      ["nextBlinkAt(", "nextFacingAt(", "nextIdleVariantAt(", "nextWanderAt(",
-      "pickIdleVariant()", "setFacing((prev)"]),
+      "pickIdleVariant()", "setFacing((prev)", "setWelcoming(true)",
+      "setGreeting(true)", "AUTO.welcome", "AUTO.greeting", "canBeginAuto("]),
     ("C39", "manifest v2：裁剪 / 逐帧时长 / 帧序 / 编码 / 自动动作", "src/assets/pet/manifest.json",
      ['"formatVersion": 2', '"cropBox"', '"frameOrder"',
       '"palette-lossless"', '"autoActions"', '"posePriority"']),
@@ -264,22 +264,23 @@ def check_manifest_source(root: Path) -> tuple[str, str, bool, str]:
 
 
 def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
-    """C36：1200 帧动作注册表必须是唯一真相源，且语义/素材/优先级无复用。
+    """C36：动作注册表帧预算必须是唯一真相源，且语义/素材/优先级无复用。
 
-    v1.3 红线：每个动作一张专属 poster + 一张专属 loop，拖拽不再复用走路姿；
-    新增动作只在 manifest 追加一条，前端按 priority 降序查表，代码零改动。
+    期望帧预算由 manifest 的 framesPerAction × poses 数推导，新增动作时只改真相源，
+    不必再改门禁字面量；用 C36 判定输出与 pet-manifest-smoke 的帧预算断言验证。
     """
     try:
         data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return "C36", "动作注册表 1200 帧契约", False, f"读取失败: {exc}"
+        return "C36", "动作注册表帧预算契约", False, f"读取失败: {exc}"
     poses = data.get("poses", [])
     problems: list[str] = []
     registry = data.get("actionRegistry", {})
     budget = registry.get("frameBudget", {})
     total = sum(pose.get("frames", 0) for pose in poses)
-    if total != 1200 or budget.get("total") != 1200:
-        problems.append(f"总帧 {total} ≠ 1200")
+    expected = budget.get("framesPerAction", 0) * len(poses)
+    if not expected or total != expected or budget.get("total") != expected:
+        problems.append(f"总帧 {total} ≠ 期望 {expected}")
     if not budget.get("uniqueBitmapFrames") or not registry.get("semanticUniqueness"):
         problems.append("未声明独立位图/语义唯一")
     for field in ("semantic", "priority", "poster", "loop"):
@@ -310,7 +311,7 @@ def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
     walk = next((pose for pose in poses if pose["name"] == "walk"), {})
     if "拖拽" in walk.get("semantic", "") or "提起" in walk.get("semantic", ""):
         problems.append("walk 仍在承担拖拽语义")
-    return ("C36", "动作注册表 1200 帧 / 语义唯一 / 可扩展契约", not problems,
+    return ("C36", "动作注册表帧预算 / 语义唯一 / 可扩展契约", not problems,
             "、".join(problems[:4]) if problems else
             f"{len(poses)} 动作 / {total} 帧 / 语义与素材均唯一")
 
@@ -328,6 +329,33 @@ def read(root: Path, rel: str) -> str:
     """读取项目内文本文件，失败时抛出具名异常便于定位。"""
     path = root / rel
     return path.read_text(encoding="utf-8")
+
+
+def check_pet_mode_patches(root: Path) -> tuple[str, str, bool, str]:
+    """档位和开关精灵必须走同一套补丁，开场挥手不能再绑到点头上。"""
+    config = read(root, "src/pet/config.ts")
+    settings = read(root, "src/PetSettingsSection.tsx")
+    menu = read(root, "src/menu.tsx")
+    stage = read(root, "src/pet/PetStage.tsx")
+    backend = read(root, "src-tauri/src/pet.rs")
+    missing = []
+    for needle in (
+        "PET_SIZE_STORAGE_KEY", "readPetSize", "writePetSize",
+        "localStorage.setItem", "export function petSizePatch",
+        "export function petModePatch", "HUD_OVERLAY_SIZE",
+    ):
+        if needle not in config:
+            missing.append(f"config:{needle}")
+    for label, text in (("settings", settings), ("menu", menu)):
+        for needle in ("petSizePatch", "petModePatch"):
+            if needle not in text:
+                missing.append(f"{label}:{needle}")
+    if "welcoming: greeting" in stage:
+        missing.append("stage:welcoming 绑到 greeting")
+    if "migrate_legacy_hud_frame" not in backend or "width >= 190" in backend:
+        missing.append("backend:旧宽度一刀切还在")
+    return ("C09", "档位记忆与精灵开关走共享补丁，开场不绑点头",
+            not missing, "、".join(missing) if missing else "全部命中")
 
 
 def check_sources(root: Path) -> list[tuple[str, str, bool, str]]:
@@ -497,6 +525,7 @@ def read_pet_runtime(root: Path) -> str:
     """拼接精灵运行时相关源码，供跨文件契约断言使用。"""
     parts = (
         "src/pet/PetStage.tsx",
+        "src/menu.tsx",
         "src/pet/PetContextMenu.tsx",
         "src/pet/hooks/usePetGaze.ts",
         "src/pet/hooks/usePetDrag.ts",
@@ -513,7 +542,7 @@ def check_runtime_wiring(root: Path) -> tuple[str, str, bool, str]:
         "--gaze-x", "setBlinking", "setPoked", "setStill", "PET_LOOPS", "--drag-tilt",
         "let cancelled = false", "document.hidden", "GAZE_LERP.eyeLerp",
         "pickIdleVariant", "easeInOut", "setPetted", "setRoaming",
-        "removeEventListener('resize', refreshScale)", "pet_set_clickable",
+        "removeEventListener('resize', refreshScale)", "pet_set_clickable", "pet_open_menu",
         # 元素级穿透：禁止 menuOpen 单独把整窗解穿透（透明墙回归）
         "overFigure || overMenu || dragActive.current",
     )
@@ -559,11 +588,22 @@ def check_v09_wiring(root: Path) -> tuple[str, str, bool, str]:
 def check_dist(root: Path) -> list[tuple[str, str, bool, str]]:
     """检查生产构建产物：CSS 类名、JS 命令名、进包素材。"""
     results = []
-    css_files = glob.glob(str(root / "dist" / "assets" / "overlay-*.css"))
+    # 菜单窗和精灵窗共用 pet.css 后，Vite 会把它抽成 pet-*.css，overlay 入口同时挂上。
+    overlay_html = root / "dist" / "overlay.html"
+    css_files = []
+    if overlay_html.is_file():
+        css_files = [
+            root / "dist" / "assets" / name
+            for name in re.findall(r'href="/assets/([^"]+\.css)"',
+                                   overlay_html.read_text(encoding="utf-8"))
+        ]
+        css_files = [path for path in css_files if path.is_file()]
+    if not css_files:
+        css_files = [Path(path) for path in glob.glob(str(root / "dist" / "assets" / "overlay-*.css"))]
     if not css_files:
         results.append(("D01", "dist 精灵 CSS 存在", False, "未找到 dist/assets/overlay-*.css"))
     else:
-        css = Path(css_files[-1]).read_text(encoding="utf-8")
+        css = "\n".join(path.read_text(encoding="utf-8") for path in css_files)
         missing = [s for s in DIST_CSS_SELECTORS if s not in css]
         results.append(("D01", "dist 精灵 CSS 含 v1.0 布局与互动类名", not missing,
                         "、".join(missing) if missing else f"全部命中（{len(css)} B）"))
@@ -752,6 +792,7 @@ def main() -> int:
     trace = (args.out or root / "docs" / "孙测测" / "traces" / f"桌面精灵链路契约检查-{stamp}.md").resolve()
     try:
         rows = check_sources(root)
+        rows.append(check_pet_mode_patches(root))
         rows.append(check_gateway_wrappers(root))
         rows.append(check_runtime_wiring(root))
         rows.append(check_no_shake(root))

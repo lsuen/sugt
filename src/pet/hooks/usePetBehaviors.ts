@@ -18,9 +18,14 @@ import {
   nextBlinkAt,
   nextFacingAt,
   nextIdleVariantAt,
+  autoPoseHold,
+  autoWaitMs,
+  canBeginAuto,
+  leaseFor,
   nextWanderAt,
   pickIdleVariant,
   pickIdleVariantWeighted,
+  poseHoldMs,
   type PetPose,
   type PetState,
 } from '../petState';
@@ -35,12 +40,15 @@ type Props = {
   blinkEnabled: boolean;
   roamEnabled: boolean;
   still: boolean;
+  /** 光标进入立绘靠近区。只驱动 greeting，不和开场 welcome 共用。 */
+  cursorNear: boolean;
   petState: PetState;
   petStateRef: MutableRefObject<PetState>;
   dragActive: MutableRefObject<boolean>;
   lastUserTouch: MutableRefObject<number>;
   gazeRef: MutableRefObject<{ x: number; y: number; near: number }>;
   playIdlePose: (pose: PetPose, ms: number) => void;
+  clearIdlePose: () => void;
   pushBubble: (text: string, kind: Bubble['kind'], category?: NoticeCategory) => void;
   t: (key: TKey) => string;
 };
@@ -49,17 +57,20 @@ export function usePetBehaviors({
   blinkEnabled,
   roamEnabled,
   still,
+  cursorNear,
   petState,
   petStateRef,
   dragActive,
   lastUserTouch,
   gazeRef,
   playIdlePose,
+  clearIdlePose,
   pushBubble,
   t,
 }: Props) {
   const [blinking, setBlinking] = useState(false);
   const [greeting, setGreeting] = useState(false);
+  const [welcoming, setWelcoming] = useState(false);
   const [roaming, setRoaming] = useState(false);
   // v1.3.3：落到新位置后播一次 landing，闭合「被提起来 → 飞过去 → 松手落地」。
   const [roamLanding, setRoamLanding] = useState(false);
@@ -68,6 +79,11 @@ export function usePetBehaviors({
   const blinkTimers = useRef<number[]>([]);
   const landTimer = useRef(0);
   const greeted = useRef(false);
+  const nextGreetingAt = useRef(0);
+  // 闲置差分、开场、漂移共用。自动来源不能打断未结束的一段。
+  const lease = useRef<{ until: number } | null>(null);
+  const roamingRef = useRef(false);
+  roamingRef.current = roaming;
   const lastIdleBubble = useRef(0);
   // 最近 2 个闲置姿势：交给加权选择器降权，避免同一个动作连播。
   // 作者：孙文龙 sun
@@ -112,7 +128,7 @@ export function usePetBehaviors({
     };
   }, [blinkEnabled, petState]);
 
-  // 开场打招呼：只在精灵真实可见、系统未要求减少动效时触发一次。
+  // 开场挥手：welcome 槽，和靠近时的点头（greeting）分开。
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     let cancelled = false;
@@ -120,9 +136,12 @@ export function usePetBehaviors({
     const greet = () => {
       if (cancelled || greeted.current || document.hidden || still) return;
       greeted.current = true;
-      setGreeting(true);
+      setWelcoming(true);
+      const hold = autoPoseHold(AUTO.welcome);
+      lease.current = leaseFor(Date.now(), hold);
+      clearIdlePose();
       pushBubble(t('pet.bubble.hello'), 'info', 'interaction');
-      timer = window.setTimeout(() => setGreeting(false), 2400);
+      timer = window.setTimeout(() => setWelcoming(false), hold);
     };
     greet();
     document.addEventListener('visibilitychange', greet);
@@ -131,7 +150,24 @@ export function usePetBehaviors({
       window.clearTimeout(timer);
       document.removeEventListener('visibilitychange', greet);
     };
-  }, [pushBubble, still, t]);
+  }, [clearIdlePose, pushBubble, still, t]);
+
+  // 光标进入靠近区时点一次头。持续靠近仍由 peek 负责，冷却来自 greeting 槽。
+  // 定时器不跟依赖清掉：光标离开后点头要播完，否则 flag 会卡住。
+  const greetTimer = useRef(0);
+  useEffect(() => {
+    if (!cursorNear || still || document.hidden || petState !== 'idle' || dragActive.current) return;
+    const now = Date.now();
+    if (now < nextGreetingAt.current) return;
+    const hold = autoPoseHold(AUTO.greeting);
+    nextGreetingAt.current = now + hold + AUTO.greeting.cooldownMs;
+    lease.current = leaseFor(now, hold);
+    clearIdlePose();
+    setGreeting(true);
+    window.clearTimeout(greetTimer.current);
+    greetTimer.current = window.setTimeout(() => setGreeting(false), hold);
+  }, [clearIdlePose, cursorNear, still, petState, dragActive]);
+  useEffect(() => () => window.clearTimeout(greetTimer.current), []);
 
   // 闲置互动：只在 idle、用户久未触碰、窗口可见时随机播一个已落包的差分姿。
   useEffect(() => {
@@ -144,7 +180,12 @@ export function usePetBehaviors({
     };
     const tick = () => {
       if (cancelled) return;
-      const quietFor = Date.now() - lastUserTouch.current;
+      const now = Date.now();
+      const quietFor = now - lastUserTouch.current;
+      if (!canBeginAuto(lease.current, now) || roamingRef.current) {
+        later(tick, autoWaitMs(lease.current, now, roamingRef.current ? 400 : 0));
+        return;
+      }
       if (
         !document.hidden && !still && petStateRef.current === 'idle'
         && !dragActive.current && quietFor > 6_000
@@ -156,7 +197,15 @@ export function usePetBehaviors({
         const pose = poses.length
           ? pickIdleVariantWeighted(poses, IDLE_VARIANT_WEIGHTS, idleHistory.current)
           : (pickIdleVariant() as string);
-        playIdlePose(pose as PetPose, AUTO.idleVariant.holdMs);
+        // 停留时长按所选姿势的素材时长派生：完整播完一遍再加尾部停留，
+        // 不再用统一的 2200ms（比最短动作还短一半，会被硬切）。
+        // 作者：孙文龙 sun
+        const ms = poseHoldMs(pose as PetPose, {
+          cycles: AUTO.idleVariant.holdCycles,
+          tailMs: AUTO.idleVariant.tailMs,
+        });
+        lease.current = leaseFor(now, ms);
+        playIdlePose(pose as PetPose, ms);
         idleHistory.current = [pose, ...idleHistory.current].slice(0, 2);
         if (Math.random() < 0.34 && Date.now() - lastIdleBubble.current > 90_000) {
           lastIdleBubble.current = Date.now();
@@ -169,7 +218,8 @@ export function usePetBehaviors({
           pushBubble(t(key), 'info', 'idle');
         }
       }
-      later(tick, nextIdleVariantAt({ now: 0 }));
+      const gap = nextIdleVariantAt({ now: 0 });
+      later(tick, autoWaitMs(lease.current, Date.now(), gap));
     };
     later(tick, 6_000 + Math.random() * 5_000);
     return () => {
@@ -192,9 +242,15 @@ export function usePetBehaviors({
     const finish = () => {
       setRoaming(false);
       setRoamLanding(true);
+      lease.current = leaseFor(
+        Date.now(),
+        poseHoldMs('landing', { cycles: AUTO.drag.holdCycles, tailMs: AUTO.drag.tailMs }),
+      );
       window.clearTimeout(landTimer.current);
       landTimer.current = window.setTimeout(
-        () => setRoamLanding(false), AUTO.drag.holdMs);
+        () => setRoamLanding(false),
+        poseHoldMs('landing', { cycles: AUTO.drag.holdCycles, tailMs: AUTO.drag.tailMs }),
+      );
       void invoke('pet_finish_drag', { snap: false }).catch(() => undefined);
       schedule(nextWanderAt({ now: 0 }));
     };
@@ -228,9 +284,14 @@ export function usePetBehaviors({
         schedule(12_000);
         return;
       }
+      const now = Date.now();
+      if (!canBeginAuto(lease.current, now)) {
+        schedule(autoWaitMs(lease.current, now, 400));
+        return;
+      }
       if (
         petStateRef.current !== 'idle' || dragActive.current
-        || Date.now() - lastUserTouch.current < 8_000
+        || now - lastUserTouch.current < 8_000
         || gazeRef.current.near > 0.45
       ) {
         schedule(14_000);
@@ -273,7 +334,10 @@ export function usePetBehaviors({
           schedule(14_000);
           return;
         }
-        if (cancelled) return;
+        if (cancelled || !canBeginAuto(lease.current, Date.now())) {
+          if (!cancelled) schedule(autoWaitMs(lease.current, Date.now(), 400));
+          return;
+        }
         const target = pickTarget(start, winSize.width, winSize.height, mon);
         const dx = target.x - start.x;
         const dy = target.y - start.y;
@@ -285,6 +349,8 @@ export function usePetBehaviors({
         setFacing(dx < 0 ? 'left' : 'right');
         // 约 200 物理像素/秒，整屏横穿大约 3–8 秒
         const duration = clamp(distance / (200 * Math.max(1, mon.scale)) * 1000, 1600, 8000);
+        const landingMs = poseHoldMs('landing', { cycles: AUTO.drag.holdCycles, tailMs: AUTO.drag.tailMs });
+        lease.current = leaseFor(Date.now(), duration + landingMs);
         const t0 = performance.now();
         setRoaming(true);
         const step = async () => {
@@ -343,5 +409,9 @@ export function usePetBehaviors({
     };
   }, [still, roaming, dragActive, petStateRef]);
 
-  return { blinking, greeting, roaming, roamLanding, facing };
+  const preemptAuto = (ms = 0) => {
+    lease.current = ms > 0 ? leaseFor(Date.now(), ms) : null;
+  };
+
+  return { blinking, greeting, welcoming, roaming, roamLanding, facing, preemptAuto };
 }

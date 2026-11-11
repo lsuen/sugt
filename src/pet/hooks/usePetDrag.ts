@@ -5,7 +5,7 @@ import type { MutableRefObject, RefObject, MouseEvent as ReactMouseEvent } from 
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { clamp, easeInOut } from '../config';
-import { AUTO } from '../petState';
+import { AUTO, poseHoldMs } from '../petState';
 
 /**
  * v1.3 拖拽三段物理感：按下即「被提起来」(lifted)，松手落地缓冲 (landing)，
@@ -41,6 +41,10 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
   const finishing = useRef(false);
   const landTimer = useRef(0);
   const velocity = useRef<{ x: number; y: number; t: number }[]>([]);
+  // 飞行中的动画帧与收尾定时器都登记到 ref，卸载时统一取消；alive 用于切断异步链。 —— 孙文龙 sun
+  const flingTimer = useRef(0);
+  const finishingTimer = useRef(0);
+  const alive = useRef(true);
 
   const clearDragFlags = useCallback(() => {
     dragActive.current = false;
@@ -95,7 +99,8 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
     const t0 = performance.now();
     await new Promise<void>((resolve) => {
       const step = () => {
-        if (dragActive.current) {
+        // 卸载或重新按下时立刻收敛，不再向后端发位置（QD-04）。
+        if (!alive.current || dragActive.current) {
           resolve();
           return;
         }
@@ -106,7 +111,8 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
           y: Math.round(start.y + distY * eased),
         }).catch(() => undefined);
         if (p < 1) {
-          window.setTimeout(step, 16);
+          window.clearTimeout(flingTimer.current);
+          flingTimer.current = window.setTimeout(step, 16);
         } else {
           resolve();
         }
@@ -130,10 +136,12 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
         }, 320);
         void (async () => {
           await applyFling();
+          if (!alive.current) return;
           void invoke('pet_finish_drag', { snap: snapOnUp.current })
             .catch(() => undefined)
             .finally(() => {
-              window.setTimeout(() => {
+              window.clearTimeout(finishingTimer.current);
+              finishingTimer.current = window.setTimeout(() => {
                 finishing.current = false;
               }, 250);
             });
@@ -153,9 +161,14 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
       window.clearTimeout(phaseTimer.current);
       if (didMove) {
         // 真的换了位置才播落地缓冲；纯单击不抖。
+        // 落地缓冲是 once 动作（下蹲→回弹→站定），播完整一遍再回基态；
+        // 原来的 420ms 只播到刚下蹲，看起来像「落地没落地」。
+        // 作者：孙文龙 sun
         setDragPhase('landing');
         phaseTimer.current = window.setTimeout(
-          () => setDragPhase('idle'), AUTO.drag.holdMs);
+          () => setDragPhase('idle'),
+          poseHoldMs('landing', { cycles: AUTO.drag.holdCycles, tailMs: AUTO.drag.tailMs }),
+        );
       } else {
         setDragPhase('idle');
       }
@@ -182,11 +195,13 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
   // 拖动中更新 tilt 与速度样本；吸附改到松手（finishDrag），避免停顿 320ms 就吸附
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     let tiltTimer = 0;
     let last: { x: number; y: number } | null = null;
     void getCurrentWindow()
       .onMoved(({ payload }) => {
-        if (!dragActive.current || finishing.current) return;
+        // Promise 尚未 resolve 时组件可能已卸载，此时解绑函数还没拿到，先用守卫挡住回调。
+        if (cancelled || !alive.current || !dragActive.current || finishing.current) return;
         movedDuringDrag.current = true;
         draggedAt.current = Date.now();
         setDragging(true);
@@ -204,25 +219,34 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
         last = { x: payload.x, y: payload.y };
       })
       .then((fn) => {
+        // 若卸载早于 resolve，立即解绑，避免留下一个无人能取消的窗口移动监听器（QD-04）。
+        if (cancelled) {
+          fn();
+          return;
+        }
         unlisten = fn;
       })
       .catch(() => undefined);
     return () => {
+      cancelled = true;
       window.clearTimeout(tiltTimer);
       unlisten?.();
     };
   }, [stageRef]);
 
-  // 组件卸载统一收口一次性定时器
-  useEffect(
-    () => () => {
+  // 组件卸载统一收口一次性定时器与飞行异步链
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
       window.clearTimeout(dragCleanupTimer.current);
       window.clearTimeout(snapTimer.current);
       window.clearTimeout(landTimer.current);
       window.clearTimeout(phaseTimer.current);
-    },
-    [],
-  );
+      window.clearTimeout(flingTimer.current);
+      window.clearTimeout(finishingTimer.current);
+    };
+  }, []);
 
   // 4px 阈值：纯单击不进入原生拖动循环（部分平台会吞掉 click），移动后才真正开始拖。
   const onFigureMouseDown = useCallback(

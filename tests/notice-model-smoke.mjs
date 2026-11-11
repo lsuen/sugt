@@ -93,6 +93,30 @@ check('暂停后时间基准顺延', (() => {
   return shifted.updatedAt === NOW + 5000
     && model.pruneNotices([shifted], NOW + 3000).length === 1;
 })());
+// QD-01 回归：恢复暂停时只顺延暂停前已存在的消息，暂停中新建的按原 TTL 计时。
+check('恢复暂停不顺延暂停中新建的消息', (() => {
+  const old = model.createNotice(101, { text: '旧通知', category: 'result' }, NOW);
+  const fresh = model.createNotice(102, { text: '新通知', category: 'result' }, NOW + 4000);
+  const list = model.shiftNoticeDeadlines([old, fresh], 10000, NOW, NOW + 10000);
+  return list[0].updatedAt === NOW + 10000
+    && list[1].updatedAt === NOW + 4000
+    && list[1].createdAt === NOW + 4000
+    && model.pruneNotices([list[0]], NOW + 10000).length === 1
+    && model.pruneNotices([list[1]], NOW + 10000).length === 0;
+})());
+check('未传暂停起点时保持全量顺延的旧行为', (() => {
+  const old = model.createNotice(103, { text: '旧通知', category: 'result' }, NOW);
+  const list = model.shiftNoticeDeadlines([old], 10000);
+  return list[0].updatedAt === NOW + 10000;
+})());
+check('暂停中合并刷新的时间不会被顺延到未来', (() => {
+  const old = model.createNotice(104, { text: '旧通知', category: 'result' }, NOW);
+  const refreshed = { ...old, updatedAt: NOW + 3000 };
+  const list = model.shiftNoticeDeadlines([refreshed], 10000, NOW, NOW + 10000);
+  return list[0].updatedAt === NOW + 10000
+    && model.pruneNotices(list, NOW + 10000).length === 1
+    && model.mergeNotices(list, model.createNotice(105, { text: '旧通知', category: 'result' }, NOW + 10000), NOW + 10000).mergedId === 104;
+})());
 
 // 三、优先级与可视条数
 check('错误结果优先于闲置消息', (() => {

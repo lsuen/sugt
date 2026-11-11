@@ -47,6 +47,16 @@ export function useNoticeQueue(options: UseNoticeQueueOptions = {}): NoticeQueue
   const seqRef = useRef(0);
   const pausedRef = useRef(false);
   const pausedAtRef = useRef<number | null>(null);
+  // 渲染期同步队列快照，供 dismiss/clear 在同一批次内判断「是否清到最后一条」。 —— 孙文龙 sun
+  const noticesRef = useRef<Notice[]>([]);
+  noticesRef.current = notices;
+
+  /** 退出暂停：宿主可能在队列清空时直接卸载，onMouseLeave 不会触发，必须能独立复位。 */
+  const resetPause = useCallback(() => {
+    pausedAtRef.current = null;
+    pausedRef.current = false;
+    setPausedState(false);
+  }, []);
 
   const push = useCallback((input: NoticeInput | string, kind?: NoticeSeverity): number => {
     const text = typeof input === 'string' ? input : input.text;
@@ -59,27 +69,50 @@ export function useNoticeQueue(options: UseNoticeQueueOptions = {}): NoticeQueue
   }, [surface]);
 
   const dismiss = useCallback((id: number) => {
-    setNotices((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+    setNotices((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      return next.length === prev.length ? prev : next;
+    });
+    // 关闭最后一条时 ToastHost 返回 null 并卸载，鼠标离开事件丢失，这里主动退出暂停（QD-02）。
+    if (noticesRef.current.filter((item) => item.id !== id).length === 0) resetPause();
+  }, [resetPause]);
 
-  const clear = useCallback(() => setNotices([]), []);
+  const clear = useCallback(() => {
+    resetPause();
+    setNotices([]);
+  }, [resetPause]);
 
   const setPaused = useCallback((next: boolean) => {
     const current = nowRef.current();
-    if (next && pausedAtRef.current === null) {
+    if (next) {
+      if (pausedAtRef.current !== null) return;
+      // 队列已空时不进入暂停，避免残留一个无人能结束的暂停态。 —— 孙文龙 sun
+      if (noticesRef.current.length === 0) {
+        resetPause();
+        return;
+      }
       pausedAtRef.current = current;
       pausedRef.current = true;
       setPausedState(true);
       return;
     }
-    if (!next && pausedAtRef.current !== null) {
-      const delta = current - pausedAtRef.current;
-      pausedAtRef.current = null;
-      pausedRef.current = false;
-      setPausedState(false);
-      setNotices((prev) => shiftNoticeDeadlines(prev, delta));
+    if (pausedAtRef.current === null) {
+      resetPause();
+      return;
     }
-  }, []);
+    const pausedAt = pausedAtRef.current;
+    const delta = current - pausedAt;
+    pausedAtRef.current = null;
+    pausedRef.current = false;
+    setPausedState(false);
+    // 只顺延暂停前已存在的消息；暂停中新建的按原 TTL 计时（QD-01）。 —— 孙文龙 sun
+    setNotices((prev) => shiftNoticeDeadlines(prev, delta, pausedAt, current));
+  }, [resetPause]);
+
+  // 兜底：无论队列因关闭、清空还是外部 prune 变空，都退出暂停，防止 pausedRef 永久卡住（QD-02）。
+  useEffect(() => {
+    if (notices.length === 0 && (pausedRef.current || pausedAtRef.current !== null)) resetPause();
+  }, [notices.length, resetPause]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
