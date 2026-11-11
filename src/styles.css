@@ -343,6 +343,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .notice { margin-bottom: 10px; padding: 10px 12px; border-radius: 10px; background: var(--success-soft, rgba(10,255,157,.12)); color: var(--success, #b8ffe3); font-size: 13px; flex-shrink: 0; }
 .notice.error { background: var(--danger-soft, rgba(255,77,109,.13)); color: var(--danger, #ffc4cd); }
 
+/* 主窗口 Toast：实底 + 强描边 + 左侧分类色条，移除全部投影阴影。 —— 孙文龙 sun */
 .toast-host {
   position: fixed;
   right: 20px;
@@ -355,51 +356,102 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   pointer-events: none;
 }
 .toast {
+  /* 左侧分类色条取色：先按 data-category 给主题 token，error/warn 再由 data-severity 覆盖。 —— 孙文龙 sun */
+  --toast-accent: var(--accent, #16f1ff);
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 10px;
-  padding: 12px 14px;
+  gap: 8px 10px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm, 12px);
   font-size: 13px;
   line-height: 1.45;
-  box-shadow: var(--shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
-  border: 1px solid var(--border, rgba(142, 232, 255, 0.16));
-  background: var(--surface-2, rgba(14, 22, 36, 0.96));
   color: var(--text, #edf7ff);
+  background: var(--surface-2, #0c1422);
+  border: 1px solid var(--border-strong, rgba(142, 232, 255, 0.3));
+  border-left: 4px solid var(--toast-accent);
   pointer-events: auto;
   animation: toast-in 0.22s ease-out;
 }
-.toast-ok {
-  background: color-mix(in srgb, var(--surface-2) 70%, var(--success-soft));
-  color: var(--success, #b8ffe3);
-  border-color: var(--success-soft, rgba(10, 255, 157, 0.22));
+.toast[data-category="state"] { --toast-accent: var(--accent, #16f1ff); }
+.toast[data-category="result"] { --toast-accent: var(--success, #0aff9d); }
+.toast[data-category="idle"] { --toast-accent: var(--muted, #94a9bd); }
+.toast[data-category="interaction"] { --toast-accent: var(--accent-2, #6d5cff); }
+.toast[data-severity="error"] { --toast-accent: var(--danger, #ff4d6d); }
+.toast[data-severity="warn"] { --toast-accent: var(--warn, #f5c542); }
+
+.toast-cat {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--toast-accent);
+  background: color-mix(in srgb, var(--toast-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--toast-accent) 40%, transparent);
 }
-.toast-error {
-  background: color-mix(in srgb, var(--surface-2) 70%, var(--danger-soft));
-  color: var(--danger, #ffc4cd);
-  border-color: var(--danger-soft, rgba(255, 77, 109, 0.28));
+.toast-text {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
 }
-.toast-info {
-  background: var(--surface-2, rgba(14, 22, 36, 0.96));
-  color: var(--text, #c8dce8);
-  border-color: var(--border, rgba(142, 232, 255, 0.2));
+.toast-title { font-size: 13px; font-weight: 700; color: var(--text, #edf7ff); }
+.toast-count {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, #94a9bd);
+  background: var(--chip-bg, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(142, 232, 255, 0.16));
 }
-.toast-text { flex: 1; }
+.toast-action {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--toast-accent);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--toast-accent) 50%, transparent);
+}
+.toast-action:hover { background: color-mix(in srgb, var(--toast-accent) 14%, transparent); }
+.toast-more {
+  align-self: flex-end;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted, #94a9bd);
+  background: var(--surface-2, #0c1422);
+  border: 1px solid var(--border-strong, rgba(142, 232, 255, 0.3));
+  pointer-events: none;
+}
 .toast-close {
-  flex-shrink: 0;
+  flex: 0 0 auto;
   width: 22px;
   height: 22px;
   padding: 0;
   border: none;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: inherit;
+  background: var(--chip-bg, rgba(255, 255, 255, 0.06));
+  color: var(--muted, #94a9bd);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: 0.85;
 }
-.toast-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+.toast-close:hover { opacity: 1; color: var(--text, #edf7ff); background: var(--chip-active, rgba(255, 255, 255, 0.12)); }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(10px); }

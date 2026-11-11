@@ -13,7 +13,7 @@
           --source <原始逐帧素材目录> [--colors 56]（省略则取 manifest.encoding.colors）
   - 校验（纯标准库，CI 可用）：
       python3 docs/孙测测/scripts/pet_reencode_assets.py --check
-  - 未来 1000 帧生产：把 ComfyUI 输出的 RGBA 序列帧目录传给 --source，
+  - 未来 1200 帧生产：把 ComfyUI 输出的 RGBA 序列帧目录传给 --source，
     manifest 的 frameOrder/frameMs 改为真实关键帧清单即可复用同一条编码链。
 退出码约定：0 全部通过 / 1 契约不一致或编码失败 / 2 读取、解析或依赖缺失
 """
@@ -162,7 +162,7 @@ def check_products(root: Path, manifest: dict) -> tuple[list[tuple[str, bool, st
         "total_bytes": total,
         "frame_total": frame_total,
         "per_frame": round(total / frame_total) if frame_total else 0,
-        "projected_1000_mb": round(total / frame_total * 1000 / 1e6, 2) if frame_total else 0,
+        "projected_1000_mb": round(total / frame_total * 1200 / 1e6, 2) if frame_total else 0,
     }
     return rows, stats
 
@@ -270,11 +270,11 @@ def write_trace(root: Path, out: Path | None, rows: list[tuple[str, bool, str]],
     if stats:
         lines += [
             "",
-            "## 体积模型（外推到 1000 帧）",
+            "## 体积模型（外推到 1200 帧）",
             "",
             f"- 落包素材合计：{stats['total_bytes']} B（{stats['total_bytes'] / 1024:.1f} KB）",
             f"- 动画帧合计：{stats['frame_total']} 帧；折算单帧 {stats['per_frame']} B",
-            f"- 1000 帧线性外推：约 {stats['projected_1000_mb']} MB",
+            f"- 1200 帧线性外推：约 {stats['projected_1000_mb']} MB",
             "- 外推口径：按当前编码策略与画布尺寸的均值，真动作帧差异更大时需留 15% 余量。",
         ]
     lines += [
@@ -329,7 +329,7 @@ def main() -> int:
     failed = [row for row in rows if not row[1]]
     if stats:
         print(f"体积：{stats['total_bytes']} B / {stats['frame_total']} 帧 / "
-              f"单帧 {stats['per_frame']} B / 1000 帧约 {stats['projected_1000_mb']} MB")
+              f"单帧 {stats['per_frame']} B / 1200 帧约 {stats['projected_1000_mb']} MB")
     print(f"汇总：{len(rows) - len(failed)}/{len(rows)} 通过，留痕 {trace}")
     return 1 if failed else 0
 

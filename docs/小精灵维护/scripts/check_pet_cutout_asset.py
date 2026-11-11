@@ -10,7 +10,7 @@
     1. 透明占比 >= 30%；              2. alpha bbox 面积 <= 95%；
     3. 青蓝底残留 <= 0.5%；           4. 轮廓溢色（绿 / 青）<= 1%；
     5. 面积 < 50px 的孤立连通块 = 0； 6. 白色衣物保留率 >= 99%（需 --source）；
-    7. 105x297 / 96 色 lossless 单帧 <= 8 MB / 1000 帧。
+    7. 105x297 / 96 色 lossless 单帧 <= 8 MB / 1000 帧（以上均为 v1.2 历史定版口径，现行 v1.4 见文末说明）。
   ``--fix`` 迭代用「向内最近的非溢色邻色」替换 1~3px 溢色边（保留轮廓
   形状与 alpha），并清空 alpha=0 像素的 RGB 垃圾；产修补版 PNG、小窗
   WebP 与浅 / 深 / 棋盘 / 小窗四联对照。
@@ -23,6 +23,15 @@
   --image 可重复；--source 需与 --image 同尺寸；不带 --source 时第 6 项跳过。
   需 Pillow（本地素材链路脚本，不进 CI）。
 退出码约定：0 全部通过 / 1 存在验收不通过 / 2 参数、依赖或解析异常
+
+历史归档口径说明（v1.4 同步）：
+  本脚本是 v1.2 素材链路的历史定版校验器：脚本内沿用的一切判定常量、
+  阈值与判定项名（小窗尺寸、调色板色数、进包素材张数、总帧数与体积预算等）
+  均为当时的历史定版口径，一律保留原值，以免改写后失去历史归档意义。
+  现行（v1.4）口径为：进包画布 240×297（左右各补 30px 全透明、纯 paste
+  不缩放不裁切）、56 色 palette-lossless、49 张进包素材（24 poster +
+  24 loop + su-blink）、24 动作 / 1200 帧；生成画布仍 640×768、h_ref 仍
+  176.0px 不重算。落包验收以现行脚本为准，本脚本仅供历史复验。
 """
 import argparse
 import io
@@ -41,14 +50,14 @@ _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parents[2]
 _TRACES = _ROOT / "docs" / "孙测测" / "traces"
 
-# 验收阈值：青蓝底、赛璐璐平涂、96 色 palette-lossless 的实测口径。
+# 验收阈值：青蓝底、赛璐璐平涂、96 色 palette-lossless 的 v1.2 历史实测口径（现行 v1.4 为 56 色 / 240×297 / 1200 帧，见文末说明）；常量保留原值。
 _MIN_TRANSPARENT_RATIO = 0.30
 _MAX_BBOX_RATIO = 0.95
 _MAX_CHROMA_RESIDUE = 0.005
 _MAX_EDGE_SPILL = 0.01
 _MAX_SMALL_COMPS = 0
 _MIN_WHITE_KEEP = 0.99
-_MAX_FRAME_BYTES = 8 * 1024 * 1024 / 1000  # 1000 帧 <= 8 MB
+_MAX_FRAME_BYTES = 8 * 1024 * 1024 / 1000  # 1000 帧 <= 8 MB（v1.2 历史定版口径，现行 1200 帧；常量保留原值）
 _SMALL_COMP_AREA = 50
 _PALETTE_COLORS = 96
 _BASE_SIZE = (105, 297)
@@ -154,7 +163,7 @@ def small_components(image):
 
 
 def frame_bytes(image):
-    """按 baseSize contain 缩小、96 色量化、lossless WebP，返回 (字节数, 图, 利用率)。"""
+    """按历史定版 baseSize contain 缩小、96 色量化、lossless WebP（v1.2 口径，常量不改），返回 (字节数, 图, 利用率)。"""
     box = image.getbbox()
     crop = image.crop(box) if box else image
     canvas = Image.new("RGBA", _BASE_SIZE, (0, 0, 0, 0))
@@ -207,7 +216,7 @@ def measure(image, source):
         ("白色衣物保留 >= 99%", None if white_keep is None else white_keep >= _MIN_WHITE_KEEP,
          "N/A（未提供同尺寸 --source）" if white_keep is None else "%.2f%%" % (100 * white_keep),
          ">= 99%"),
-        ("1000 帧 <= 8 MB", size_bytes <= _MAX_FRAME_BYTES,
+        ("1000 帧 <= 8 MB（v1.2 历史定版口径）", size_bytes <= _MAX_FRAME_BYTES,
          "%.2f MB（单帧 %d B）" % (size_bytes * 1000 / 1024 / 1024, size_bytes),
          "<= 8.00 MB"),
     ]
@@ -233,7 +242,7 @@ def checker(size, cell=12):
 
 
 def build_panels(image, quantized, out_dir, tag):
-    """输出浅 / 深 / 棋盘 / 小窗四联对照与 105x297 WebP。"""
+    """输出浅 / 深 / 棋盘 / 小窗四联对照与 105x297 WebP（v1.2 历史小窗口径）。"""
     width, height = image.size
     bases = {
         "white": Image.new("RGBA", (width, height), (250, 250, 250, 255)),
@@ -288,7 +297,7 @@ def write_trace(records, out_dir, source_name):
         "",
         "- 退出码按 %s 判定。" % (
             "修补版（`--fix`）" if any(r["is_fix"] for r in records) else "全部输入"),
-        "- 本脚本只做验收与修补，**不替换现行 21 张进包素材**；1000 帧真动作仍受",
+        "- 本脚本只做验收与修补，**不替换 v1.2 历史定版的 21 张进包素材**（现行 v1.4 为 49 张）；1000 帧（历史口径，现行 1200 帧）真动作仍受",
         "  RIFE/FILM 补间权重、BiRefNet 抠图权重与模型分发许可阻断。",
         "",
     ]

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SCR-019：桌面精灵 v1.3 动作注册表 1000 帧素材批量生产线。
+"""SCR-019：桌面精灵 v1.4 动作注册表 1200 帧素材批量生产线。
 
 编写人员：孙测测
 作用用途：
   从用户手抠定稿 good.png 出发，按 src/assets/pet/manifest.json 的 actions
   注册表逐动作生产专属序列帧：主图回填纯青蓝底 → Qwen-Image-Edit 2509 派生
   关键姿态 → MiniMax H3 FL2VA 补间 → 逐帧自适应色键抠图 → 统一坐标系归一化
-  到 manifest.baseSize（180×297）源帧 → 交 pet_reencode_assets.py 按
+  到 manifest.baseSize（240×297）源帧 → 交 pet_reencode_assets.py 按
   manifest.encoding.colors（56 色）做 lossless 整套重编码；色数与画布均从
   manifest 读取，禁止在脚本里写死第二份真相源。
-适用项目：SUGT 桌面精灵 v1.3（内网 ComfyUI 192.168.31.84，非公网服务）
+适用项目：SUGT 桌面精灵 v1.4（内网 ComfyUI 192.168.31.84，非公网服务）
 创建日期：2026-11-10
 复用方式：
   python3 comfyui_pet_action_series.py --phase prepare
@@ -74,6 +74,9 @@ _CANVAS = tuple(
 )
 _H3_STEPS = int(os.environ.get("SUGT_PET_H3_STEPS", "8"))
 _EDIT_STEPS = int(os.environ.get("SUGT_PET_EDIT_STEPS", "4"))
+# v1.4：同一动作要出多个候选版本；脚本原生 seed 只由动作 index 派生，
+# 加一个可控偏移即可只跑目标动作拿到不同 seed，不必拉陪跑动作浪费额度。
+_SEED_OFFSET = int(os.environ.get("SUGT_PET_SEED_OFFSET", "0"))
 
 _UNET_EDIT = "qwen_image_edit_2509_fp8_e4m3fn.safetensors"
 _LORA_LIGHTNING = "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors"
@@ -160,7 +163,17 @@ _POSE_PROMPTS = {
     "peek": ("leaning forward and peeking, head craned slightly"),
     "walk": ("mid-stride walking pose, one leg forward, arms swinging naturally"),
     "idle": ("neutral relaxed standing pose, gentle breathing, arms at sides"),
+    "squatDraw": ("squatting down on the ground, one hand drawing small circles on the floor with a fingertip, head tilted down, relaxed happy expression, knees bent, full body visible"),
+    "wiggleDance": ("playful little hip wiggle dance in place, arms swaying left and right, light bounce in the knees, cheerful expression, full body visible"),
+    "kickflip": ("mid-air skateboard kickflip at the apex of the trick: crouch then pop the tail, front foot flicks off the nose, the board rolls one full 360 degrees along its long axis beneath both feet, knees tucked, arms wide for balance, board fully visible, full body visible"),
+    "miniGame": ("holding a tiny handheld game console with both hands, both thumbs pressing buttons, looking down at the small screen, slight forward lean, relaxed posture, full body visible"),
 }
+
+# 腾空 / 带大型道具的动作：白鞋常被滑板遮挡，或随收膝抬到与脸齐平，
+# 「白鞋质心 − 肤色质心」不再是可靠代理。v1.4 kickflip 三版实测差值
+# -0.088~+0.032 全部被误判，但画面本身正面、全身可见、四边不触边。
+# 这些动作在主判据失败时改用「质心绝对值」倒挂兜底判据，见 orientation_score。
+_AIRBORNE_ACTIONS = frozenset({"kickflip"})
 
 # once 动作的结束姿态（起点用 _POSE_PROMPTS，终点用这里）
 _END_PROMPTS = {
@@ -420,7 +433,7 @@ def do_keys(state, actions, args):
         if not prompt_text:
             raise RuntimeError("动作 %s 缺姿态提示词（扩展动作须同步登记）" % name)
         once = action["playback"] == "once"
-        seed = 20261200 + index * 17
+        seed = 20261200 + index * 17 + _SEED_OFFSET
         start_file = _WORK / "keys" / ("%s-start.png" % name)
         start_ref_name = "sugt-key-%s-start.png" % name
         guarded_edit(master, prompt_text, seed, "%s/start" % name, start_file)
@@ -443,7 +456,7 @@ def do_keys(state, actions, args):
 
 
 def do_interpolate(state, actions, args):
-    # 长批次（20 段 × 约 2 分钟）不能因为一段顽固触边就整批中断：
+    # 长批次（24 段 × 约 2 分钟）不能因为一段顽固触边就整批中断：
     # 三段都不过就记入 rejected 并继续，末尾统一抛错，凭 state.json 断点续跑。
     rejected = state.setdefault("rejected", [])
     for index, action in enumerate(actions):
@@ -459,7 +472,7 @@ def do_interpolate(state, actions, args):
         # 甩出画布。源视频一旦裁掉，后续抠图/归一化都补不回像素。
         detail = ""
         for attempt in range(3):
-            seed = 20261300 + index * 23 + attempt * 101
+            seed = 20261300 + index * 23 + attempt * 101 + _SEED_OFFSET
             _, elapsed = submit_and_fetch(
                 build_h3_prompt(keys["first"], keys["last"], prompt_text,
                                 args.length, seed, action["playback"]),
@@ -492,12 +505,18 @@ def do_interpolate(state, actions, args):
                            % ", ".join(rejected))
 
 
-def orientation_score(source):
-    """朝向门禁（SCR-019）：白色鞋袜质心必须在肤色脸/手质心之下。
+def orientation_score(source, airborne=False):
+    """朝向门禁（SCR-019）：拦 180° 倒挂，不让语义不符的关键姿态进 1200 帧。
 
-    实测定稿正立图为 0.464 - 0.248 = +0.216；把「被提起来」理解成倒挂的
-    废片为 0.307 - 0.389 = -0.082。差值 > 0.08 且白质心 > 0.38 才放行，
-    避免 180° 倒置的关键姿态混进 1000 帧（语义不符，且统一 bbox 会跳位）。
+    主判据：白色鞋袜质心 − 肤色脸/手质心 > 0.08 且白质心 > 0.38。
+    实测定稿正立图 0.464 - 0.248 = +0.216，倒挂废片 0.307 - 0.389 = -0.082。
+
+    兜底判据（仅 _AIRBORNE_ACTIONS 启用）：腾空动作的白鞋被道具遮挡时，
+    白色质心会被眼白 / 挂件 / 发饰拉到上半部，主判据失效。改用绝对值判据
+    「肤色质心 < 0.52 且 白色质心 < 0.55」。2026-11-11 实测 6 张正立样本
+    （skin 0.082~0.469）与 2 张 180° 旋转样本（skin 0.675 / 0.789）完全
+    分离；倒挂时脸翻到下半部，肤色质心必然 > 0.6，仍会被拒绝。
+    该兜底不改变其它动作的任何判定，也不放松四边门禁。
     """
     from PIL import Image
     image = Image.open(source).convert("RGB") if not hasattr(source, "load") \
@@ -520,7 +539,11 @@ def orientation_score(source):
     white = white_y / white_n / height
     score = white - skin
     detail = "肤色质心 %.3f / 白色质心 %.3f / 差值 %+.3f" % (skin, white, score)
-    return score > 0.08 and white > 0.38, score, detail
+    if score > 0.08 and white > 0.38:
+        return True, score, detail
+    if airborne and skin < 0.52 and white < 0.55:
+        return True, score, detail + " | 腾空动作倒挂兜底通过"
+    return False, score, detail
 
 
 def guarded_edit(reference, pose_text, seed, tag, out_file):
@@ -530,7 +553,9 @@ def guarded_edit(reference, pose_text, seed, tag, out_file):
         submit_and_fetch(
             build_edit_prompt(reference, pose_text, seed + attempt * 7),
             "%s%s" % (tag, "/retry" if attempt else ""), out_file)
-        upright, _score, detail = orientation_score(out_file)
+        action = tag.split("/", 1)[0]
+        upright, _score, detail = orientation_score(
+            out_file, airborne=action in _AIRBORNE_ACTIONS)
         sides, _worst, edge_detail = edge_touch_score(out_file)
         print("  [%s] 朝向 %s | 四边 %s | %s / %s" % (
             tag, "通过" if upright else "不通过",
@@ -548,7 +573,7 @@ def tight_box(alpha):
     """用行列投影抑制零星残留像素，取人物主体的稳健包围盒。
 
     H3 逐帧背景会有 1~2px 色度噪点，直接 getbbox() 会把 bbox 拉到画布四边；
-    实测 20 段中有 157 个抽样帧触边，但 alpha 占比始终 0.31~0.53（色键没坏）。
+    实测（v1.3 历史批次）中有 157 个抽样帧触边，但 alpha 占比始终 0.31~0.53（色键没坏）。
     阈值取该列/行采样点数的 1.5%，人物主体远超，孤立噪点被排除。
     """
     width, height = alpha.size
@@ -642,7 +667,7 @@ def edge_touch_score(path, band_ratio=0.025, sample_step=2, limit=60):
 def _cut_one(job):
     """子进程：单动作从原始补间视频逐帧抠图，写 PNG 缓存，只回传统计。
 
-    不回传图像对象（跨进程序列化 1000 张 512×768 RGBA 会吃满内存），
+    不回传图像对象（跨进程序列化 1200 张 512×768 RGBA 会吃满内存），
     主进程随后按帧逐个读取缓存，峰值内存恒定在单动作的几十 MB。
     """
     name, video, wanted, cache_root, recut = job
@@ -660,7 +685,8 @@ def _cut_one(job):
     if count < wanted:
         raise RuntimeError("%s 仅 %d 帧，不足 %d" % (name, count, wanted))
     im.seek(0)
-    upright, _score, detail = orientation_score(im.convert("RGB"))
+    upright, _score, detail = orientation_score(
+        im.convert("RGB"), airborne=name in _AIRBORNE_ACTIONS)
     if not upright:
         raise RuntimeError("%s 补间序列朝向门禁不通过：%s" % (name, detail))
     indices = [round(i * (count - 1) / (wanted - 1)) for i in range(wanted)]
@@ -683,7 +709,7 @@ def do_frames(state, actions, args):
     v1.3.2 红线：整个过程**不裁人物**。旧版用「代表框 ± 90 分位外扩」做
     crop，伸展动作的手臂落在框外就被永久切掉；新版只做整帧缩放 + 平移，
     角色四边用「该动作 50 帧 bbox 并集」求安全框，并全局解一个所有动作共用
-    的目标身高 h_ref，保证 20 动作人物同高、脚底同线、水平居中、四边留白。
+    的目标身高 h_ref，保证 24 动作人物同高、脚底同线、水平居中、四边留白。
     抠图结果缓存在 <work>/cutouts/，参数微调无需重跑昂贵的逐帧色键。
     """
     from PIL import Image, ImageChops
@@ -695,7 +721,7 @@ def do_frames(state, actions, args):
     wanted = int(args.frames)
     names = list(state["videos"].keys())
     # 阶段 A：离线逐帧抠图，结果落 PNG 缓存。逐帧色键是纯 Python 逐像素循环，
-    # 单帧约 1.9s，20×50 帧串行约 30 分钟；用进程池并行 + 永久缓存把「以后
+    # 单帧约 1.9s，24×50 帧串行约 30 分钟；用进程池并行 + 永久缓存把「以后
     # 调人物尺寸 / 留白」的复跑成本压到分钟级，且完全不碰 ComfyUI。
     from concurrent.futures import ProcessPoolExecutor, as_completed
     jobs = [(name, str(state["videos"][name]), wanted,
@@ -716,14 +742,14 @@ def do_frames(state, actions, args):
 
     # ---- v1.3.2 归一化：并集安全框 + 全局目标身高，全程不裁人物 ----
     # 旧版两套算法都留了缺陷：
-    #   v1.3   用「全 1000 帧 bbox 中位数 + 20px」做统一 crop，伸展动作手臂
+    #   v1.3   用「全量帧 bbox 中位数 + 20px」做统一 crop（历史算法），伸展动作手臂
     #          直接被裁；Qwen-Edit / H3 每段把人画得不一样大，极差 27.9%。
     #   v1.3.1 用「逐动作代表框 ± 90 分位外扩（再钳 25%/15%）」做 crop，
     #          尺度虽归一，但 90 分位与钳制仍可能把极端帧的手脚排除在框外。
     # 新版只做「整帧缩放 + 平移」：每动作取 50 帧稳健 bbox 的**并集**作安全框
     # （并集由定义覆盖每一帧的全部肢体，不做任何分位裁剪），并集外只清色键
     # 噪点；再全局解一个所有动作共用的目标身高 h_ref：
-    #   s_i = h_ref / 该动作代表框高度 → 20 动作代表身高恒等于 h_ref；
+    #   s_i = h_ref / 该动作代表框高度 → 24 动作代表身高恒等于 h_ref；
     #   h_ref 取「最坏动作的四向约束」最小值 → 并集框必然落在画布安全边内。
     # 锚点统一「脚底同线 + 水平居中」，动作内 50 帧共用同一变换，绝不抖动。
     rep, union, ext = {}, {}, {}
@@ -907,11 +933,11 @@ def do_encode(state, args):
     data["cropBox"] = [0, 0, data["baseSize"]["w"], data["baseSize"]["h"]]
     size = (data["baseSize"]["w"], data["baseSize"]["h"])
     data["cropNote"] = (
-        "v1.3.2：SCR-019 直接用原始补间视频离线重建，按「逐动作 50 帧 bbox "
-        "并集安全框 + 全局目标身高」做纯缩放/平移归一化到 %d×%d；20 动作人物"
+        "v1.4：SCR-019 直接用原始补间视频离线重建，按「逐动作 50 帧 bbox "
+        "并集安全框 + 全局目标身高」做纯缩放/平移归一化到 %d×%d；24 动作人物"
         "同高、脚底同线、水平居中、四边留透明安全边，全程不裁任何一像素人物"
-        "（并集框外实体像素占比 ≤2%% 为硬门禁）；源帧本身即目标画布，"
-        "cropBox 为整幅，切换动作不跳位。" % size)
+        "（并集框外实体像素占比 ≤2%% 为硬门禁）；v1.4 扩边左右各补 30px 全透明、"
+        "纯缩放平移不裁人物；源帧本身即目标画布，cropBox 为整幅，切换动作不跳位。" % size)
     _MANIFEST.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8")
@@ -942,7 +968,7 @@ def write_trace(state, actions, args, started):
     colors = manifest["encoding"]["colors"]
     total_bytes = sum(item.stat().st_size for item in _ASSETS.glob("*.webp"))
     lines = [
-        "# 精灵 v1.3 动作序列生产留痕（SCR-019）", "",
+        "# 精灵 v1.4 动作序列生产留痕（SCR-019）", "",
         "- 执行时间：%s" % started.strftime("%Y-%m-%d %H:%M:%S"),
         "- 服务：`%s`（curl 传输适配器）" % _BASE,
         "- 工作目录：`%s`" % _WORK,
@@ -951,7 +977,9 @@ def write_trace(state, actions, args, started):
         "- 主图占比：`SUGT_PET_MASTER_SCALE`（默认 0.78），避免人物被 H3 补间拉近后顶到画布边缘",
         "- 关键姿态：Qwen-Image-Edit 2509 + Lightning-4steps + Multiple-angles(0.85) / %d steps" % _EDIT_STEPS,
         "- 补间：MiniMax H3 FL2VA + turbo-8step / %d steps / length=%d" % (_H3_STEPS, args.length),
-        "- 朝向门禁：白鞋质心 − 肤色质心 > 0.08（拦 180° 倒挂），关键姿态与补间首帧双重校验",
+        "- 朝向门禁：白鞋质心 − 肤色质心 > 0.08（拦 180° 倒挂），关键姿态与补间首帧双重校验；"
+        "腾空动作（%s）白鞋被道具遮挡时改用「肤色质心 < 0.52 且 白色质心 < 0.55」兜底，"
+        "6 正立 / 2 倒挂样本实测完全分离" % ", ".join(sorted(_AIRBORNE_ACTIONS)),
         "- 四边门禁：`edge_touch_score` 抽 12 帧检查角色像素是否贴到四边 4% 带；关键姿态与补间各允许换 seed 重试一次，仍触边即中断。v1.3.3 起因：512 宽把手指/发梢/鞋底永久裁掉，后处理补不回像素",
         "- 图源：`videos/*.webp` 原始补间视频（v1.3.3 全量重生成）；抠图缓存 `cutouts/`",
         "- 抠图：逐帧四角自适应 `chroma_key`；归一化：并集安全框 + 全局目标身高（纯缩放不裁人物）",
@@ -987,7 +1015,7 @@ def write_trace(state, actions, args, started):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="精灵 v1.3 动作序列批量生产")
+    parser = argparse.ArgumentParser(description="精灵 v1.4 动作序列批量生产")
     parser.add_argument("--phase", default="all",
                         choices=("prepare", "keys", "interpolate", "frames",
                                  "encode", "all"))

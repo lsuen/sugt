@@ -6,6 +6,7 @@ import { PET_SIZES, type OverlayConfigView } from './config';
 type Props = {
   cfg: OverlayConfigView;
   onSettings: () => void;
+  onShowInfo: () => void;
   onToggleQuiet: () => void;
   onToggleRoam: () => void;
   onSize: (size: (typeof PET_SIZES)[number]) => void;
@@ -17,6 +18,7 @@ type Props = {
 export function PetContextMenu({
   cfg,
   onSettings,
+  onShowInfo,
   onToggleQuiet,
   onToggleRoam,
   onSize,
@@ -31,6 +33,10 @@ export function PetContextMenu({
 
   return (
     <div className="pet-menu" role="menu">
+      {/* 只读信息弹窗入口；作者：孙文龙 sun */}
+      <button type="button" className="pet-menu-item" onClick={act(onShowInfo)}>
+        {t('pet.menu.status')}
+      </button>
       <button type="button" className="pet-menu-item" onClick={act(onSettings)}>
         {t('pet.menu.settings')}
       </button>

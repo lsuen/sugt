@@ -174,10 +174,11 @@ SOURCE_CHECKS = [
     ("C36e", "穿透设置 zh/en 文案同步", "src/i18n.ts",
      ["'set.petClickThrough': '鼠标穿透（默认关）'",
       "'set.petClickThrough': 'Mouse click-through (off by default)'"]),
-    ("C37", "尺寸档位整体下移：旧大档废弃 + 新增更小的小档", "src/pet/config.ts",
-     ["width: 120,", "height: 136,", "width: 180,", "height: 204", "PET_SIZES"]),
+    ("C37", "v1.4 三档窗口按画布 4/3 加宽（160/198/240 × 136/168/204）", "src/pet/config.ts",
+     ["width: 160,", "height: 136", "width: 198,", "height: 168",
+      "width: 240,", "height: 204", "PET_SIZES"]),
     ("C37b", "后端默认尺寸与前端最小档一致", "src-tauri/src/model.rs",
-     ["120.0", "136.0", "default_pet_width"]),
+     ["198.0", "168.0", "default_pet_width"]),
     ("C38", "自动交互动作接入舞台（庆祝 / 睡醒 / 失落 / 拖拽）", "src/pet/PetStage.tsx",
      ["welcoming: greeting", "shouldWake(", "AUTO.celebrate.holdMs",
       "setDisappointed(", "waking,", "disappointed,", "dragging,"]),
@@ -263,7 +264,7 @@ def check_manifest_source(root: Path) -> tuple[str, str, bool, str]:
 
 
 def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
-    """C36：1000 帧动作注册表必须是唯一真相源，且语义/素材/优先级无复用。
+    """C36：1200 帧动作注册表必须是唯一真相源，且语义/素材/优先级无复用。
 
     v1.3 红线：每个动作一张专属 poster + 一张专属 loop，拖拽不再复用走路姿；
     新增动作只在 manifest 追加一条，前端按 priority 降序查表，代码零改动。
@@ -271,14 +272,14 @@ def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
     try:
         data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return "C36", "动作注册表 1000 帧契约", False, f"读取失败: {exc}"
+        return "C36", "动作注册表 1200 帧契约", False, f"读取失败: {exc}"
     poses = data.get("poses", [])
     problems: list[str] = []
     registry = data.get("actionRegistry", {})
     budget = registry.get("frameBudget", {})
     total = sum(pose.get("frames", 0) for pose in poses)
-    if total != 1000 or budget.get("total") != 1000:
-        problems.append(f"总帧 {total} ≠ 1000")
+    if total != 1200 or budget.get("total") != 1200:
+        problems.append(f"总帧 {total} ≠ 1200")
     if not budget.get("uniqueBitmapFrames") or not registry.get("semanticUniqueness"):
         problems.append("未声明独立位图/语义唯一")
     for field in ("semantic", "priority", "poster", "loop"):
@@ -309,7 +310,7 @@ def check_action_registry(root: Path) -> tuple[str, str, bool, str]:
     walk = next((pose for pose in poses if pose["name"] == "walk"), {})
     if "拖拽" in walk.get("semantic", "") or "提起" in walk.get("semantic", ""):
         problems.append("walk 仍在承担拖拽语义")
-    return ("C36", "动作注册表 1000 帧 / 语义唯一 / 可扩展契约", not problems,
+    return ("C36", "动作注册表 1200 帧 / 语义唯一 / 可扩展契约", not problems,
             "、".join(problems[:4]) if problems else
             f"{len(poses)} 动作 / {total} 帧 / 语义与素材均唯一")
 
@@ -416,6 +417,50 @@ def check_pet_sizes(root: Path) -> tuple[str, str, bool, str]:
     bad = [f"{w}x{h}" for w, h in sizes if not (wlo <= w <= whi and hlo <= h <= hhi)]
     return ("C10", "三档尺寸与后端校验范围相容", not bad,
            detail if not bad else f"越界 {bad}；{detail}")
+
+
+def check_height_dominance(root: Path) -> tuple[str, str, bool, str]:
+    """C48：v1.4 画布扩宽后必须保持 contain 高度主导，否则人物会等比缩小。
+
+    不变式：盒子宽 / 画布宽 >= 盒子高 / 画布高（再留 5% 余量）。
+    盒子由 pet.css 的 --pet-side-w / --pet-inset-* 与 config.ts 的三档窗口算出。
+    """
+    try:
+        data = json.loads((root / MANIFEST_REL).read_text(encoding="utf-8"))
+        canvas_w = int(data["baseSize"]["w"])
+        canvas_h = int(data["baseSize"]["h"])
+        css = read(root, "src/pet/pet.css")
+        side = re.search(r"--pet-side-w:\s*([\d.]+)%", css)
+        inset_x = re.search(r"--pet-inset-x:\s*([\d.]+)px", css)
+        inset_y = re.search(r"--pet-inset-y:\s*([\d.]+)px", css)
+        config = read(root, "src/pet/config.ts")
+        block = re.search(r"export const PET_SIZES\s*=\s*\[(.*?)\]\s*as const",
+                          config, re.S)
+        sizes = [(int(w), int(h)) for w, h in re.findall(
+            r"width:\s*(\d+),\s*height:\s*(\d+)",
+            block.group(1) if block else "")]
+        if not (side and inset_x and inset_y) or len(sizes) != 3:
+            return ("C48", "画布扩宽后 contain 仍高度主导", False,
+                    "解析失败：CSS 变量 %s / 档位 %d 个" %
+                    (bool(side and inset_x and inset_y), len(sizes)))
+        side_ratio = float(side.group(1)) / 100
+        pad_x, pad_y = float(inset_x.group(1)), float(inset_y.group(1))
+        details, bad = [], []
+        for window_w, window_h in sizes:
+            box_w = (1 - side_ratio) * window_w - pad_x
+            box_h = window_h - 2 * pad_y
+            need_box_w = 1.05 * canvas_w * box_h / canvas_h
+            dominant = box_w / canvas_w >= box_h / canvas_h
+            factor = min(box_w / canvas_w, box_h / canvas_h)
+            details.append("%dx%d 绘制区 %.1fx%.1f 高度主导=%s factor=%.4f" %
+                           (window_w, window_h, box_w, box_h, dominant, factor))
+            if not dominant or box_w < need_box_w:
+                need_window = (need_box_w + pad_x) / (1 - side_ratio)
+                bad.append("%dx%d 需窗口宽>=%.1f" % (window_w, window_h, need_window))
+        return ("C48", "画布扩宽后 contain 仍高度主导（人物屏幕像素高不变）",
+                not bad, "；".join(details) if not bad else "；".join(bad))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return ("C48", "画布扩宽后 contain 仍高度主导", False, "读取失败: %s" % exc)
 
 
 def check_pose_layers(root: Path) -> tuple[str, str, bool, str]:
@@ -530,6 +575,13 @@ def check_dist(root: Path) -> list[tuple[str, str, bool, str]]:
         results.append(("D03", "dist 精灵 JS 存在", False, "未找到 dist/assets/overlay-*.js"))
     else:
         js = Path(js_files[-1]).read_text(encoding="utf-8")
+        # 1.2.0 起通知模型被主包与 overlay 共用，Vite 会把它抽成共享 chunk。
+        # 期望校验「运行时文案键确实进了 overlay 链路」，因此把入口静态 import 的
+        # 同名 chunk 一并纳入扫描，避免键在共享 chunk 里却被判缺失。
+        for chunk_name in re.findall(r'from\s*["\']\./([^"\']+\.js)["\']', js):
+            chunk = root / "dist" / "assets" / chunk_name
+            if chunk.is_file():
+                js += "\n" + chunk.read_text(encoding="utf-8")
         # 设置页文案属于 main chunk，overlay 入口只保留自己引用到的 i18n 键；
         # 这里只断言 overlay 入口必须有的键，设置键另由 D09 在主包里核对。
         missing = [s for s in ("pet_finish_drag", "focus_main_window", "active_requests",
@@ -615,11 +667,11 @@ def check_preview_v10(root: Path) -> tuple[str, str, bool, str]:
         ('data-action="wake"', "睡醒过渡按钮"),
         ('data-action="drag"', "拖拽中按钮"),
         ('data-action="turn"', "转身张望按钮"),
-        ("180×297", "v1.3.1 统一坐标系画布说明"), ("[120, 136", "新小档尺寸"),
+        ("240×297", "v1.4 扩边画布说明"), ("[160, 136", "v1.4 新小档尺寸"),
         ("helloBtn", "开场招呼按钮"), ("roamBtn", "自主走动按钮"),
         ("pet-thought", "思考云 DOM"), ("roaming", "走动反馈类"),
-        # v1.3：预览页必须真的能验收拖拽三段与全部 20 个动作。
-        ("v1.3 动作注册表", "1000 帧注册表说明"),
+        # v1.3/v1.4：预览页必须真的能验收拖拽三段与全部 24 个动作。
+        ("v1.3 动作注册表", "1200 帧注册表说明（版本标签为历史字面量）"),
         ("data-action=\"greet\"", "点头招呼按钮"),
         ("stage.dataset.dragPhase", "拖拽三段状态接线"),
         ("data-loop=\"lifted\"", "被提起动作层"),
@@ -632,12 +684,17 @@ def check_preview_v10(root: Path) -> tuple[str, str, bool, str]:
 
 
 def check_animated_webp(root: Path) -> tuple[str, str, bool, str]:
-    """10 个进包动画 WebP 必须同时有 ANIM/ANMF 帧、alpha 标志位与多帧差异。"""
+    """24 个进包动画 WebP 必须同时有 ANIM/ANMF 帧、alpha 标志位与多帧差异。"""
     asset_dir = root / "src" / "assets" / "pet"
     _, _, loop_names = load_pet_manifest(root)
     rows = []
     for name in loop_names:
         path = asset_dir / f"{name}.webp"
+        # v1.4：新动作尚未落包的中间态要给出明确失败项，不能让整个门禁抛异常，
+        # 否则其余 C/D 系列断言全部无法执行、看不出真实回归。
+        if not path.is_file():
+            return ("D06", "动画 WebP 带 alpha 且多帧", False,
+                    "缺素材 %s.webp（v1.4 新动作未落包时为预期红灯）" % name)
         data = path.read_bytes()
         flags = 0
         frames = 0
@@ -700,6 +757,7 @@ def main() -> int:
         rows.append(check_no_shake(root))
         rows.append(check_no_stage_backdrop(root))
         rows.append(check_pet_sizes(root))
+        rows.append(check_height_dominance(root))
         rows.append(check_pose_layers(root))
         rows.append(check_manifest_source(root))
         rows.append(check_action_registry(root))

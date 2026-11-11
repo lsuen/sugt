@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen,
   Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
@@ -20,7 +20,9 @@ import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
-import { t } from './i18n';
+import { t, type TKey } from './i18n';
+import { useNoticeQueue } from './notify/useNoticeQueue';
+import type { Notice, NoticeInput } from './notify/messageModel';
 import { editionLabel } from './AboutSection';
 import { StatusBar } from './StatusBar';
 import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
@@ -151,30 +153,65 @@ function formatInvokeError(error: unknown): string {
   return text;
 }
 
-function isErrorLike(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes('error') || text.includes('失败') || lower.includes('invalid') || text.includes('不可用');
-}
-
+// 对外 pushToast 的 kind 取值保持不变；内部颜色/定级统一交给 messageModel.guessSeverity。 —— 孙文龙 sun
 type ToastKind = 'ok' | 'error' | 'info';
 
-type ToastItem = {
-  id: number;
-  text: string;
-  kind: ToastKind;
-};
-
-function ToastHost({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: number) => void }) {
-  if (!toasts.length) return null;
+// 主窗口 Toast 宿主：渲染通知队列的可视切片，支持分类/级别、合并计数、轻量动作与被挤出计数。 —— 孙文龙 sun
+function ToastHost({
+  notices, hidden, onDismiss, onAction, onPauseChange,
+}: {
+  notices: Notice[];
+  hidden: number;
+  onDismiss: (id: number) => void;
+  onAction: (notice: Notice) => void;
+  onPauseChange: (paused: boolean) => void;
+}) {
+  if (!notices.length) return null;
+  // 存在 error/warn 时容器用 assertive，其余用 polite；单条紧急项另带 role="alert"。 —— 孙文龙 sun
+  const urgent = notices.some((n) => n.severity === 'error' || n.severity === 'warn');
   return (
     <ModalPortal>
-      <div className="toast-host" aria-live="polite">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
-            <span className="toast-text">{toast.text}</span>
-            <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={t('common.close')}>×</button>
-          </div>
-        ))}
+      <div
+        className="toast-host"
+        aria-live={urgent ? 'assertive' : 'polite'}
+        onMouseEnter={() => onPauseChange(true)}
+        onMouseLeave={() => onPauseChange(false)}
+      >
+        {notices.map((notice) => {
+          const alert = notice.severity === 'error' || notice.severity === 'warn';
+          return (
+            <div
+              key={notice.id}
+              className="toast"
+              data-category={notice.category}
+              data-severity={notice.severity}
+              role={alert ? 'alert' : 'status'}
+            >
+              <span className="toast-cat">{t(`notice.category.${notice.category}` as TKey)}</span>
+              <div className="toast-text">
+                {notice.title ? <strong className="toast-title">{notice.title}</strong> : null}
+                <span>{notice.text}</span>
+              </div>
+              {notice.count > 1 ? (
+                <span className="toast-count">{t('notice.count', { n: notice.count })}</span>
+              ) : null}
+              {notice.action ? (
+                <button type="button" className="toast-action" onClick={() => onAction(notice)}>
+                  {t(notice.action.label as TKey)}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="toast-close"
+                onClick={() => onDismiss(notice.id)}
+                aria-label={t('common.close')}
+              >×</button>
+            </div>
+          );
+        })}
+        {hidden > 0 ? (
+          <div className="toast-more">{t('notice.suppressed', { n: hidden })}</div>
+        ) : null}
       </div>
     </ModalPortal>
   );
@@ -230,8 +267,14 @@ function App() {
   const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const toastSeq = useRef(0);
+  // 主窗口 Toast 统一接入通知队列：去重合并 / 优先级截取 / TTL 清理 / 悬停暂停。 —— 孙文龙 sun
+  const {
+    visible: visibleNotices,
+    hidden: hiddenNotices,
+    push,
+    dismiss,
+    setPaused,
+  } = useNoticeQueue({ surface: 'toast' });
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
   const [skillsAgentFilter, setSkillsAgentFilter] = useState('');
@@ -254,20 +297,21 @@ function App() {
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
+  // 对外签名保持 pushToast(text, kind?) 不变：所有子面板经 props 调用，调用点零改动。 —— 孙文龙 sun
   const pushToast = useCallback((text: string, kind?: ToastKind) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const resolved = kind ?? (isErrorLike(trimmed) ? 'error' : 'ok');
-    const id = ++toastSeq.current;
-    setToasts((prev) => [...prev.slice(-2), { id, text: trimmed, kind: resolved }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((item) => item.id !== id));
-    }, 4200);
-  }, []);
+    if (kind) {
+      // 显式 kind：作为 severity，统一归入 result 分类。
+      push({ text, category: 'result', severity: kind });
+    } else {
+      // 缺省 kind：交由 messageModel.guessSeverity 依据文案自动定级。
+      push(text);
+    }
+  }, [push]);
 
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+  // 预留结构化入口：后续可直接推送带分类 / 标题 / 动作的完整通知。 —— 孙文龙 sun
+  const pushNotice = useCallback((input: NoticeInput) => {
+    push(input);
+  }, [push]);
 
   // 隐藏入口：连续点击版本号卡片 10 次，或 Ctrl+Alt+Shift+V，查看有效期详情
   const onVersionCardClick = useCallback(() => {
@@ -311,6 +355,16 @@ function App() {
     return () => {
       un.then((fn) => fn()).catch(() => undefined);
     };
+  }, []);
+
+  // Toast 轻量动作：复用桌面精灵「打开设置子页」的既有事件，由上方 listen('sugt://navigate-settings')
+  // 统一完成 setTab/setSettingsTab；此处只发事件、仅跳转，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
+  const onNoticeAction = useCallback((notice: Notice) => {
+    const act = notice.action;
+    if (!act || act.kind !== 'navigate') return;
+    // target 形如 'settings/logs' → 取子页 'logs'，交给既有监听器映射。
+    const sub = act.target?.split('/').pop() || 'overview';
+    emit('sugt://navigate-settings', sub).catch(() => undefined);
   }, []);
 
   const refreshCore = useCallback(async () => {
@@ -363,7 +417,13 @@ function App() {
       if (ok) pushToast(ok, 'ok');
       await refresh();
     } catch (error) {
-      pushToast(formatInvokeError(error), 'error');
+      // 失败 Toast 附轻量动作：仅跳转到「设置-日志」子页，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
+      pushNotice({
+        text: formatInvokeError(error),
+        category: 'result',
+        severity: 'error',
+        action: { label: 'notice.action.viewLogs', kind: 'navigate', target: 'settings/logs' },
+      });
     } finally {
       setBusy(false);
     }
@@ -837,7 +897,13 @@ function App() {
         />
       ) : null}
 
-      <ToastHost toasts={toasts} onDismiss={dismissToast} />
+      <ToastHost
+        notices={visibleNotices}
+        hidden={hiddenNotices}
+        onDismiss={dismiss}
+        onAction={onNoticeAction}
+        onPauseChange={setPaused}
+      />
     </main>
   );
 }

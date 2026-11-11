@@ -4,6 +4,10 @@
 > **适用项目**：SUGT（Tauri 2 + React + Rust/Axum）
 > **建立日期**：2026-11-06
 > **用途**：本人脚本、运行留痕、对接文档、版本测试报告**全部收敛于此**，不散落到项目其它目录；便于复用、追溯与交接。
+>
+> **维护入口索引（v1.4）**：上下文锚点 `docs/小精灵维护/v1.4执行契约.md`（防丢上下文，接手先读，主代理维护）；本轮补边脚本 `docs/孙测测/scripts/pet_v14_pad_canvas.py`（SCR-022）、落包桥接脚本 `docs/孙测测/scripts/pet_v14_finalize_assets.py`（SCR-023）。
+> **历史设计稿**：`docs/design/桌宠素材扩容评估.md` 为 2026-11-09 历史稿（`105×297` / 10 动作 / 100 帧 / 21 张 / 96 色），**已废弃、不作为现行依据**，不改该文件本身。
+> **口径**：下方「目录地图」里 SCR-019 / SCR-020 的 `1000 帧` / `20 动作` 描述为 v1.3.x 历史口径；v1.4 现行实测为 `1200 帧` / `24 动作` / `240×297` / `49 张` / `5669500 B = 5.670 MB = 5.41 MiB`（预算 ≤8 MB），4 个新动作已落包，门禁 `check_pet_overlay.py` 84/84、SCR-020 落包逐帧 148/148、`petctl.py doctor` 全部通过，逐张字节 / sha256 见 `docs/小精灵维护/assets/素材清单.md` 文末 v1.4 章节。
 
 ---
 
@@ -33,7 +37,9 @@ docs/孙测测/
 │   ├── check_pet_cutout_asset.py      ← SCR-017 已抠透明 PNG 进包门禁（溢色 / 残留 / 噪点 / 体积 / 修补）
 │   ├── check_pet_pose_series.py       ← SCR-018 姿态 / 视频帧序列验收（背景漂移 / 自适应色键 / bbox / 配色 / 脚部留白 / 亮青平台 / 1000 帧体积）
 │   ├── comfyui_pet_action_series.py   ← SCR-019 v1.3 动作注册表 1000 帧批量生产线（关键姿态 / H3 补间 / 朝向门禁 / 自适应色键 / 统一 bbox / 断点续跑）
-│   └── check_pet_final_frames.py      ← SCR-020 落包 1000 帧逐帧验收（尺寸 / 帧数 / alpha / 脚部留白 / 独立位图 / poster 一致性 / blink 去重 / 体积）
+│   ├── check_pet_final_frames.py      ← SCR-020 落包 1000 帧逐帧验收（尺寸 / 帧数 / alpha / 脚部留白 / 独立位图 / poster 一致性 / blink 去重 / 体积）
+│   ├── pet_v14_pad_canvas.py          ← SCR-022 v1.4 画布扩边（180×297 → 240×297，逐帧纯 paste 补 30px 全透明）
+│   └── pet_v14_finalize_assets.py     ← SCR-023 v1.4 挑版 / 锁定 h_ref 归一化 + 同高量测 / 落包桥接
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论

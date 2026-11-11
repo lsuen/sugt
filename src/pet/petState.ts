@@ -4,6 +4,12 @@
 // 本文件、PetStage.tsx、pet.css 一律零改动。
 // 网关态 + 交互/自动动作分开，避免轻碰抢掉真实 typing；纯 reducer 不读 Date.now。
 import {
+  eventActionFor,
+  IDLE_VARIANT_WEIGHTS,
+  weightedIdleVariant,
+  type PetEvent,
+} from '../notify/messageModel';
+import {
   PET_ACTIONS,
   PET_AUTO_ACTIONS,
   type PetPoseName,
@@ -73,6 +79,21 @@ export function pickIdleVariant(
 ): PetPose {
   const list = AUTO.idleVariant.poses as readonly PetPose[];
   return list.length ? list[Math.floor(random() * list.length)] : 'stretch';
+}
+
+/**
+ * 加权版闲置姿势选择：内部委托统一通知模型的 weightedIdleVariant，
+ * 支持注入权重 / 最近姿势历史 / 随机源；全部参数缺省时等价旧的行为契约。
+ * 原 pickIdleVariant 保持原签名与行为，供冒烟脚本继续依赖。
+ * 作者：孙文龙 sun
+ */
+export function pickIdleVariantWeighted(
+  poses: readonly string[] = AUTO.idleVariant.poses as readonly string[],
+  weights: Record<string, number> = IDLE_VARIANT_WEIGHTS,
+  history: readonly string[] = [],
+  rand: () => number = Math.random,
+): PetPose {
+  return weightedIdleVariant(poses, weights, history, rand) as PetPose;
 }
 
 /** 睡醒边沿：上一帧是 sleep、本帧离开 sleep，且不是拖拽/已有醒觉动作打断。 */
@@ -190,6 +211,21 @@ export function actionsInGroup(group: string): readonly PetPose[] {
     .map((rule) => rule.pose);
 }
 
+/** state 类动作（trigger === 'always'）由状态机独占，不能当事件 flag 置位，避免虚报状态。 */
+const STATE_ACTION_FLAGS = new Set(
+  PET_ACTION_TABLE.filter((rule) => rule.trigger === 'always').map((rule) => rule.id),
+);
+
+/**
+ * 业务事件 → 可直接置位的 flag（auto 动作 trigger 等于动作名，可当 flag 用）。
+ * 若事件动作属于 state 类（typing/error/done/sleep/offline）则返回 null，交回状态机。
+ * 作者：孙文龙 sun
+ */
+export function eventActionFlag(event: PetEvent): string | null {
+  const name = eventActionFor(event);
+  return STATE_ACTION_FLAGS.has(name) ? null : name;
+}
+
 // ---- v1.2 兼容包装：旧字段映射到新 flags ----
 
 export type PetPoseInput = {
@@ -209,6 +245,8 @@ export type PetPoseInput = {
   welcoming?: boolean;
   waiting?: boolean;
   disappointed?: boolean;
+  /** 业务事件动作名（auto 类），由 petActionFlags 展开成对应 flag。作者：孙文龙 sun */
+  eventActions?: string[];
 };
 
 /** 旧式布尔输入 → 注册表 flags；保留给渐进迁移与既有单测。 */
@@ -233,6 +271,11 @@ export function petActionFlags(input: PetPoseInput): Record<string, boolean> {
     // walk 只剩「鼠标靠近时的预备走」视线反馈；整屏漂移不再用它。
     walk: Boolean(input.walking),
   };
+  // 事件动作名只在 auto 类范围内置位；state 类动作由状态机独占，绝不虚报。
+  // 作者：孙文龙 sun
+  for (const name of input.eventActions ?? []) {
+    if (!STATE_ACTION_FLAGS.has(name)) flags[name] = true;
+  }
   if (input.idlePose) flags[input.idlePose] = true;
   return flags;
 }

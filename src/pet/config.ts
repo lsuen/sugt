@@ -45,7 +45,7 @@ export const DEFAULT_OVERLAY: OverlayConfigView = {
   x: -1,
   y: -1,
   layout: 'column',
-  width: 148,
+  width: 198,
   height: 168,
   pet_enabled: true,
   pet_interactive: true,
@@ -83,11 +83,12 @@ export type OverlayStatus = {
 export type Bubble = { id: number; text: string; kind: 'ok' | 'error' | 'info' };
 
 // v1.1 三档：旧「大」(220×250) 废弃，旧中降为新大、旧小降为新中，新增更小的小档。
-// 素材已裁掉透明边（v1.3 为 160×297），同档下人物视觉反而更大，屏幕占用矩形更小。
+// v1.4 画布 240×297（左右各补 30px 全透明）；三档窗口按 4/3 加宽保持 contain 高度主导，
+// 人物屏幕像素高不变，宽出的部分全是透明边、不挡点击。
 export const PET_SIZES = [
-  { key: 'small', label: 'set.petSizeSmall' as TKey, width: 120, height: 136 },
-  { key: 'medium', label: 'set.petSizeMedium' as TKey, width: 148, height: 168 },
-  { key: 'large', label: 'set.petSizeLarge' as TKey, width: 180, height: 204 },
+  { key: 'small', label: 'set.petSizeSmall' as TKey, width: 160, height: 136 },
+  { key: 'medium', label: 'set.petSizeMedium' as TKey, width: 198, height: 168 },
+  { key: 'large', label: 'set.petSizeLarge' as TKey, width: 240, height: 204 },
 ] as const;
 
 // 沿用 v2 key：老存档 medium/large 自然落到「新中/新大」，正好是档位整体下移。

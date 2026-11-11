@@ -138,12 +138,13 @@ pub fn ensure_paths() -> Result<AppPaths> {
     Ok(paths)
 }
 
-pub fn load_config_file(path: &Path) -> Result<AppConfig> {
+/// 读取配置；返回（配置, 是否发生 v1.4 悬浮窗宽度迁移）。
+pub fn load_config_file(path: &Path) -> Result<(AppConfig, bool)> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("无法读取配置文件 {}", path.display()))?;
     let mut config: AppConfig = toml::from_str(&raw).context("配置文件格式错误")?;
-    normalize_config(&mut config);
-    Ok(config)
+    let migrated = normalize_config(&mut config);
+    Ok((config, migrated))
 }
 
 pub fn load_or_init_config() -> Result<(AppPaths, AppConfig)> {
@@ -156,10 +157,11 @@ pub fn load_or_init_config() -> Result<(AppPaths, AppConfig)> {
         return Ok((paths, config));
     }
 
-    let mut config = load_config_file(&paths.config_file)?;
+    let (mut config, migrated) = load_config_file(&paths.config_file)?;
     let seeded = crate::experimental_free::ensure_experimental_free(&mut config);
     normalize_config(&mut config);
-    if seeded {
+    // 迁移后写回，避免每次启动都重复判定；写失败不阻断启动（下次加载仍会迁移）。
+    if seeded || migrated {
         let _ = save_config(&paths, &config);
     }
     Ok((paths, config))
@@ -176,7 +178,8 @@ pub fn save_config(paths: &AppPaths, config: &AppConfig) -> Result<()> {
         .with_context(|| format!("无法重命名配置文件 {}", paths.config_file.display()))
 }
 
-pub fn normalize_config(config: &mut AppConfig) {
+/// 返回是否发生 v1.4 悬浮窗宽度迁移，供调用方决定是否写回配置文件。
+pub fn normalize_config(config: &mut AppConfig) -> bool {
     for provider in &mut config.providers {
         provider.base_url = crate::model::resolve_provider_base_url(
             provider.base_url.clone(),
@@ -194,6 +197,27 @@ pub fn normalize_config(config: &mut AppConfig) {
     }
 
     config.workspace_rules.normalize();
+    migrate_overlay_width(config)
+}
+
+/// v1.4：进包画布由 180×297 扩为 240×297（左右各补 30px 全透明）。
+/// 旧三档窗口宽度 120/148/180 会让 `background-size: contain` 由高度主导
+/// 翻成宽度主导，人物在屏幕上缩小约 20%。启动时把持久化配置里恰好等于
+/// 旧档位的宽度按 4/3 映射到新档位，保证老用户升级后人物大小不变。
+/// 只映射等于旧预设档位的值；用户自定义宽度一律原样保留。迁移必须幂等。
+fn migrate_overlay_width(config: &mut AppConfig) -> bool {
+    const LEGACY_SIZES: [(f64, f64); 3] = [
+        (120.0, 160.0),
+        (148.0, 198.0),
+        (180.0, 240.0),
+    ];
+    for (old_width, new_width) in LEGACY_SIZES {
+        if (config.overlay.width - old_width).abs() < 0.01 {
+            config.overlay.width = new_width;
+            return true;
+        }
+    }
+    false
 }
 
 fn default_config_from_env() -> AppConfig {
@@ -220,6 +244,24 @@ fn default_config_from_env() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_v14_legacy_overlay_widths() {
+        // 旧三档预设按 4/3 映射，且二次加载必须幂等。
+        for (old_width, new_width) in [(120.0, 160.0), (148.0, 198.0), (180.0, 240.0)] {
+            let mut config = AppConfig::default();
+            config.overlay.width = old_width;
+            assert!(normalize_config(&mut config), "旧档位 {} 应触发迁移", old_width);
+            assert_eq!(config.overlay.width, new_width);
+            assert!(!normalize_config(&mut config), "迁移必须幂等");
+            assert_eq!(config.overlay.width, new_width);
+        }
+        // 自定义宽度不得被改动。
+        let mut custom = AppConfig::default();
+        custom.overlay.width = 210.0;
+        assert!(!normalize_config(&mut custom));
+        assert_eq!(custom.overlay.width, 210.0);
+    }
 
     #[test]
     fn normalizes_base_url() {

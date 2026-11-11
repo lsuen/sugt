@@ -5,11 +5,12 @@
 编写人员：孙测测
 作用用途：
   把 v1.3 定版生产链、验收链、环境自检、副本同步、一键回归收敛成一条命令。
-  本目录 scripts/ 下的 10 个脚本是 docs/孙测测/scripts/ 定版脚本的只读副本，
+  本目录 scripts/ 下的 12 个脚本是 docs/孙测测/scripts/ 定版脚本的只读副本
+  （v1.3 链路 10 个 + v1.4 扩边 / 落包桥接 2 个），
   两者目录层级同为 docs/<目录>/scripts/，因此脚本内按 __file__ 推导的项目根、
   留痕目录、master 路径全部保持一致，副本可直接执行。
   doctor 会逐项核对副本与原件 sha256，防止出现「两份脚本不同步」的隐形分叉。
-适用项目：SUGT 桌面精灵 v1.3.1（20 动作 / 1000 帧 / 180×297 / 56 色）
+适用项目：SUGT 桌面精灵 v1.4（24 动作 / 1200 帧 / 240×297 / 56 色）
 创建日期：2026-11-10
 复用方式：
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py doctor
@@ -40,7 +41,7 @@ _MASTER = _ROOT / "docs" / "孙测测" / "traces" / "assets" / "su-cel-good-fixe
 _PET_ASSETS = _ROOT / "src" / "assets" / "pet"
 _FINAL_SNAPSHOT = _HERE.parent / "assets" / "final"
 
-# 定版脚本白名单：只收录 v1.3 最终链路，试片 / 废弃脚本一律不进维护目录。
+# 定版脚本白名单：v1.3 最终链路 + v1.4 扩边/落包桥接；试片 / 废弃脚本一律不进维护目录。
 FINAL_SCRIPTS = (
     "comfyui_curl_http.py",
     "comfyui_pet_action_series.py",
@@ -52,6 +53,8 @@ FINAL_SCRIPTS = (
     "check_pet_pose_series.py",
     "check_pet_keyvisual_cutout.py",
     "check_pet_cutout_asset.py",
+    "pet_v14_pad_canvas.py",
+    "pet_v14_finalize_assets.py",
 )
 
 # 子命令 → 定版脚本。透传型命令的参数由调用方追加。
@@ -73,7 +76,7 @@ ALL_STEPS = (
     ("生成 manifest 派生常量", ("gen",)),
     ("生成 v1.3 互动预览页", ("preview",)),
     ("产物契约自检", ("check", "--check")),
-    ("落包 1000 帧逐帧验收", ("frames",)),
+    ("落包 1200 帧逐帧验收", ("frames",)),
     ("前端单测", ("@npm", "test")),
     ("生产构建", ("@npm", "run", "build")),
     ("全链路契约门禁", ("gate",)),
@@ -120,7 +123,7 @@ def do_sync() -> int:
 
 
 def do_snapshot() -> int:
-    """把当前进包的 41 张 WebP 复制到维护目录存档，不影响唯一进包路径。"""
+    """把当前进包的 49 张 WebP 复制到维护目录存档，不影响唯一进包路径。"""
     files = sorted(_PET_ASSETS.glob("*.webp"))
     if not files:
         print("[失败] src/assets/pet/ 无 WebP 素材", file=sys.stderr)
@@ -180,7 +183,7 @@ def do_doctor() -> int:
 
     files = sorted(_PET_ASSETS.glob("*.webp"))
     total = sum(path.stat().st_size for path in files)
-    line(len(files) == 41, "进包素材 41 张", "实际 %d 张" % len(files))
+    line(len(files) == 49, "进包素材 49 张", "实际 %d 张" % len(files))
     line(total <= 8 * 1024 * 1024, "整包 ≤ 8 MB",
          "%d B = %.3f MB" % (total, total / 1e6))
     line(bool(shutil.which("npm")), "npm 可用（前端单测 / 构建）")
@@ -189,7 +192,7 @@ def do_doctor() -> int:
     if work:
         line(Path(work).is_dir(), "生产工作目录 SUGT_PET_WORK 存在", work)
     else:
-        print("[提示] 未设置 SUGT_PET_WORK；重生成 1000 帧前请指向生产工作目录")
+        print("[提示] 未设置 SUGT_PET_WORK；重生成 1200 帧前请指向生产工作目录")
     base = os.environ.get("SUGT_COMFYUI_BASE", "http://192.168.31.84:8188")
     print("[提示] ComfyUI 地址：%s（仅 produce 需要，doctor 不探测服务）" % base)
 

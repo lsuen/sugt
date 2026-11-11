@@ -9,12 +9,18 @@ import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import type { TKey } from '../../i18n';
 import { clamp, easeInOut, type Bubble } from '../config';
 import {
+  IDLE_MESSAGE_KEYS,
+  IDLE_VARIANT_WEIGHTS,
+  type NoticeCategory,
+} from '../../notify/messageModel';
+import {
   AUTO,
   nextBlinkAt,
   nextFacingAt,
   nextIdleVariantAt,
   nextWanderAt,
   pickIdleVariant,
+  pickIdleVariantWeighted,
   type PetPose,
   type PetState,
 } from '../petState';
@@ -35,7 +41,7 @@ type Props = {
   lastUserTouch: MutableRefObject<number>;
   gazeRef: MutableRefObject<{ x: number; y: number; near: number }>;
   playIdlePose: (pose: PetPose, ms: number) => void;
-  pushBubble: (text: string, kind: Bubble['kind']) => void;
+  pushBubble: (text: string, kind: Bubble['kind'], category?: NoticeCategory) => void;
   t: (key: TKey) => string;
 };
 
@@ -63,6 +69,9 @@ export function usePetBehaviors({
   const landTimer = useRef(0);
   const greeted = useRef(false);
   const lastIdleBubble = useRef(0);
+  // 最近 2 个闲置姿势：交给加权选择器降权，避免同一个动作连播。
+  // 作者：孙文龙 sun
+  const idleHistory = useRef<string[]>([]);
 
   // 随机眨眼；sleep/offline 或关闭 pet_blink 时不调度
   useEffect(() => {
@@ -112,7 +121,7 @@ export function usePetBehaviors({
       if (cancelled || greeted.current || document.hidden || still) return;
       greeted.current = true;
       setGreeting(true);
-      pushBubble(t('pet.bubble.hello'), 'info');
+      pushBubble(t('pet.bubble.hello'), 'info', 'interaction');
       timer = window.setTimeout(() => setGreeting(false), 2400);
     };
     greet();
@@ -140,12 +149,24 @@ export function usePetBehaviors({
         !document.hidden && !still && petStateRef.current === 'idle'
         && !dragActive.current && quietFor > 6_000
       ) {
-        // 姿势池与时长都来自 manifest.autoActions，加动作只改清单。
-        playIdlePose(pickIdleVariant(), AUTO.idleVariant.holdMs);
+        // 姿势池与时长都来自 manifest.autoActions；加权挑选 + 最近 2 个姿势历史避免连播重复。
+        // 空池兜底仍走旧的 pickIdleVariant()，任何配置下都返回合法姿势。
+        // 作者：孙文龙 sun
+        const poses = AUTO.idleVariant.poses as readonly string[];
+        const pose = poses.length
+          ? pickIdleVariantWeighted(poses, IDLE_VARIANT_WEIGHTS, idleHistory.current)
+          : (pickIdleVariant() as string);
+        playIdlePose(pose as PetPose, AUTO.idleVariant.holdMs);
+        idleHistory.current = [pose, ...idleHistory.current].slice(0, 2);
         if (Math.random() < 0.34 && Date.now() - lastIdleBubble.current > 90_000) {
           lastIdleBubble.current = Date.now();
-          const key = PET_IDLE_BUBBLES[Math.floor(Math.random() * PET_IDLE_BUBBLES.length)];
-          pushBubble(t(key), 'info');
+          // 有专属台词就跟着姿势走；没有专属台词的姿势从通用池随机一条，
+          // 避免每次都是同一句。通用池留在 overlay 侧，让运行时文案键稳定进包。
+          // 作者：孙文龙 sun
+          const tailored = IDLE_MESSAGE_KEYS[pose];
+          const fallback = PET_IDLE_BUBBLES[Math.floor(Math.random() * PET_IDLE_BUBBLES.length)];
+          const key = (tailored || fallback) as TKey;
+          pushBubble(t(key), 'info', 'idle');
         }
       }
       later(tick, nextIdleVariantAt({ now: 0 }));

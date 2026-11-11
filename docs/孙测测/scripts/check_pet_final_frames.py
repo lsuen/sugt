@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SCR-020：桌面精灵 v1.3 落包 1000 帧逐帧验收。
+"""SCR-020：桌面精灵 v1.4 落包 1200 帧逐帧验收。
 
 编写人员：孙测测
 作用用途：
-  对最终进包的 41 张 WebP 逐帧判定，补齐 SCR-018 只验生产视频、不验落包
-  产物的分层缺口：尺寸、帧数、alpha、四边留白、独立位图、跨动作人物
+  对最终进包的 49 张 WebP（24 poster + 24 loop + su-blink）逐帧判定，补齐
+  SCR-018 只验生产视频、不验落包产物的分层缺口：尺寸、帧数、alpha、
+  四边留白、独立位图、跨动作人物
   尺度一致性、poster 与 loop 首帧形状一致、blink 与 sleep poster 字节
   不同、整包体积不超 8MB。
   v1.3.1 新增「四边留白」与「人物高度极差」两项：旧版只查脚部，导致
-  stretch / peek / wake 伸展时手发被左右裁切、以及 20 动作高矮胖瘦
+  stretch / peek / wake 伸展时手发被左右裁切、以及 24 动作高矮胖瘦
   （实测极差 27.9%）都能通过验收。
   v1.3.2 新增「hitBox 与 50 帧 alpha 并集一致」：素材换成纯缩放归一后人物
   变小，manifest 里按旧素材写死的命中框会与实物脱节（点击穿透偏位）；
   本项逐动作逐帧取并集归一化后与 manifest.poses[].hitBox 比对。
-适用项目：SUGT 桌面精灵 v1.3.2（20 动作 / 1000 帧 / 180×297 / 56 色）
+适用项目：SUGT 桌面精灵 v1.4（24 动作 / 1200 帧 / 240×297 / 56 色）
 创建日期：2026-11-10
 复用方式：
   /usr/local/bin/python3.13 docs/孙测测/scripts/check_pet_final_frames.py
@@ -56,7 +57,7 @@ HITBOX_TOLERANCE = 0.012
 def parse_args() -> argparse.Namespace:
     """解析参数；项目根由脚本位置推导，不硬编码本机路径。"""
     default_root = Path(__file__).resolve().parents[3]
-    parser = argparse.ArgumentParser(description="精灵落包 1000 帧逐帧验收")
+    parser = argparse.ArgumentParser(description="精灵落包 1200 帧逐帧验收")
     parser.add_argument("--root", type=Path, default=default_root,
                         help="项目根目录")
     parser.add_argument("--out", type=Path, default=None, help="自定留痕路径")
@@ -243,7 +244,7 @@ def write_trace(root: Path, out: Path | None, rows, stats) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     passed = sum(1 for _name, ok, _detail in rows if ok)
     lines = [
-        "# 精灵 v1.3.2 落包 1000 帧逐帧验收留痕（SCR-020）", "",
+        "# 精灵 v1.4 落包 1200 帧逐帧验收留痕（SCR-020）", "",
         "- 执行时间：%s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "- 脚本：SCR-020 `check_pet_final_frames.py`",
         "- 验收对象：`src/assets/pet` 最终进包素材（非 ComfyUI 原始视频）",

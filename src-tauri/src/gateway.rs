@@ -119,7 +119,7 @@ fn maybe_reload_config(inner: &mut GatewayInner) {
     if inner.config_mtime == Some(mtime) {
         return;
     }
-    if let Ok(cfg) = config::load_config_file(&path) {
+    if let Ok((cfg, _)) = config::load_config_file(&path) {
         inner.config = cfg;
         inner.config_mtime = Some(mtime);
         // 配置重载后，之前标记为「原生不支持」的 provider 可能已更换端点，清空缓存
