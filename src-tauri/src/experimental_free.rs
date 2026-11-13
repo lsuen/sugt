@@ -56,6 +56,27 @@ pub fn is_experimental_free(provider: &ProviderConfig) -> bool {
             .eq_ignore_ascii_case(EXPERIMENTAL_FREE_PROVIDER)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FreeRouteChoice {
+    pub model: String,
+    pub host: String,
+}
+
+pub fn route_choices() -> Vec<FreeRouteChoice> {
+    ROUTES
+        .iter()
+        .map(|route| FreeRouteChoice {
+            model: route.model.to_string(),
+            host: host_of(route.base_url),
+        })
+        .collect()
+}
+
+fn host_of(base_url: &str) -> String {
+    let rest = base_url.split("://").nth(1).unwrap_or(base_url);
+    rest.split('/').next().unwrap_or(rest).to_string()
+}
+
 pub fn candidate_models() -> Vec<&'static str> {
     ROUTES.iter().map(|r| r.model).collect()
 }
@@ -92,6 +113,7 @@ pub fn apply_route(provider: &mut ProviderConfig) {
     provider.api_key.clear();
     provider.protocol = ProviderProtocol::OpenAi;
     provider.auto_adapt_base_url = false;
+    provider.model_alias = Some(crate::model::CLIENT_MODEL_ID.to_string());
 }
 
 /// 请求失败时尝试的下一批 (base_url, model)，不含当前模型。
@@ -117,8 +139,10 @@ pub fn make_experimental_free_provider() -> ProviderConfig {
         status: ProviderStatus::Unknown,
         last_checked_at: None,
         last_error: None,
-        model_alias: None,
+        model_alias: Some(crate::model::CLIENT_MODEL_ID.to_string()),
         auto_adapt_base_url: false,
+        tool_text_retry_enabled: false,
+        tool_text_retry_extra: 0,
     }
 }
 
@@ -282,6 +306,7 @@ mod tests {
         apply_route(&mut p);
         assert!(p.base_url.contains("kilo.ai"));
         assert!(p.api_key.is_empty());
+        assert_eq!(p.public_model_id(), crate::model::CLIENT_MODEL_ID);
     }
 
     #[test]
@@ -301,6 +326,8 @@ mod tests {
             last_error: None,
             model_alias: None,
             auto_adapt_base_url: false,
+            tool_text_retry_enabled: false,
+            tool_text_retry_extra: 0,
         });
         cfg.active_provider_id = Some(LEGACY_ZEN_ID.into());
         assert!(ensure_experimental_free(&mut cfg));
@@ -324,6 +351,8 @@ mod tests {
         assert!(route_for_model("openai-fast").is_some());
         assert_eq!(candidate_models()[0], "openrouter/free");
         assert_eq!(candidate_models()[1], "kilo-auto/free");
+        assert_eq!(route_choices()[0].host, "api.kilo.ai");
+        assert_eq!(route_choices()[2].host, "text.pollinations.ai");
     }
 
     #[test]

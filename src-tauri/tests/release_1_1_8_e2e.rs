@@ -1,9 +1,9 @@
-//! 1.1.8 发版回归：/v1/responses 的上游失败出口必须是 Responses 形状。
+//! /v1/responses 的上游失败出口必须是 Responses 形状。
 //! 作者：sun / 孙文龙
 //!
-//! 之前只有「流式 4xx」和「HTTP 200 异常体」两条路径给了失败形状；
-//! attempt 耗尽、5xx、熔断等出口统一落到通用 502 JSON，客户端按 Responses
-//! 反序列化失败，报错指向「网关响应格式错误」而不是真实上游故障。
+//! 预算用尽或不可重试的上游失败，回 HTTP 200 的 completed 助手提示，
+//! 会话还在。空 body / 非法 JSON 仍由适配器写成 status=failed，不在这里测。
+//! 5xx 会在同一次请求里等待重试；测试把预算设为 0，避免睡满 8 分钟。
 
 use axum::{
     http::{header, StatusCode},
@@ -32,7 +32,8 @@ async fn upstream_500() -> impl IntoResponse {
 }
 
 /// 起一个真实 mock 上游 + 真实网关，返回 /v1/responses 的完整地址。
-async fn start_gateway(upstream: Router) -> String {
+/// `retry_budget_ms` 写在这份配置上，不能用进程环境变量：cargo test 会并行。
+async fn start_gateway(upstream: Router, retry_budget_ms: Option<u64>) -> String {
     let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("mock 上游可绑定");
@@ -57,6 +58,7 @@ async fn start_gateway(upstream: Router) -> String {
         port: 0,
         providers: vec![provider],
         active_provider_id: Some("e2e-upstream-failure".into()),
+        upstream_retry_budget_ms: retry_budget_ms,
         ..Default::default()
     };
     let gateway = build_router(GatewayState::new(config, None).expect("网关状态可构造"));
@@ -70,10 +72,10 @@ async fn start_gateway(upstream: Router) -> String {
     format!("http://{addr}/v1/responses")
 }
 
-/// DEF-006：非流式请求遇上上游 4xx，body 必须是 Responses 形状的 failed。
+/// 非流式遇上上游 400：这是终态，不按额度去等。回 completed 提示，模型名原样回显。
 #[tokio::test]
-async fn responses_upstream_4xx_is_reported_as_responses_failure() {
-    let url = start_gateway(Router::new().route("/*path", any(upstream_400))).await;
+async fn responses_upstream_4xx_is_a_completed_notice() {
+    let url = start_gateway(Router::new().route("/*path", any(upstream_400)), None).await;
     let response = reqwest::Client::new()
         .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
@@ -81,31 +83,25 @@ async fn responses_upstream_4xx_is_reported_as_responses_failure() {
         .send()
         .await
         .expect("网关必须响应 /v1/responses");
+    assert_eq!(response.status(), StatusCode::OK);
     let text = response.text().await.expect("响应体可读");
     let value: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|err| panic!("失败响应必须是合法 Responses JSON：{err}，原文：{text}"));
-    assert_eq!(
-        value["status"], "failed",
-        "上游失败不能返回通用网关错误体：{value}"
-    );
-    assert_eq!(
-        value["object"], "response",
-        "必须有 Responses 对象形状：{value}"
-    );
+        .unwrap_or_else(|err| panic!("提示必须是合法 Responses JSON：{err}，原文：{text}"));
+    assert_eq!(value["status"], "completed", "会话提示不能是 failed：{value}");
+    assert_eq!(value["object"], "response", "必须有 Responses 对象形状：{value}");
+    assert_eq!(value["model"], "gpt-5-codex", "必须回显客户端模型名：{value}");
+    assert!(value["error"].is_null(), "completed 提示的 error 必须是 null：{value}");
+    let output = value["output_text"].as_str().unwrap_or("");
     assert!(
-        value
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some(),
-        "失败原因必须可诊断：{value}"
+        output.contains("小su提示") && output.contains("上游拒绝"),
+        "400 不能说成额度不足：{output}"
     );
 }
 
-/// DEF-006：流式请求遇上上游 5xx，必须给一段 response.failed 事件流，
-/// 而不是让客户端在 SSE 通道里收到一段 JSON。
+/// 流式遇上上游 5xx：预算为 0 时立刻回 completed 事件流，不能睡满默认 8 分钟。
 #[tokio::test]
-async fn responses_streaming_5xx_is_reported_as_failed_event() {
-    let url = start_gateway(Router::new().route("/*path", any(upstream_500))).await;
+async fn responses_streaming_5xx_is_a_completed_notice() {
+    let url = start_gateway(Router::new().route("/*path", any(upstream_500)), Some(0)).await;
     let response = reqwest::Client::new()
         .post(&url)
         .header(header::CONTENT_TYPE, "application/json")
@@ -113,6 +109,7 @@ async fn responses_streaming_5xx_is_reported_as_failed_event() {
         .send()
         .await
         .expect("网关必须响应 /v1/responses");
+    assert_eq!(response.status(), StatusCode::OK);
     let content_type = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -121,11 +118,19 @@ async fn responses_streaming_5xx_is_reported_as_failed_event() {
         .to_string();
     let text = response.text().await.expect("响应体可读");
     assert!(
-        text.contains("\"type\":\"response.failed\"") || text.contains("event: response.failed"),
-        "流式上游失败必须给 response.failed 事件，不能是通用 JSON：{text}"
+        content_type.contains("text/event-stream"),
+        "流式提示必须保持 SSE Content-Type，实际 {content_type}"
     );
     assert!(
-        content_type.contains("text/event-stream"),
-        "流式失败也必须保持 SSE Content-Type，实际 {content_type}"
+        text.contains("event: response.completed"),
+        "流式上游失败必须给 response.completed，原文：{text}"
+    );
+    assert!(
+        !text.contains("response.failed"),
+        "预算用尽不能再发 response.failed：{text}"
+    );
+    assert!(
+        text.contains("小su提示") && text.contains("gpt-5-codex"),
+        "提示文案和模型名都要在流里：{text}"
     );
 }

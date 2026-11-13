@@ -16,12 +16,14 @@ use axum::{
     Json, Router,
 };
 use bytes::Bytes;
+use async_stream::stream;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::PathBuf,
+    pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -650,17 +652,22 @@ fn apply_workspace_rules(
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let config = state.config().await;
+    let mut seen = std::collections::HashSet::new();
     let data: Vec<Value> = config
         .providers
         .iter()
         .filter(|provider| provider.enabled)
-        .map(|provider| {
-            json!({
-                "id": provider.public_model_id(),
+        .filter_map(|provider| {
+            let id = provider.public_model_id();
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(json!({
+                "id": id,
                 "object": "model",
                 "created": 0,
                 "owned_by": provider.provider,
-            })
+            }))
         })
         .collect();
 
@@ -717,21 +724,62 @@ async fn proxy_anthropic_messages(
     info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
     let active_guard = state.begin_request();
     let started = std::time::Instant::now();
-    match proxy_anthropic_request(state.clone(), headers.clone(), request).await {
-        Ok(response) => hold_guard_through_body(response, active_guard),
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
         Err(err) => {
-            error!(client = %client, path = "v1/messages", error = %err, "inbound request failed");
-            state
-                .record_failure_stats(
-                    started.elapsed().as_millis() as u64,
-                    &headers,
-                    "v1/messages",
-                    None,
-                )
-                .await;
-            anthropic_error(StatusCode::BAD_GATEWAY, &err.to_string())
+            error!(client = %client, error = %err, "读取 Anthropic 请求体失败");
+            return anthropic_error(StatusCode::BAD_REQUEST, "请求体读取失败");
         }
-    }
+    };
+    let stream = crate::anthropic_adapter::request_wants_stream(&bytes);
+    let client_model = client_model_of(&bytes);
+    let request = Request::from_parts(parts, Body::from(bytes));
+    let run = proxy_anthropic_request(state.clone(), headers.clone(), request);
+    let response = if stream {
+        let client_model = client_model.clone();
+        hold_stream(async move {
+            match run.await {
+                Ok(response) => response,
+                Err(err) => {
+                    warn!(error = %err, "anthropic 上游失败，改为会话内提示");
+                    session_notice(
+                        crate::upstream_resilience::Wire::Anthropic,
+                        &client_model,
+                        crate::upstream_resilience::NoticeKind::UpstreamDown,
+                        true,
+                    )
+                }
+            }
+        })
+    } else {
+        let client_model = client_model.clone();
+        let state = state.clone();
+        let headers = headers.clone();
+        hold_json(async move {
+            match run.await {
+                Ok(response) => response,
+                Err(err) => {
+                    error!(client = %client, path = "v1/messages", error = %err, "inbound request failed");
+                    state
+                        .record_failure_stats(
+                            started.elapsed().as_millis() as u64,
+                            &headers,
+                            "v1/messages",
+                            None,
+                        )
+                        .await;
+                    session_notice(
+                        crate::upstream_resilience::Wire::Anthropic,
+                        &client_model,
+                        crate::upstream_resilience::NoticeKind::UpstreamDown,
+                        false,
+                    )
+                }
+            }
+        })
+    };
+    hold_guard_through_body(response, active_guard)
 }
 
 /// 解析 provider 的原生 Anthropic 端点（base url）。
@@ -781,13 +829,19 @@ async fn proxy_anthropic_request(
     // 识别调用来源：Claude 系 TUI/GUI 优先走原生 Anthropic 端点（转换作为 fallback）
     let anthropic_client = crate::anthropic_client_detect::detect_anthropic_client(&headers);
 
-    let mut last_error = None;
+    let client_model = client_model_of(&body_bytes);
+    let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
+    let mut memory = crate::upstream_resilience::FailureMemory::new();
+    let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
+    for pass in 0..crate::upstream_resilience::MAX_PASSES {
+        memory.begin_pass();
     for (index, provider) in providers.iter().enumerate() {
-        // 熔断器：跳过冷却期内的故障 provider
-        if state.is_circuit_open(&provider.id).await {
+        let is_free = crate::experimental_free::is_experimental_free(provider);
+        memory.set_free(is_free);
+        let own_key = !provider.api_key.trim().is_empty();
+        if !is_free && state.is_circuit_open(&provider.id).await {
             warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
-            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
             continue;
         }
 
@@ -811,16 +865,15 @@ async fn proxy_anthropic_request(
                         provider,
                         Some(target),
                     )
-                    .await,
+                    .await
+                    .map_err(|_| crate::upstream_resilience::classify_network()),
                     "anthropic_native",
                 ),
                 None => {
-                    let err = anyhow!(
-                        "{} 未提供 Anthropic 原生端点，无法以 Anthropic 模式访问，请改用 Auto 或 OpenAI 模式",
-                        provider.name
-                    );
-                    warn!(provider = %provider.name, error = %err, "force-native mode skipped provider");
-                    last_error = Some(err);
+                    warn!(provider = %provider.name, "force-native mode skipped provider");
+                    let _ = memory.observe(crate::upstream_resilience::FailureClass::Terminal(
+                        crate::upstream_resilience::NoticeKind::BadRequest,
+                    ));
                     continue;
                 }
             },
@@ -868,7 +921,10 @@ async fn proxy_anthropic_request(
                                 "openai_adapter",
                             )
                         }
-                        other => (other, "anthropic_native"),
+                        other => (
+                            other.map_err(|_| crate::upstream_resilience::classify_network()),
+                            "anthropic_native",
+                        ),
                     }
                 } else {
                     (
@@ -886,9 +942,8 @@ async fn proxy_anthropic_request(
         };
 
         match result {
-            Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
-                let ok = response.status().is_success();
-                state.reset_circuit(&provider.id).await;
+            Ok(response) if response.status().is_success() => {
+                state.reset_circuit(&route_key(provider)).await;
                 state
                     .record_proxy_hit(
                         provider,
@@ -897,7 +952,7 @@ async fn proxy_anthropic_request(
                         started.elapsed().as_millis() as u64,
                         &headers,
                         mode,
-                        ok,
+                        true,
                         rules_injected,
                     )
                     .await;
@@ -905,19 +960,65 @@ async fn proxy_anthropic_request(
             }
             Ok(response) => {
                 let status = response.status();
-                warn!(provider = %provider.name, %status, "provider returned retryable anthropic error");
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 返回 {}", provider.name, status));
+                let retry_after = response
+                    .headers()
+                    .get(http::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
+                let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let text = String::from_utf8_lossy(&bytes);
+                warn!(provider = %provider.name, %status, body = %text, "provider returned anthropic error");
+                let class = crate::upstream_resilience::classify_http(
+                    status.as_u16(),
+                    &text,
+                    retry_after.as_deref(),
+                    own_key,
+                    is_free,
+                );
+                if let Some(kind) = memory.observe(class) {
+                    return Ok(session_notice(
+                        crate::upstream_resilience::Wire::Anthropic,
+                        &client_model,
+                        kind,
+                        stream,
+                    ));
+                }
             }
-            Err(err) => {
-                warn!(provider = %provider.name, error = %err, "provider anthropic request error");
-                state.trip_circuit(&provider.id).await;
-                last_error = Some(anyhow!("{} 请求失败: {}", provider.name, err));
+            Err(class) => {
+                warn!(provider = %provider.name, "provider anthropic request error");
+                if let Some(kind) = memory.observe(class) {
+                    return Ok(session_notice(
+                        crate::upstream_resilience::Wire::Anthropic,
+                        &client_model,
+                        kind,
+                        stream,
+                    ));
+                }
             }
         }
     }
+        if let Some(response) = finish_pass(
+            &mut memory,
+            &mut budget,
+            pass,
+            &client_model,
+            crate::upstream_resilience::Wire::Anthropic,
+            stream,
+        )
+        .await
+        {
+            return Ok(response);
+        }
+    }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("所有模型配置均不可用")))
+    Ok(session_notice(
+        crate::upstream_resilience::Wire::Anthropic,
+        &client_model,
+        memory.notice_kind(),
+        stream,
+    ))
 }
 
 async fn proxy_anthropic_native(
@@ -933,6 +1034,7 @@ async fn proxy_anthropic_native(
         "v1/messages",
         "",
     );
+    let client_model = client_model_of(&body);
     let payload = rewrite_model(body, &provider.model_name);
     let mut builder = state.client.post(&target);
     builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::Anthropic)?;
@@ -950,6 +1052,7 @@ async fn proxy_anthropic_native(
         response,
         Some(state.stats.clone()),
         Some(token_attr_from(headers, provider)),
+        &client_model,
     )
     .await
 }
@@ -959,31 +1062,184 @@ async fn proxy_anthropic_via_openai(
     headers: &HeaderMap,
     body: Bytes,
     provider: &ProviderConfig,
-) -> Result<Response<Body>> {
-    let provider = prepare_upstream_provider(provider);
-    let target = build_target_url(&provider.base_url, "v1/chat/completions", "");
-    let payload = anthropic_adapter::anthropic_to_openai(body, &provider.model_name)?;
-    let mut builder = state.client.post(&target);
-    builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::OpenAi)?;
-
-    info!(
-        provider = %provider.name,
-        model = %provider.model_name,
-        path = "v1/messages",
-        mode = "openai_adapter",
-        "proxying anthropic messages request"
-    );
-
-    let response = builder.body(payload).send().await?;
-    let client = crate::gateway_stats::client_label_from_headers(headers);
-    anthropic_adapter::openai_to_anthropic_response(
-        response,
-        &provider.model_name,
-        Some(state.stats.clone()),
-        Some(client.as_str()),
-        Some(provider.name.as_str()),
-    )
-    .await
+) -> Result<Response<Body>, crate::upstream_resilience::FailureClass> {
+    let failover = state.config().await.failover_enabled;
+    let attempts = upstream_attempts(provider, failover);
+    let client_model = client_model_of(&body);
+    let is_free = crate::experimental_free::is_experimental_free(provider);
+    let mut worst: Option<crate::upstream_resilience::FailureClass> = None;
+    let tools = crate::upstream_resilience::request_declares_tools(&body);
+    let stream = crate::anthropic_adapter::request_wants_stream(&body);
+    for (attempt_idx, attempt) in attempts.iter().enumerate() {
+        let key = route_key(attempt);
+        if state.is_circuit_open(&key).await {
+            continue;
+        }
+        let target = build_target_url(&attempt.base_url, "v1/chat/completions", "");
+        let payload = match anthropic_adapter::anthropic_to_openai(body.clone(), &attempt.model_name)
+        {
+            Ok(payload) => payload,
+            Err(_) => {
+                return Err(crate::upstream_resilience::FailureClass::Terminal(
+                    crate::upstream_resilience::NoticeKind::BadRequest,
+                ))
+            }
+        };
+        let own_key = !attempt.api_key.trim().is_empty();
+        let mut text_tries = 0u32;
+        let class = loop {
+            let mut builder = state.client.post(&target);
+            builder = match copy_forward_headers(builder, headers, &attempt.api_key, AuthMode::OpenAi) {
+                Ok(builder) => builder,
+                Err(_) => return Err(crate::upstream_resilience::classify_network()),
+            };
+            info!(
+                provider = %attempt.name,
+                model = %attempt.model_name,
+                path = "v1/messages",
+                mode = "openai_adapter",
+                "proxying anthropic messages request"
+            );
+            match builder.body(payload.clone()).send().await {
+            Ok(response) if response.status().is_success() => {
+                let client = crate::gateway_stats::client_label_from_headers(headers);
+                if tools {
+                    let held = match if stream {
+                        hold_chat_sse(response).await
+                    } else {
+                        hold_chat_json(response).await
+                    } {
+                        Ok(held) => held,
+                        Err(err) => {
+                            warn!(provider = %attempt.name, error = %err, "读取上游回复失败");
+                            break Some(crate::upstream_resilience::classify_network());
+                        }
+                    };
+                    if !held.saw_tool {
+                        text_tries += 1;
+                        match crate::upstream_resilience::text_only_step(
+                            text_tries,
+                            attempt_idx,
+                            attempt_idx + 1 < attempts.len(),
+                            paid_text_total(attempt),
+                        ) {
+                            crate::upstream_resilience::TextOnlyStep::RetrySame => {
+                                warn!(
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    try_index = text_tries,
+                                    "当前模型未返回工具调用，再要一次"
+                                );
+                                continue;
+                            }
+                            crate::upstream_resilience::TextOnlyStep::NextRoute => {
+                                warn!(
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    try_index = text_tries,
+                                    "当前模型多次未返回工具调用，换下一条"
+                                );
+                                break None;
+                            }
+                            crate::upstream_resilience::TextOnlyStep::Forward => {
+                                warn!(
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    try_index = text_tries,
+                                    "多次未返回工具调用，交回文本"
+                                );
+                            }
+                        }
+                    }
+                    state.reset_circuit(&key).await;
+                    let delivered = if stream {
+                        let replay = replay_upstream(held.prefix, held.rest);
+                        anthropic_adapter::anthropic_stream_response(
+                            replay.map(|item| item.map_err(std::io::Error::other)),
+                            client_model.clone(),
+                            Some(state.stats.clone()),
+                            Some(client),
+                            Some(attempt.name.clone()),
+                        )
+                    } else {
+                        let mut raw = Vec::new();
+                        for chunk in held.prefix {
+                            raw.extend_from_slice(&chunk);
+                        }
+                        anthropic_adapter::anthropic_json_response(
+                            Bytes::from(raw),
+                            &client_model,
+                            Some(state.stats.clone()),
+                            Some(client.as_str()),
+                            Some(attempt.name.as_str()),
+                        )
+                        .await
+                    };
+                    return delivered.map_err(|_| {
+                        crate::upstream_resilience::FailureClass::Terminal(
+                            crate::upstream_resilience::NoticeKind::UpstreamDown,
+                        )
+                    });
+                }
+                state.reset_circuit(&key).await;
+                return anthropic_adapter::openai_to_anthropic_response(
+                    response,
+                    &client_model,
+                    Some(state.stats.clone()),
+                    Some(client.as_str()),
+                    Some(attempt.name.as_str()),
+                )
+                .await
+                .map_err(|_| {
+                    crate::upstream_resilience::FailureClass::Terminal(
+                        crate::upstream_resilience::NoticeKind::UpstreamDown,
+                    )
+                });
+            }
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = header_str(response.headers(), "retry-after");
+                let text = response.text().await.unwrap_or_default();
+                warn!(
+                    provider = %attempt.name,
+                    model = %attempt.model_name,
+                    %status,
+                    body = %text,
+                    "anthropic adapter upstream error"
+                );
+                break Some(crate::upstream_resilience::classify_http(
+                    status.as_u16(),
+                    &text,
+                    retry_after.as_deref(),
+                    own_key,
+                    is_free,
+                ));
+            }
+            Err(err) => {
+                warn!(provider = %attempt.name, error = %err, "anthropic adapter request error");
+                break Some(crate::upstream_resilience::classify_network());
+            }
+        }
+        };
+        let Some(class) = class else {
+            continue;
+        };
+        worst = Some(match worst {
+            Some(prev) => crate::upstream_resilience::merge_failure(prev, class),
+            None => class,
+        });
+        if matches!(
+            class,
+            crate::upstream_resilience::FailureClass::Terminal(
+                crate::upstream_resilience::NoticeKind::ContextTooLong
+            )
+        ) {
+            return Err(class);
+        }
+    }
+    Err(worst.unwrap_or(crate::upstream_resilience::FailureClass::Terminal(
+        crate::upstream_resilience::NoticeKind::UpstreamDown,
+    )))
 }
 
 async fn proxy_request(
@@ -1004,107 +1260,299 @@ async fn proxy_request(
     if path == "v1/responses" || path.starts_with("v1/responses/") {
         let (body_bytes, rules_injected) =
             apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiResponses, &headers);
-        // 失败出口必须就地包装成 Responses 形状：上抛到 proxy_openai 只会得到
-        // 通用 502 JSON，客户端按 Responses 反序列化失败且看不到上游归因。
-        let failure_body = body_bytes.clone();
-        match proxy_responses_via_chat(state, headers, method, body_bytes, &query, rules_injected)
-            .await
-        {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                warn!(error = %err, "codex responses 上游全部失败，返回 Responses 形状失败响应");
-                return responses_failure_response(&failure_body, &err.to_string());
+        let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
+        let client_model = client_model_of(&body_bytes);
+        let run = {
+            let state = state.clone();
+            let headers = headers.clone();
+            let method = method.clone();
+            let body_bytes = body_bytes.clone();
+            let query = query.clone();
+            let client_model = client_model.clone();
+            async move {
+                match proxy_responses_via_chat(
+                    state,
+                    headers,
+                    method,
+                    body_bytes,
+                    &query,
+                    rules_injected,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        warn!(error = %err, "codex responses 上游失败，改为会话内提示");
+                        session_notice(
+                            crate::upstream_resilience::Wire::Responses,
+                            &client_model,
+                            crate::upstream_resilience::NoticeKind::UpstreamDown,
+                            stream,
+                        )
+                    }
+                }
             }
+        };
+        // 流式请求立刻交出 SSE，等待期间只发注释，避免首包超时把会话掐断。
+        if stream {
+            return Ok(hold_stream(run));
         }
+        return Ok(hold_json(run));
     }
 
     let (body_bytes, rules_injected) =
         apply_workspace_rules(body_bytes, &config, RequestShape::OpenAiChat, &headers);
-    let providers = ordered_providers(&config);
+    let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
+    let client_model = client_model_of(&body_bytes);
+    let run = proxy_chat_upstream(
+        state,
+        headers,
+        method,
+        path,
+        query,
+        body_bytes,
+        rules_injected,
+        config,
+    );
+    if stream {
+        let client_model = client_model.clone();
+        return Ok(hold_stream(async move {
+            match run.await {
+                Ok(response) => response,
+                Err(err) => {
+                    warn!(error = %err, "chat 上游失败，改为会话内提示");
+                    session_notice(
+                        crate::upstream_resilience::Wire::Chat,
+                        &client_model,
+                        crate::upstream_resilience::NoticeKind::UpstreamDown,
+                        true,
+                    )
+                }
+            }
+        }));
+    }
+    let client_model = client_model.clone();
+    return Ok(hold_json(async move {
+        match run.await {
+            Ok(response) => response,
+            Err(err) => {
+                warn!(error = %err, "chat 上游失败，改为会话内提示");
+                session_notice(
+                    crate::upstream_resilience::Wire::Chat,
+                    &client_model,
+                    crate::upstream_resilience::NoticeKind::UpstreamDown,
+                    false,
+                )
+            }
+        }
+    }));
+}
 
+async fn proxy_chat_upstream(
+    state: GatewayState,
+    headers: HeaderMap,
+    method: http::Method,
+    path: String,
+    query: String,
+    body_bytes: Bytes,
+    rules_injected: bool,
+    config: AppConfig,
+) -> Result<Response<Body>> {
+    let providers = ordered_providers(&config);
     if providers.is_empty() {
         bail!("没有可用模型配置");
     }
-
-    let mut last_error = None;
+    let client_model = client_model_of(&body_bytes);
+    let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
+    let tools = crate::upstream_resilience::request_declares_tools(&body_bytes);
+    let mut memory = crate::upstream_resilience::FailureMemory::new();
+    let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
-    for (index, provider) in providers.iter().enumerate() {
-        // 熔断器：跳过冷却期内的故障 provider
-        if state.is_circuit_open(&provider.id).await {
-            warn!(
-                provider = %provider.name,
-                "provider 处于熔断冷却期，跳过"
-            );
-            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
-            continue;
-        }
 
-        let attempts = upstream_attempts(provider, config.failover_enabled);
-        for attempt in &attempts {
-            let target = build_target_url(&attempt.base_url, &path, &query);
-            let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
-            let mut builder = state.client.request(method.clone(), &target);
-            builder = copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
-
-            info!(
-                provider = %attempt.name,
-                model = %attempt.model_name,
-                base_url = %attempt.base_url,
-                path = %path,
-                "proxying request"
-            );
-            match builder.body(payload).send().await {
-                Ok(response)
-                    if response.status().is_success() || response.status().as_u16() < 500 =>
-                {
-                    let ok = response.status().is_success();
-                    state.reset_circuit(&provider.id).await;
-                    state
-                        .record_proxy_hit(
-                            attempt,
-                            &path,
-                            index,
-                            started.elapsed().as_millis() as u64,
-                            &headers,
-                            "openai_direct",
-                            ok,
-                            rules_injected,
-                        )
-                        .await;
-                    return into_axum_response(
-                        response,
-                        Some(state.stats.clone()),
-                        Some(token_attr_from(&headers, attempt)),
-                    )
-                    .await;
+    for pass in 0..crate::upstream_resilience::MAX_PASSES {
+        memory.begin_pass();
+        for (index, provider) in providers.iter().enumerate() {
+            let is_free = crate::experimental_free::is_experimental_free(provider);
+            memory.set_free(is_free);
+            if !is_free && state.is_circuit_open(&provider.id).await {
+                warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
+                continue;
+            }
+            let attempts = upstream_attempts(provider, config.failover_enabled);
+            for (attempt_idx, attempt) in attempts.iter().enumerate() {
+                let key = route_key(attempt);
+                if state.is_circuit_open(&key).await {
+                    continue;
                 }
-                Ok(response) => {
-                    let status = response.status();
-                    let text = response.text().await.unwrap_or_default();
-                    warn!(provider = %attempt.name, model = %attempt.model_name, %status, body = %text, "provider returned retryable error");
-                    last_error = Some(anyhow!("{} 返回 {}", attempt.name, status));
-                    // 实验通道：继续试下一条；自定义源：熔断后跳出
-                    if !crate::experimental_free::is_experimental_free(provider) {
-                        state.trip_circuit(&provider.id).await;
-                        break;
+                let target = build_target_url(&attempt.base_url, &path, &query);
+                let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
+                let mut text_tries = 0u32;
+                let class = loop {
+                    let mut builder = state.client.request(method.clone(), &target);
+                    builder =
+                        copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+                    info!(
+                        provider = %attempt.name,
+                        model = %attempt.model_name,
+                        base_url = %attempt.base_url,
+                        path = %path,
+                        pass,
+                        "proxying request"
+                    );
+                    let own_key = !attempt.api_key.trim().is_empty();
+                    match builder.body(payload.clone()).send().await {
+                        Ok(response) if response.status().is_success() => {
+                            if tools {
+                                let held = match if stream {
+                                    hold_chat_sse(response).await
+                                } else {
+                                    hold_chat_json(response).await
+                                } {
+                                    Ok(held) => held,
+                                    Err(err) => {
+                                        warn!(provider = %attempt.name, error = %err, "读取上游回复失败");
+                                        break Some(crate::upstream_resilience::classify_network());
+                                    }
+                                };
+                                if !held.saw_tool {
+                                    text_tries += 1;
+                                    match crate::upstream_resilience::text_only_step(
+                                        text_tries,
+                                        attempt_idx,
+                                        attempt_idx + 1 < attempts.len(),
+                                        paid_text_total(attempt),
+                                    ) {
+                                        crate::upstream_resilience::TextOnlyStep::RetrySame => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "当前模型未返回工具调用，再要一次"
+                                            );
+                                            continue;
+                                        }
+                                        crate::upstream_resilience::TextOnlyStep::NextRoute => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "当前模型多次未返回工具调用，换下一条"
+                                            );
+                                            break None;
+                                        }
+                                        crate::upstream_resilience::TextOnlyStep::Forward => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "多次未返回工具调用，交回文本"
+                                            );
+                                        }
+                                    }
+                                }
+                                state.reset_circuit(&key).await;
+                                state
+                                    .record_proxy_hit(
+                                        attempt,
+                                        &path,
+                                        index,
+                                        started.elapsed().as_millis() as u64,
+                                        &headers,
+                                        "openai_direct",
+                                        true,
+                                        rules_injected,
+                                    )
+                                    .await;
+                                return if stream {
+                                    chat_stream_from_hold(
+                                        held,
+                                        Some(state.stats.clone()),
+                                        Some(token_attr_from(&headers, attempt)),
+                                        &client_model,
+                                    )
+                                } else {
+                                    json_from_hold(held, &client_model)
+                                };
+                            }
+                            state.reset_circuit(&key).await;
+                            state
+                                .record_proxy_hit(
+                                    attempt,
+                                    &path,
+                                    index,
+                                    started.elapsed().as_millis() as u64,
+                                    &headers,
+                                    "openai_direct",
+                                    true,
+                                    rules_injected,
+                                )
+                                .await;
+                            return into_axum_response(
+                                response,
+                                Some(state.stats.clone()),
+                                Some(token_attr_from(&headers, attempt)),
+                                &client_model,
+                            )
+                            .await;
+                        }
+                        Ok(response) => {
+                            let status = response.status();
+                            let retry_after = header_str(response.headers(), "retry-after");
+                            let text = response.text().await.unwrap_or_default();
+                            warn!(
+                                provider = %attempt.name,
+                                model = %attempt.model_name,
+                                %status,
+                                body = %text,
+                                "provider returned error"
+                            );
+                            break Some(crate::upstream_resilience::classify_http(
+                                status.as_u16(),
+                                &text,
+                                retry_after.as_deref(),
+                                own_key,
+                                is_free,
+                            ));
+                        }
+                        Err(err) => {
+                            warn!(provider = %attempt.name, error = %err, "provider request error");
+                            break Some(crate::upstream_resilience::classify_network());
+                        }
                     }
-                }
-                Err(err) => {
-                    warn!(provider = %attempt.name, error = %err, "provider request error");
-                    last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
-                    if !crate::experimental_free::is_experimental_free(provider) {
-                        state.trip_circuit(&provider.id).await;
-                        break;
-                    }
+                };
+                let Some(class) = class else {
+                    continue;
+                };
+                if let Some(kind) = memory.observe(class) {
+                    remember_route_failure(&state, attempt).await;
+                    return Ok(session_notice(
+                        crate::upstream_resilience::Wire::Chat,
+                        &client_model,
+                        kind,
+                        stream,
+                    ));
                 }
             }
         }
-        if crate::experimental_free::is_experimental_free(provider) {
-            state.trip_circuit(&provider.id).await;
+        if let Some(response) = finish_pass(
+            &mut memory,
+            &mut budget,
+            pass,
+            &client_model,
+            crate::upstream_resilience::Wire::Chat,
+            stream,
+        )
+        .await
+        {
+            return Ok(response);
         }
     }
-
-    Err(last_error.unwrap_or_else(|| anyhow!("所有模型配置均不可用")))
+    Ok(session_notice(
+        crate::upstream_resilience::Wire::Chat,
+        &client_model,
+        memory.notice_kind(),
+        stream,
+    ))
 }
 
 async fn proxy_responses_via_chat(
@@ -1125,19 +1573,28 @@ async fn proxy_responses_via_chat(
         .ok()
         .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
         .unwrap_or(false);
-
-    let mut last_error = None;
+    let client_model = client_model_of(&body_bytes);
+    let mut memory = crate::upstream_resilience::FailureMemory::new();
+    let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
+
+    for pass in 0..crate::upstream_resilience::MAX_PASSES {
+        memory.begin_pass();
     for (index, provider) in providers.iter().enumerate() {
-        if state.is_circuit_open(&provider.id).await {
+        let is_free = crate::experimental_free::is_experimental_free(provider);
+        memory.set_free(is_free);
+        if !is_free && state.is_circuit_open(&provider.id).await {
             warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
-            last_error = Some(anyhow!("{} 处于熔断冷却期，已跳过", provider.name));
             continue;
         }
 
-        let is_free = crate::experimental_free::is_experimental_free(provider);
         let attempts = upstream_attempts(provider, config.failover_enabled);
         for (attempt_idx, attempt) in attempts.iter().enumerate() {
+            let key = route_key(attempt);
+            if state.is_circuit_open(&key).await {
+                continue;
+            }
+            let own_key = !attempt.api_key.trim().is_empty();
             // Codex 几乎每轮都带 tools。火山原生 /responses 常「200 纯文本收工」不发
             // tool call；带 tools 时一律走 Chat Completions 桥，保证任意 OpenAI 兼容 LLM
             // 都能跑完工具环，而不是只宣布计划就停。
@@ -1187,7 +1644,7 @@ async fn proxy_responses_via_chat(
 
                 match builder.body(upstream_body).send().await {
                     Ok(response) if response.status().is_success() => {
-                        state.reset_circuit(&provider.id).await;
+                        state.reset_circuit(&key).await;
                         state
                             .record_proxy_hit(
                                 attempt,
@@ -1204,30 +1661,30 @@ async fn proxy_responses_via_chat(
                             response,
                             Some(state.stats.clone()),
                             Some(token_attr_from(&headers, attempt)),
+                            &client_model,
                         )
                         .await;
                     }
                     Ok(response) if response.status().as_u16() < 500 && !is_free => {
-                        let ok = false;
-                        state.reset_circuit(&provider.id).await;
-                        state
-                            .record_proxy_hit(
-                                attempt,
-                                "v1/responses",
-                                index,
-                                started.elapsed().as_millis() as u64,
-                                &headers,
-                                "responses_native",
-                                ok,
-                                rules_injected,
-                            )
-                            .await;
-                        return into_axum_response(
-                            response,
-                            Some(state.stats.clone()),
-                            Some(token_attr_from(&headers, attempt)),
-                        )
-                        .await;
+                        let status = response.status();
+                        let retry_after = header_str(response.headers(), "retry-after");
+                        let text = response.text().await.unwrap_or_default();
+                        let class = crate::upstream_resilience::classify_http(
+                            status.as_u16(),
+                            &text,
+                            retry_after.as_deref(),
+                            own_key,
+                            is_free,
+                        );
+                        if let Some(kind) = memory.observe(class) {
+                            return Ok(session_notice(
+                                crate::upstream_resilience::Wire::Responses,
+                                &client_model,
+                                kind,
+                                stream,
+                            ));
+                        }
+                        break;
                     }
                     Ok(response) => {
                         let status = response.status();
@@ -1262,6 +1719,7 @@ async fn proxy_responses_via_chat(
             // 仅当上游明确拒 FC（tools_unsupported_hint）时，同 attempt 再降级命令模式一次。
             let mut use_command_mode = false;
             let mut command_mode_retried = false;
+            let mut text_tries = 0u32;
 
             // 同一 attempt 最多两次：原生 tools →（若拒 FC）命令模式重试一次。
             loop {
@@ -1305,7 +1763,87 @@ async fn proxy_responses_via_chat(
                 if stream {
                     match builder.body(chat_body).send().await {
                         Ok(response) if response.status().is_success() => {
-                            state.reset_circuit(&provider.id).await;
+                            if has_tools {
+                                let held = match hold_chat_sse(response).await {
+                                    Ok(held) => held,
+                                    Err(err) => {
+                                        warn!(
+                                            provider = %attempt.name,
+                                            error = %err,
+                                            "读取 Codex 上游流失败"
+                                        );
+                                        if let Some(kind) = memory.observe(
+                                            crate::upstream_resilience::classify_network(),
+                                        ) {
+                                            return Ok(session_notice(
+                                                crate::upstream_resilience::Wire::Responses,
+                                                &client_model,
+                                                kind,
+                                                stream,
+                                            ));
+                                        }
+                                        break;
+                                    }
+                                };
+                                if !held.saw_tool {
+                                    text_tries += 1;
+                                    match crate::upstream_resilience::text_only_step(
+                                        text_tries,
+                                        attempt_idx,
+                                        attempt_idx + 1 < attempts.len(),
+                                        paid_text_total(attempt),
+                                    ) {
+                                        crate::upstream_resilience::TextOnlyStep::RetrySame => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "当前模型未返回工具调用，再要一次"
+                                            );
+                                            continue;
+                                        }
+                                        crate::upstream_resilience::TextOnlyStep::NextRoute => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "当前模型多次未返回工具调用，换下一条"
+                                            );
+                                            break;
+                                        }
+                                        crate::upstream_resilience::TextOnlyStep::Forward => {
+                                            warn!(
+                                                provider = %attempt.name,
+                                                model = %attempt.model_name,
+                                                try_index = text_tries,
+                                                "多次未返回工具调用，交回文本"
+                                            );
+                                        }
+                                    }
+                                }
+                                state.reset_circuit(&key).await;
+                                state
+                                    .record_proxy_hit(
+                                        attempt,
+                                        "v1/responses",
+                                        index,
+                                        started.elapsed().as_millis() as u64,
+                                        &headers,
+                                        "chat_completions_adapter",
+                                        true,
+                                        rules_injected,
+                                    )
+                                    .await;
+                                return responses_stream_from_hold(
+                                    held,
+                                    client_model.clone(),
+                                    tool_meta,
+                                    estimated_input,
+                                    Some(state.stats.clone()),
+                                    Some(token_attr_from(&headers, attempt)),
+                                );
+                            }
+                            state.reset_circuit(&key).await;
                             state
                                 .record_proxy_hit(
                                     attempt,
@@ -1318,8 +1856,7 @@ async fn proxy_responses_via_chat(
                                     rules_injected,
                                 )
                                 .await;
-                            let status = response.status();
-                            let model = attempt.public_model_id();
+                            let model = client_model.clone();
                             let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
                                 response.bytes_stream(),
                                 model,
@@ -1331,17 +1868,11 @@ async fn proxy_responses_via_chat(
                                 Some(state.stats.clone()),
                                 Some(token_attr_from(&headers, attempt)),
                             );
-                            return Ok(Response::builder()
-                                .status(status)
-                                .header(
-                                    http::header::CONTENT_TYPE,
-                                    "text/event-stream; charset=utf-8",
-                                )
-                                .header(http::header::CACHE_CONTROL, "no-cache")
-                                .body(Body::from_stream(tapped))?);
+                            return event_stream_response(tapped);
                         }
                         Ok(response) if response.status().as_u16() < 500 => {
                             let status = response.status();
+                            let retry_after = header_str(response.headers(), "retry-after");
                             let text = response.text().await.unwrap_or_default();
                             if has_tools
                                 && !command_mode_retried
@@ -1357,52 +1888,33 @@ async fn proxy_responses_via_chat(
                                 command_mode_retried = true;
                                 continue;
                             }
-                            if is_free {
-                                warn!(
-                                    provider = %attempt.name,
-                                    model = %attempt.model_name,
-                                    %status,
-                                    body = %text,
-                                    "codex chat stream upstream error, trying next attempt"
-                                );
-                                last_error =
-                                    Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
-                                break;
-                            }
+                            let class = crate::upstream_resilience::classify_http(
+                                status.as_u16(),
+                                &text,
+                                retry_after.as_deref(),
+                                own_key,
+                                is_free,
+                            );
                             warn!(
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
                                 body = %text,
-                                "codex chat stream 上游返回客户端错误，改为 Responses failed 事件"
+                                "codex chat stream upstream error"
                             );
-                            state
-                                .record_proxy_hit(
-                                    attempt,
-                                    "v1/responses",
-                                    index,
-                                    started.elapsed().as_millis() as u64,
-                                    &headers,
-                                    "chat_completions_adapter",
-                                    false,
-                                    rules_injected,
-                                )
-                                .await;
-                            let failed = crate::openai_responses_adapter::upstream_failure_sse(
-                                &attempt.public_model_id(),
-                                &format!("上游 {} 返回 {}：{}", attempt.name, status, text),
-                            );
-                            return Ok(Response::builder()
-                                .status(status)
-                                .header(
-                                    http::header::CONTENT_TYPE,
-                                    "text/event-stream; charset=utf-8",
-                                )
-                                .header(http::header::CACHE_CONTROL, "no-cache")
-                                .body(Body::from(failed))?);
+                            if let Some(kind) = memory.observe(class) {
+                                return Ok(session_notice(
+                                    crate::upstream_resilience::Wire::Responses,
+                                    &client_model,
+                                    kind,
+                                    stream,
+                                ));
+                            }
+                            break;
                         }
                         Ok(response) => {
                             let status = response.status();
+                            let retry_after = header_str(response.headers(), "retry-after");
                             let text = response.text().await.unwrap_or_default();
                             warn!(
                                 provider = %attempt.name,
@@ -1411,8 +1923,21 @@ async fn proxy_responses_via_chat(
                                 body = %text,
                                 "codex chat stream upstream error, trying next attempt"
                             );
-                            last_error =
-                                Some(anyhow!("{} 返回 {}: {}", attempt.name, status, text));
+                            let class = crate::upstream_resilience::classify_http(
+                                status.as_u16(),
+                                &text,
+                                retry_after.as_deref(),
+                                own_key,
+                                is_free,
+                            );
+                            if let Some(kind) = memory.observe(class) {
+                                return Ok(session_notice(
+                                    crate::upstream_resilience::Wire::Responses,
+                                    &client_model,
+                                    kind,
+                                    stream,
+                                ));
+                            }
                             break;
                         }
                         Err(err) => {
@@ -1421,7 +1946,14 @@ async fn proxy_responses_via_chat(
                                 error = %err,
                                 "codex chat stream request error"
                             );
-                            last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
+                            if let Some(kind) = memory.observe(crate::upstream_resilience::classify_network()) {
+                                return Ok(session_notice(
+                                    crate::upstream_resilience::Wire::Responses,
+                                    &client_model,
+                                    kind,
+                                    stream,
+                                ));
+                            }
                             break;
                         }
                     }
@@ -1431,6 +1963,7 @@ async fn proxy_responses_via_chat(
                         if response.status().is_success() || response.status().as_u16() < 500 =>
                     {
                         let status = response.status();
+                        let retry_after = header_str(response.headers(), "retry-after");
                         let body_text = response.text().await.unwrap_or_default();
                         let looks_error = !status.is_success()
                             || crate::openai_responses_adapter::is_openai_compat_error_body(
@@ -1451,21 +1984,75 @@ async fn proxy_responses_via_chat(
                             command_mode_retried = true;
                             continue;
                         }
-                        if looks_error {
+                        if looks_error && !status.is_success() {
                             warn!(
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
                                 body = %body_text,
-                                "upstream error for codex responses, trying next attempt"
+                                "upstream error for codex responses"
                             );
-                            last_error =
-                                Some(anyhow!("{} 上游错误: {}", attempt.name, body_text));
-                            if is_free || !status.is_success() {
-                                break;
+                            let class = crate::upstream_resilience::classify_http(
+                                status.as_u16(),
+                                &body_text,
+                                retry_after.as_deref(),
+                                own_key,
+                                is_free,
+                            );
+                            if let Some(kind) = memory.observe(class) {
+                                return Ok(session_notice(
+                                    crate::upstream_resilience::Wire::Responses,
+                                    &client_model,
+                                    kind,
+                                    stream,
+                                ));
+                            }
+                            break;
+                        }
+                        if looks_error && is_free {
+                            let _ = memory.observe(crate::upstream_resilience::FailureClass::Switch);
+                            break;
+                        }
+                        if status.is_success()
+                            && has_tools
+                            && crate::upstream_resilience::assistant_text_omits_tools(&body_text)
+                        {
+                            text_tries += 1;
+                            match crate::upstream_resilience::text_only_step(
+                                text_tries,
+                                attempt_idx,
+                                attempt_idx + 1 < attempts.len(),
+                                paid_text_total(attempt),
+                            ) {
+                                crate::upstream_resilience::TextOnlyStep::RetrySame => {
+                                    warn!(
+                                        provider = %attempt.name,
+                                        model = %attempt.model_name,
+                                        try_index = text_tries,
+                                        "当前模型未返回工具调用，再要一次"
+                                    );
+                                    continue;
+                                }
+                                crate::upstream_resilience::TextOnlyStep::NextRoute => {
+                                    warn!(
+                                        provider = %attempt.name,
+                                        model = %attempt.model_name,
+                                        try_index = text_tries,
+                                        "当前模型多次未返回工具调用，换下一条"
+                                    );
+                                    break;
+                                }
+                                crate::upstream_resilience::TextOnlyStep::Forward => {
+                                    warn!(
+                                        provider = %attempt.name,
+                                        model = %attempt.model_name,
+                                        try_index = text_tries,
+                                        "多次未返回工具调用，交回文本"
+                                    );
+                                }
                             }
                         }
-                        state.reset_circuit(&provider.id).await;
+                        state.reset_circuit(&key).await;
                         state
                             .record_proxy_hit(
                                 attempt,
@@ -1502,7 +2089,7 @@ async fn proxy_responses_via_chat(
                         let bytes = if status.is_success() {
                             crate::openai_responses_adapter::chat_json_to_responses_body_with_meta(
                                 &body_text,
-                                &attempt.public_model_id(),
+                                &client_model,
                                 &tool_meta,
                             )?
                         } else {
@@ -1514,11 +2101,38 @@ async fn proxy_responses_via_chat(
                             .body(Body::from(bytes))?);
                     }
                     Ok(response) => {
-                        last_error = Some(anyhow!("{} 返回 {}", attempt.name, response.status()));
+                        let status = response.status();
+                        let retry_after = header_str(response.headers(), "retry-after");
+                        let text = response.text().await.unwrap_or_default();
+                        let class = crate::upstream_resilience::classify_http(
+                            status.as_u16(),
+                            &text,
+                            retry_after.as_deref(),
+                            own_key,
+                            is_free,
+                        );
+                        if let Some(kind) = memory.observe(class) {
+                            return Ok(session_notice(
+                                crate::upstream_resilience::Wire::Responses,
+                                &client_model,
+                                kind,
+                                stream,
+                            ));
+                        }
                         break;
                     }
                     Err(err) => {
-                        last_error = Some(anyhow!("{} 请求失败: {}", attempt.name, err));
+                        warn!(provider = %attempt.name, error = %err, "codex responses request error");
+                        if let Some(kind) =
+                            memory.observe(crate::upstream_resilience::classify_network())
+                        {
+                            return Ok(session_notice(
+                                crate::upstream_resilience::Wire::Responses,
+                                &client_model,
+                                kind,
+                                stream,
+                            ));
+                        }
                         break;
                     }
                 }
@@ -1526,10 +2140,169 @@ async fn proxy_responses_via_chat(
             } // command_mode retry loop
         }
 
-        state.trip_circuit(&provider.id).await;
+    }
+        if let Some(response) = finish_pass(
+            &mut memory,
+            &mut budget,
+            pass,
+            &client_model,
+            crate::upstream_resilience::Wire::Responses,
+            stream,
+        )
+        .await
+        {
+            return Ok(response);
+        }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("Codex Responses 代理失败")))
+    Ok(session_notice(
+        crate::upstream_resilience::Wire::Responses,
+        &client_model,
+        memory.notice_kind(),
+        stream,
+    ))
+}
+
+fn client_model_of(body: &[u8]) -> String {
+    crate::upstream_resilience::client_visible_model(body, crate::model::CLIENT_MODEL_ID)
+}
+
+fn retry_budget(config: &AppConfig) -> crate::upstream_resilience::RetryBudget {
+    crate::upstream_resilience::RetryBudget::from_config(
+        config.upstream_retry_budget_ms,
+        config.upstream_retry_single_ms,
+    )
+}
+
+fn route_key(provider: &ProviderConfig) -> String {
+    crate::upstream_resilience::route_circuit_key(
+        &provider.id,
+        &provider.base_url,
+        &provider.model_name,
+        crate::experimental_free::is_experimental_free(provider),
+    )
+}
+
+fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+fn session_notice(
+    wire: crate::upstream_resilience::Wire,
+    model: &str,
+    kind: crate::upstream_resilience::NoticeKind,
+    stream: bool,
+) -> Response<Body> {
+    crate::upstream_resilience::notice_response(wire, model, kind, stream)
+}
+
+async fn remember_route_failure(state: &GatewayState, attempt: &ProviderConfig) {
+    state.trip_circuit(&route_key(attempt)).await;
+}
+
+/// 这一轮路由都失败了：还有预算就等待后返回 None，调用方再跑一轮；否则给出提示。
+/// 不在这里记熔断。下一条用户消息应再打上游，而不是 30 秒内直接拿到提示。
+async fn finish_pass(
+    memory: &mut crate::upstream_resilience::FailureMemory,
+    budget: &mut crate::upstream_resilience::RetryBudget,
+    pass: u32,
+    client_model: &str,
+    wire: crate::upstream_resilience::Wire,
+    stream: bool,
+) -> Option<Response<Body>> {
+    match memory.finish(budget, pass) {
+        crate::upstream_resilience::PassFinish::Sleep(wait) => {
+            info!(
+                wait_ms = wait.as_millis() as u64,
+                pass,
+                "上游失败，同一次请求内等待后重试"
+            );
+            tokio::time::sleep(wait).await;
+            None
+        }
+        crate::upstream_resilience::PassFinish::Notice(kind) => {
+            Some(session_notice(wire, client_model, kind, stream))
+        }
+    }
+}
+
+fn hold_json<F>(fut: F) -> Response<Body>
+where
+    F: std::future::Future<Output = Response<Body>> + Send + 'static,
+{
+    hold_until_ready(fut, b"\n", "application/json")
+}
+
+fn hold_stream<F>(fut: F) -> Response<Body>
+where
+    F: std::future::Future<Output = Response<Body>> + Send + 'static,
+{
+    hold_until_ready(fut, b": ping\n\n", "text/event-stream; charset=utf-8")
+}
+
+fn hold_until_ready<F>(
+    fut: F,
+    keepalive: &'static [u8],
+    content_type: &'static str,
+) -> Response<Body>
+where
+    F: std::future::Future<Output = Response<Body>> + Send + 'static,
+{
+    let stream = async_stream::stream! {
+        tokio::pin!(fut);
+        loop {
+            tokio::select! {
+                biased;
+                ready = &mut fut => {
+                    let mut inner = ready.into_body().into_data_stream();
+                    while let Some(chunk) = inner.next().await {
+                        yield chunk.map_err(std::io::Error::other);
+                    }
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(keepalive));
+                }
+            }
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, content_type)
+        .header(http::header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn rewrite_model_stream<S>(
+    stream: S,
+    model: String,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
+where
+    S: Stream<Item = Result<Bytes, std::io::Error>> + Send,
+{
+    async_stream::stream! {
+        let mut rewriter = crate::upstream_resilience::ModelRewriter::new(model);
+        tokio::pin!(stream);
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(bytes) => {
+                    let out = rewriter.push(&bytes);
+                    if !out.is_empty() {
+                        yield Ok(Bytes::from(out));
+                    }
+                }
+                Err(err) => yield Err(err),
+            }
+        }
+        let tail = rewriter.finish();
+        if !tail.is_empty() {
+            yield Ok(Bytes::from(tail));
+        }
+    }
 }
 
 fn ordered_providers(config: &AppConfig) -> Vec<ProviderConfig> {
@@ -1600,6 +2373,18 @@ fn rewrite_model(body: Bytes, model_name: &str) -> Bytes {
         Ok(mut value) => {
             if let Some(object) = value.as_object_mut() {
                 object.insert("model".to_string(), Value::String(model_name.to_string()));
+                let has_max = object
+                    .get("max_tokens")
+                    .or_else(|| object.get("max_completion_tokens"))
+                    .is_some_and(|value| !value.is_null());
+                if !has_max {
+                    let default_max = crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS;
+                    object.insert("max_tokens".to_string(), json!(default_max));
+                    warn!(
+                        default_max,
+                        "Chat 请求未指定 max_tokens，网关填充默认值以防上游截断"
+                    );
+                }
             }
             Bytes::from(serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec()))
         }
@@ -1679,6 +2464,131 @@ fn build_upstream_client_inner(timeout: Option<Duration>) -> Result<Client> {
     Ok(builder.build()?)
 }
 
+type UpstreamChunkStream =
+    Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+
+struct ChatHold {
+    prefix: Vec<Bytes>,
+    rest: Option<UpstreamChunkStream>,
+    saw_tool: bool,
+}
+
+async fn hold_chat_sse(response: reqwest::Response) -> Result<ChatHold, reqwest::Error> {
+    let mut incoming = response.bytes_stream();
+    let mut prefix = Vec::new();
+    let mut acc = String::new();
+    while let Some(item) = incoming.next().await {
+        let bytes = item?;
+        acc.push_str(&String::from_utf8_lossy(&bytes));
+        let saw_tool = crate::upstream_resilience::chat_sse_saw_tool_call(&acc);
+        prefix.push(bytes);
+        if saw_tool {
+            return Ok(ChatHold {
+                prefix,
+                rest: Some(Box::pin(incoming)),
+                saw_tool: true,
+            });
+        }
+    }
+    Ok(ChatHold {
+        prefix,
+        rest: None,
+        saw_tool: false,
+    })
+}
+
+async fn hold_chat_json(response: reqwest::Response) -> Result<ChatHold, reqwest::Error> {
+    let text = response.text().await?;
+    let saw_tool = !crate::upstream_resilience::assistant_text_omits_tools(&text);
+    Ok(ChatHold {
+        prefix: vec![Bytes::from(text)],
+        rest: None,
+        saw_tool,
+    })
+}
+
+fn replay_upstream(prefix: Vec<Bytes>, rest: Option<UpstreamChunkStream>) -> UpstreamChunkStream {
+    Box::pin(stream! {
+        for chunk in prefix {
+            yield Ok(chunk);
+        }
+        if let Some(mut rest) = rest {
+            while let Some(item) = rest.next().await {
+                yield item;
+            }
+        }
+    })
+}
+
+fn event_stream_response(
+    body: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+) -> Result<Response<Body>> {
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(http::header::CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body))?)
+}
+
+fn chat_stream_from_hold(
+    held: ChatHold,
+    stats: Option<GatewayStatsCollector>,
+    token_attr: Option<(String, String)>,
+    client_model: &str,
+) -> Result<Response<Body>> {
+    let replay = replay_upstream(held.prefix, held.rest);
+    let mapped = tap_stream_for_token_stats(
+        replay.map(|item| item.map_err(std::io::Error::other)),
+        stats,
+        token_attr,
+    );
+    let rewritten = rewrite_model_stream(mapped, client_model.to_string());
+    event_stream_response(rewritten)
+}
+
+fn json_from_hold(held: ChatHold, client_model: &str) -> Result<Response<Body>> {
+    let mut raw = Vec::new();
+    for chunk in held.prefix {
+        raw.extend_from_slice(&chunk);
+    }
+    let rewritten = crate::upstream_resilience::rewrite_json_model(&raw, client_model);
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(rewritten))?)
+}
+
+fn responses_stream_from_hold(
+    held: ChatHold,
+    model: String,
+    tool_meta: crate::openai_responses_adapter::ChatToolMeta,
+    estimated_input: u64,
+    stats: Option<GatewayStatsCollector>,
+    token_attr: Option<(String, String)>,
+) -> Result<Response<Body>> {
+    let replay = replay_upstream(held.prefix, held.rest);
+    let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
+        replay,
+        model,
+        tool_meta,
+        estimated_input,
+    );
+    let tapped = tap_stream_for_token_stats(mapped, stats, token_attr);
+    event_stream_response(tapped)
+}
+
+/// 收费模型的总次数（含第一次）。免费通道返回 None，走 3、2、1。
+fn paid_text_total(provider: &ProviderConfig) -> Option<u32> {
+    if crate::experimental_free::is_experimental_free(provider) {
+        return None;
+    }
+    if provider.tool_text_retry_enabled {
+        Some(provider.tool_text_retry_extra.clamp(1, 5).saturating_add(1))
+    } else {
+        Some(1)
+    }
+}
+
 /// 克隆并绑定实验免费通道路由；用户自定义源原样返回。
 fn prepare_upstream_provider(provider: &ProviderConfig) -> ProviderConfig {
     let mut p = provider.clone();
@@ -1709,6 +2619,7 @@ async fn into_axum_response(
     response: reqwest::Response,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
+    client_model: &str,
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -1717,6 +2628,7 @@ async fn into_axum_response(
         stats,
         token_attr,
     );
+    let rewritten = rewrite_model_stream(mapped, client_model.to_string());
     let mut builder = Response::builder().status(status);
 
     for (name, value) in headers.iter() {
@@ -1726,7 +2638,7 @@ async fn into_axum_response(
         builder = builder.header(name, value);
     }
 
-    Ok(builder.body(Body::from_stream(mapped))?)
+    Ok(builder.body(Body::from_stream(rewritten))?)
 }
 
 /// 从响应字节流中拾取 usage 并记入请求统计（Chat SSE / Responses SSE 均可）。
@@ -1855,38 +2767,6 @@ fn extract_usage_from_json(value: &Value) -> Option<(u64, u64)> {
         None
     } else {
         Some((input, output))
-    }
-}
-
-/// 把 /v1/responses 的上游失败包装成 Responses 形状：
-/// 非流式给 `status: failed` 的 JSON，流式给 `response.failed` 事件流。
-/// attempt 耗尽、5xx、熔断等所有出口都走这里，不再退化成通用 502 错误体。
-fn responses_failure_response(body_bytes: &[u8], message: &str) -> anyhow::Result<Response<Body>> {
-    let request: Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| json!({}));
-    let model = request
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("sugt-gateway");
-    let is_stream = request
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if is_stream {
-        let events = crate::openai_responses_adapter::upstream_failure_sse(model, message);
-        Ok(Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .header(
-                http::header::CONTENT_TYPE,
-                "text/event-stream; charset=utf-8",
-            )
-            .header(http::header::CACHE_CONTROL, "no-cache")
-            .body(Body::from(events))?)
-    } else {
-        let bytes = crate::openai_responses_adapter::responses_upstream_failure(model, message)?;
-        Ok(Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .header(http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(bytes))?)
     }
 }
 

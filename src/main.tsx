@@ -86,6 +86,8 @@ type ProviderView = {
   last_checked_at?: string | null;
   last_error?: string | null;
   auto_adapt_base_url?: boolean;
+  tool_text_retry_enabled?: boolean;
+  tool_text_retry_extra?: number;
   experimental?: boolean;
 };
 
@@ -137,6 +139,8 @@ const emptyForm: ProviderForm = {
   protocol: 'openai',
   enabled: true,
   auto_adapt_base_url: true,
+  tool_text_retry_enabled: false,
+  tool_text_retry_extra: '',
 };
 
 function isTauriRuntime(): boolean {
@@ -389,14 +393,33 @@ function App() {
       protocol: normalizeProtocol(provider.protocol),
       enabled: provider.enabled,
       auto_adapt_base_url: provider.auto_adapt_base_url ?? true,
+      tool_text_retry_enabled: provider.tool_text_retry_enabled ?? true,
+      tool_text_retry_extra:
+        (provider.tool_text_retry_enabled ?? true) && provider.tool_text_retry_extra
+          ? String(provider.tool_text_retry_extra)
+          : '',
     });
     setProviderModal(true);
   };
 
   const saveProvider = async () => {
+    if (form.tool_text_retry_enabled) {
+      const times = Number(form.tool_text_retry_extra);
+      if (!Number.isInteger(times) || times < 1 || times > 5) {
+        pushToast(t('pm.toolRetryInvalid'), 'error');
+        return;
+      }
+    }
     setBusy(true);
     try {
-      await invoke('save_provider', { input: form });
+      await invoke('save_provider', {
+        input: {
+          ...form,
+          tool_text_retry_extra: form.tool_text_retry_enabled
+            ? Number(form.tool_text_retry_extra)
+            : 0,
+        },
+      });
       pushToast(form.id ? t('models.toastUpdated') : t('models.toastAdded'), 'ok');
       setProviderModal(false);
       setForm(emptyForm);

@@ -416,12 +416,18 @@ fn prune_sugt_fields(
         )
     })?;
     let expected = format!("{}/v1", config.listen_url());
-    let public_model = config
+    let active = config
         .providers
         .iter()
-        .find(|provider| config.active_provider_id.as_ref() == Some(&provider.id))
+        .find(|provider| config.active_provider_id.as_ref() == Some(&provider.id));
+    let public_model = active
         .map(|provider| provider.public_model_id())
         .unwrap_or_else(|| "gpt-4".to_string());
+    // 1.1.7 没有别名，写进 Codex 的是上游 model_name。现在空别名对外是 sutai，
+    // 清理旧残留时仍要认出当时写下的上游名。
+    let legacy_model_name = active
+        .map(|provider| provider.model_name.clone())
+        .unwrap_or_default();
     let web_search_injected = state.is_some_and(|s| s.web_search_injected);
     let before_doc = state
         .and_then(|s| s.config_before.as_deref())
@@ -494,7 +500,9 @@ fn prune_sugt_fields(
                 // 仍按值判定：用户在接管期间改过的字段一律保留。
                 let cleanup = match key {
                     "model" => current.as_deref().is_some_and(|value| {
-                        value.starts_with("sugt-") || value == public_model.as_str()
+                        value.starts_with("sugt-")
+                            || value == public_model.as_str()
+                            || value == legacy_model_name.as_str()
                     }),
                     "preferred_auth_method" => current.as_deref() == Some("apikey"),
                     "cli_auth_credentials_store" => current.as_deref() == Some("file"),

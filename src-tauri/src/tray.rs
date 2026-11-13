@@ -51,10 +51,11 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         ],
     )?;
 
-    let mut builder = TrayIconBuilder::with_id("sugt-tray").tooltip("SUGT - su gateway");
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
+    // 托盘用 32×32：从 512 主图等比例缩小，不另画一套。macOS 会再缩到菜单栏高度。
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
+    let builder = TrayIconBuilder::with_id("sugt-tray")
+        .tooltip("SUGT - su gateway")
+        .icon(tray_icon);
 
     builder
         .menu(&menu)

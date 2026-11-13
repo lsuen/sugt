@@ -69,8 +69,11 @@ pub fn anthropic_to_openai(body: Bytes, model_name: &str) -> Result<Bytes> {
     if let Some(max_tokens) = value
         .get("max_tokens")
         .or_else(|| value.get("max_tokens_to_sample"))
+        .filter(|value| !value.is_null())
     {
         payload["max_tokens"] = max_tokens.clone();
+    } else {
+        payload["max_tokens"] = json!(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS);
     }
     // 跳过 null 字段：部分 Anthropic 客户端会显式发送 null，直接透传会被部分 OpenAI 服务商拒绝
     if let Some(temperature) = value.get("temperature") {
@@ -485,45 +488,17 @@ pub async fn openai_to_anthropic_response(
         let stream = response
             .bytes_stream()
             .map(|item| item.map_err(std::io::Error::other));
-        let converted = openai_sse_to_anthropic_sse(
+        return anthropic_stream_response(
             stream,
             model.to_string(),
             stats,
             client_owned,
             provider_owned,
         );
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(
-                http::header::CONTENT_TYPE,
-                "text/event-stream; charset=utf-8",
-            )
-            .header(http::header::CACHE_CONTROL, "no-cache")
-            .header(http::header::CONNECTION, "keep-alive")
-            .body(Body::from_stream(converted))?);
     }
 
     let bytes = response.bytes().await?;
-    let anthropic = openai_json_to_anthropic_json(&bytes)?;
-    if let Some(collector) = stats {
-        let input = anthropic
-            .pointer("/usage/input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let output = anthropic
-            .pointer("/usage/output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        if input > 0 || output > 0 {
-            collector
-                .record_tokens_attributed(input, output, client_label, provider_name)
-                .await;
-        }
-    }
-    Ok(Response::builder()
-        .status(status)
-        .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(anthropic.to_string()))?)
+    anthropic_json_response(bytes, model, stats, client_label, provider_name).await
 }
 
 /// 把 OpenAI 错误体转换为 Anthropic 错误格式。
@@ -576,6 +551,54 @@ pub fn anthropic_auth_headers(api_key: &str) -> Result<HeaderMap> {
     headers.insert("x-api-key", api_key.parse()?);
     headers.insert("anthropic-version", ANTHROPIC_VERSION.parse()?);
     Ok(headers)
+}
+
+pub fn anthropic_stream_response(
+    input: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
+    model: String,
+    stats: Option<GatewayStatsCollector>,
+    client_label: Option<String>,
+    provider_name: Option<String>,
+) -> Result<Response<Body>> {
+    let converted = openai_sse_to_anthropic_sse(input, model, stats, client_label, provider_name);
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+        .header(http::header::CACHE_CONTROL, "no-cache")
+        .header(http::header::CONNECTION, "keep-alive")
+        .body(Body::from_stream(converted))?)
+}
+
+pub async fn anthropic_json_response(
+    bytes: Bytes,
+    model: &str,
+    stats: Option<GatewayStatsCollector>,
+    client_label: Option<&str>,
+    provider_name: Option<&str>,
+) -> Result<Response<Body>> {
+    let mut anthropic = openai_json_to_anthropic_json(&bytes)?;
+    if let Some(object) = anthropic.as_object_mut() {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    if let Some(collector) = stats {
+        let input = anthropic
+            .pointer("/usage/input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let output = anthropic
+            .pointer("/usage/output_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if input > 0 || output > 0 {
+            collector
+                .record_tokens_attributed(input, output, client_label, provider_name)
+                .await;
+        }
+    }
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(anthropic.to_string()))?)
 }
 
 fn openai_sse_to_anthropic_sse(

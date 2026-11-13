@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.1.9';
+export const CURRENT_VERSION = '1.1.10';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,6 +6,9 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  { type: 'fix', text: '声明了工具却只回文字时，同一条请求里再要：免费通道按 3、2、1，收费模型可在添加/编辑页自选次数。出现工具调用立刻交回，次数用尽才把文字交回' },
+  { type: 'fix', text: '429 和 5xx 在同一条请求里重试，预算用尽回助手提示，会话不断。对外模型名固定。没带 max_tokens 的请求填 32768' },
+  { type: 'feat', text: '应用图标换成新标志，托盘、安装包和界面标志一起更换' },
   { type: 'feat', text: '桌面精灵小su：千帧表驱动动作（20 动作 × 50 帧）、拖拽起落三段、睡醒/漫游与活感层；默认开启、中号窗口' },
   { type: 'feat', text: '精灵设置独立子页：尺寸 / 休眠 / 气泡 / 视线 / 眨眼 / 免打扰 / 走动；右键菜单快捷操作' },
   { type: 'feat', text: 'Linux：CI 自动打包 sugt-cli 无头网关（x64 / arm64），Release 固定资产名不含版本号' },

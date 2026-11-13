@@ -11,6 +11,10 @@ export type ProviderForm = {
   enabled: boolean;
   /** 保存时自动规范化 Base URL；关闭则原样保存 */
   auto_adapt_base_url: boolean;
+  /** 未调用工具时再要。新模型默认关。 */
+  tool_text_retry_enabled: boolean;
+  /** 第一次之外再要几次。未勾选时为空。 */
+  tool_text_retry_extra: string;
 };
 
 export type TrafficStats = {

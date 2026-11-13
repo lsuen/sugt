@@ -268,6 +268,7 @@ pub async fn save_provider(
     input: ProviderInput,
 ) -> Result<Vec<ProviderView>, String> {
     validate_provider_input(&input)?;
+    let (retry_on, retry_extra) = normalize_tool_text_retry(&input);
     let mut config = runtime.config.write().await;
     let id = input.id.clone().unwrap_or_default();
 
@@ -315,6 +316,8 @@ pub async fn save_provider(
         provider.protocol = input.protocol.clone();
         provider.enabled = input.enabled;
         provider.auto_adapt_base_url = input.auto_adapt_base_url;
+        provider.tool_text_retry_enabled = retry_on;
+        provider.tool_text_retry_extra = retry_extra;
     } else {
         let mut provider = ProviderConfig::new(
             input.name,
@@ -334,6 +337,8 @@ pub async fn save_provider(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         provider.auto_adapt_base_url = input.auto_adapt_base_url;
+        provider.tool_text_retry_enabled = retry_on;
+        provider.tool_text_retry_extra = retry_extra;
         if config.active_provider_id.is_none() {
             config.active_provider_id = Some(provider.id.clone());
         }
@@ -380,11 +385,8 @@ pub async fn restore_experimental_free(
 }
 
 #[tauri::command]
-pub fn list_experimental_free_candidates() -> Vec<String> {
-    crate::experimental_free::candidate_models()
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::FreeRouteChoice> {
+    crate::experimental_free::route_choices()
 }
 
 #[tauri::command]
@@ -409,17 +411,7 @@ pub async fn probe_experimental_free_models(
                     Some("免费实验通道暂无可用模型，请稍后重试".into());
                 provider.status = ProviderStatus::Unavailable;
             } else {
-                if !available
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
-                {
-                    if let Some(preferred) =
-                        crate::experimental_free::pick_preferred_model(&available)
-                    {
-                        provider.model_name = preferred.to_string();
-                    }
-                }
-                crate::experimental_free::apply_route(provider);
+                // 探测只记录可用性。改首选路由必须由用户在下拉里点选。
                 provider.last_error = None;
                 provider.status = ProviderStatus::Available;
             }
@@ -1571,7 +1563,18 @@ fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {
     if !input.base_url.starts_with("http://") && !input.base_url.starts_with("https://") {
         return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
     }
+    if input.tool_text_retry_enabled && !(1..=5).contains(&input.tool_text_retry_extra) {
+        return Err("重试次数请填 1 到 5".to_string());
+    }
     Ok(())
+}
+
+fn normalize_tool_text_retry(input: &crate::model::ProviderInput) -> (bool, u32) {
+    if input.tool_text_retry_enabled {
+        (true, input.tool_text_retry_extra)
+    } else {
+        (false, 0)
+    }
 }
 
 fn open_path(path: &std::path::Path) -> Result<()> {

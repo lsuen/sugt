@@ -560,9 +560,9 @@ async fn empty_sse_stream_becomes_failed_not_completed() {
     );
 }
 
-/// 上游半路 Err：发 failed_events，不要把 Err 抛给客户端当连接断开。
+/// 上游半路 Err：已经吐过字就收成 completed，不要 response.failed，也不要把 Err 抛出去。
 #[tokio::test]
-async fn midstream_upstream_error_yields_failed_events() {
+async fn midstream_upstream_error_closes_as_completed_notice() {
     let boom = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(50))
         // 回环探测必须直连：环境 HTTP_PROXY 会把连不上的端口转成 502 响应，
@@ -582,6 +582,8 @@ async fn midstream_upstream_error_yields_failed_events() {
     ]);
     let mapped = chat_sse_to_responses_sse(upstream, "m".to_string());
     let mut saw_failed = false;
+    let mut saw_completed = false;
+    let mut saw_notice = false;
     let mut saw_io_err = false;
     let mut mapped = mapped;
     while let Some(item) = mapped.next().await {
@@ -591,12 +593,25 @@ async fn midstream_upstream_error_yields_failed_events() {
                 if text.contains("response.failed") {
                     saw_failed = true;
                 }
+                if text.contains("response.completed") {
+                    saw_completed = true;
+                }
+                if text.contains("小su提示") {
+                    saw_notice = true;
+                }
             }
             Err(_) => saw_io_err = true,
         }
     }
-    assert!(saw_failed, "半路截断应发 response.failed");
     assert!(!saw_io_err, "不应再把 Err 抛给客户端");
+    assert!(
+        !saw_failed,
+        "已经吐过字不能再发 response.failed，会话会被掐掉"
+    );
+    assert!(
+        saw_completed && saw_notice,
+        "中途断开应收成带提示的 completed"
+    );
 }
 
 /// 正文已发后，工具 output_index 必须连续（message=0 → tool=1）。

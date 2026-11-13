@@ -53,6 +53,12 @@ pub struct ProviderConfig {
     /// 保存时自动规范化 Base URL（补 /v1、修复火山路径等）；关闭则原样保存
     #[serde(default = "default_auto_adapt_base_url")]
     pub auto_adapt_base_url: bool,
+    /// 未调用工具时是否再要。旧配置没有这个字段时视为开启。
+    #[serde(default = "default_tool_text_retry_enabled")]
+    pub tool_text_retry_enabled: bool,
+    /// 第一次之外再要几次。旧配置没有这个字段时为 2。
+    #[serde(default = "default_tool_text_retry_extra")]
+    pub tool_text_retry_extra: u32,
 }
 
 impl ProviderConfig {
@@ -77,6 +83,8 @@ impl ProviderConfig {
             last_error: None,
             model_alias: None,
             auto_adapt_base_url: default_auto_adapt_base_url(),
+            tool_text_retry_enabled: false,
+            tool_text_retry_extra: 0,
         }
     }
 
@@ -87,11 +95,15 @@ impl ProviderConfig {
     pub fn public_model_id(&self) -> String {
         self.model_alias
             .as_ref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| self.model_name.clone())
+            .map(|alias| alias.trim())
+            .filter(|alias| !alias.is_empty())
+            .map(|alias| alias.to_string())
+            .unwrap_or_else(|| CLIENT_MODEL_ID.to_string())
     }
 }
+
+/// 客户端默认只填这一套模型名。上游怎么换，对外都回这个名字，除非请求里自带了模型名。
+pub const CLIENT_MODEL_ID: &str = "sutai";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -155,6 +167,12 @@ pub struct AppConfig {
     /// 全局工作区规则（软约束注入 + 少而精本地服务）
     #[serde(default)]
     pub workspace_rules: WorkspaceRules,
+    /// 单次请求内上游重试的总等待预算（毫秒）。空表示 8 分钟。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_retry_budget_ms: Option<u64>,
+    /// 单次等待上限（毫秒）。空表示 60 秒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_retry_single_ms: Option<u64>,
 }
 
 /// 走网关的 agent 共享纪律：规则文本注入模型上下文；webhook 仅留本地代发。
@@ -476,6 +494,14 @@ fn default_auto_adapt_base_url() -> bool {
     true
 }
 
+fn default_tool_text_retry_enabled() -> bool {
+    true
+}
+
+fn default_tool_text_retry_extra() -> u32 {
+    2
+}
+
 impl AppConfig {
     /// 实际 bind 地址
     pub fn bind_host(&self) -> String {
@@ -544,6 +570,8 @@ impl Default for AppConfig {
             anthropic_access_mode: AnthropicAccessMode::default(),
             overlay: OverlayConfig::default(),
             workspace_rules: WorkspaceRules::default(),
+            upstream_retry_budget_ms: None,
+            upstream_retry_single_ms: None,
         }
     }
 }
@@ -626,6 +654,10 @@ pub struct ProviderInput {
     pub enabled: bool,
     #[serde(default = "default_auto_adapt_base_url")]
     pub auto_adapt_base_url: bool,
+    #[serde(default)]
+    pub tool_text_retry_enabled: bool,
+    #[serde(default)]
+    pub tool_text_retry_extra: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -646,6 +678,8 @@ pub struct ProviderView {
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub auto_adapt_base_url: bool,
+    pub tool_text_retry_enabled: bool,
+    pub tool_text_retry_extra: u32,
     /// 实验性免费通道（内置只读，可删可开关）
     pub experimental: bool,
 }
@@ -668,6 +702,8 @@ impl From<&ProviderConfig> for ProviderView {
             last_checked_at: value.last_checked_at,
             last_error: value.last_error.clone(),
             auto_adapt_base_url: value.auto_adapt_base_url,
+            tool_text_retry_enabled: value.tool_text_retry_enabled,
+            tool_text_retry_extra: value.tool_text_retry_extra,
             experimental: crate::experimental_free::is_experimental_free(value),
         }
     }
@@ -780,6 +816,21 @@ pub fn mask_secret(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_provider_without_tool_retry_fields_stays_on() {
+        let raw = r#"{
+            "id":"p","name":"n","provider":"openai","base_url":"https://x",
+            "api_key":"k","model_name":"m","enabled":true,"status":"Unknown",
+            "last_checked_at":null,"last_error":null
+        }"#;
+        let parsed: ProviderConfig = serde_json::from_str(raw).unwrap();
+        assert!(parsed.tool_text_retry_enabled);
+        assert_eq!(parsed.tool_text_retry_extra, 2);
+        let fresh = ProviderConfig::new("n", "openai", "https://x", "k", "m");
+        assert!(!fresh.tool_text_retry_enabled);
+        assert_eq!(fresh.tool_text_retry_extra, 0);
+    }
 
     #[test]
     fn deserializes_protocol_aliases() {
