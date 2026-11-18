@@ -133,7 +133,10 @@ pub async fn probe_llm_connectivity(client: &Client, provider: &ProviderConfig) 
   - 速度(t/s)
   - 测试时间
   - 启用状态（开关）
-- 核心目的：**禁用后，在控制台（UpstreamSelector 的模型选择）隐藏该模型**，选择时只看到可用的。
+
+**已对齐决策（2026-11-18 作者确认）**
+- **「测试全部」= 全量测试当前服务商的所有模型**，不受当前勾选影响；点击后先弹二次确认（说明将测多少条、可能耗时与消耗额度），确认后才开始。
+- **禁用即隐藏**：模型被禁用后，控制台（`UpstreamSelector` 的模型选择）**直接不出现**该模型；「模型列表」tab 仍完整展示并带禁用态，用户在那里重新启用即可恢复。
 
 **技术设计**
 - 新增 model 级状态数据，与 provider 级 `ProviderConfig` 解耦：
@@ -157,11 +160,12 @@ pub struct ModelProbe {
 }
 ```
 
-- 存储：独立 JSON 文件 `config_dir/model-registry.json`（高频读写 + 与 config.toml 热重载解耦，避免污染主配置）。加载/持久化走现有的 `atomic_write` 路径。
+- 存储：独立 JSON 文件 `config_dir/model-registry.json`（高频读写 + 与 config.toml 热重载解耦，避免污染主配置）。加载/持久化走现有原子写路径（pid 备份 + rename，参考 `codex_config.rs::atomic_write`）。
 - 命令：
-  - `list_provider_models` 扩展返回 `Vec<ModelEntry>`（合并 provider 实际返回的模型 + registry 里的启用/禁用 + 最近探测结果）。未知新模型自动补 registry（enabled=true，未探测）。
-  - `set_model_enabled(model_id, enabled)`。
-  - `probe_models(provider_id, model_names: Vec<String>)`：并发（限并发数）对每个 model 跑 R1 的 probe，回写 registry。
+  - **保留** `list_provider_models` 原签名（`ProviderModal` 与 `UpstreamSelector` 两处仍读 `Vec<String>`，不改它，避免一处改动牵连三处）。
+  - 新增 `list_model_registry(provider_id)`：上游拉取模型列表 + 合并 registry 的启用/禁用与最近探测结果，返回 `Vec<ModelEntry>`。未知新模型自动补 registry（enabled=true，未探测）。
+  - 新增 `set_model_enabled(provider_id, model_name, enabled)`（用 provider_id + model_name 定位，不用拼字符串 id 让前端猜）。
+  - 新增 `probe_models(provider_id, model_names: Vec<String>)`：并发（限并发数）对每个 model 跑 R1 的 probe，回写 registry 并返回最新 `Vec<ModelEntry>`。
 - 前端：新组件 `src/ModelListPanel.tsx`，复用 R1 的 probe 结果展示。
 
 **验收标准**
@@ -450,7 +454,7 @@ pub enum RuleAction {
 3. **R5 key 加密存储**：现与 provider 一致明文存，若作者要求加密，需单独评估迁移成本与现有 `masked_key` 的兼容。
 4. **R6 作用域匹配覆盖度**：现有客户端识别依赖 `x-sugt-client` + User-Agent，未识别到的客户端落到 `Default` 作用域，需确认这是否符合预期。
 5. **R7 缓存清单**：具体哪些算"缓存"需开发时盘点，PRD 先留可枚举接口。
-6. **R2 与现有 `list_provider_models` 的关系**：是否替换原返回 `Vec<String>` 为 `Vec<ModelEntry>`，需确认是否有其他调用方依赖旧签名。
+6. **R2 与现有 `list_provider_models` 的关系（已定）**：保留原签名不动（`ProviderModal` / `UpstreamSelector` 依赖 `Vec<String>`），R2 另开 `list_model_registry` / `set_model_enabled` / `probe_models` 三个新命令。
 
 ---
 
@@ -461,10 +465,10 @@ pub enum RuleAction {
 | T1.1 | R1 | probe.rs + ProbeReport + probe_llm_connectivity | 已完成 | 75afd4e | 单测 3 条：除零/空回复/usage 解析 |
 | T1.2 | R1 | test_provider_draft 返回 ProbeReport + 前端 toast | 已完成 | 75afd4e | 弹窗提示含延迟与 t/s，估算有标记 |
 | T1.3 | R1 | 控制台单测/全测回传指标 + 测试全部限并发 | 已完成 | 7c943f0 | 3 个一批；CLI 输出格式不变 |
-| T2.1 | R2 | model_registry.rs + model-registry.json 持久化 | 待开发 | | |
-| T2.2 | R2 | ModelListPanel.tsx + 主 tab + 工具栏/表格 | 待开发 | | |
-| T2.3 | R2 | 禁用联动控制台模型选择隐藏 | 待开发 | | |
-| T2.4 | R2 | probe_models 批量测试 + 并发控制 | 待开发 | | |
+| T2.1 | R2 | model_registry.rs + model-registry.json 持久化 | 已完成 | 5acf3e0 | 原子写；5 条单测（默认启用/状态保留/持久化/损坏回退/往返） |
+| T2.2 | R2 | ModelListPanel.tsx + 主 tab + 工具栏/表格 | 已完成 | f699be8 | 「测试全部」带二次确认弹窗 |
+| T2.3 | R2 | 禁用联动控制台模型选择隐藏 | 已完成 | f699be8 | 禁用即隐藏，列表 tab 仍展示可恢复 |
+| T2.4 | R2 | probe_models 批量测试 + 并发控制 | 已完成 | 5acf3e0 | 全量测当前服务商，3 条一批 |
 | T3.1 | R3 | strategy_box.rs 数据模型 + 持久化 | 待开发 | | |
 | T3.2 | R3 | 策略模式选路逻辑（4 模式） | 待开发 | | |
 | T3.3 | R3 | 网关选路集成 + 控制台可选策略盒子 | 待开发 | | |
