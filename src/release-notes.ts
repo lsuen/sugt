@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.1.9';
+export const CURRENT_VERSION = '1.2.0';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,15 +6,15 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '桌面精灵小su：千帧表驱动动作（20 动作 × 50 帧）、拖拽起落三段、睡醒/漫游与活感层；默认开启、中号窗口' },
-  { type: 'feat', text: '精灵设置独立子页：尺寸 / 休眠 / 气泡 / 视线 / 眨眼 / 免打扰 / 走动；右键菜单快捷操作' },
-  { type: 'feat', text: 'Linux：CI 自动打包 sugt-cli 无头网关（x64 / arm64），Release 固定资产名不含版本号' },
-  { type: 'feat', text: '服务器模式：sugt-cli serve --lan 绑定局域网；非回环绑定时强制校验客户端 API Key' },
-  { type: 'feat', text: '附带 systemd 样例（deploy/sugt-gateway.service），便于把 SUGT 当局域网网关服务部署' },
+  { type: 'feat', text: '连通性测试改为真实 LLM 探测：返回内容、延迟与 t/s，网络通但模型失效不再误报成功' },
+  { type: 'feat', text: '模型列表：按服务商批量获取、并发测试、启用/禁用，禁用即从控制台隐藏' },
+  { type: 'feat', text: '策略盒子：优先级 / 权重 / 轮换 / 速度阈值四种路由，统一 model id 对外暴露' },
+  { type: 'feat', text: 'API Key 池：多 key 轮换与最少使用策略，按 key 统计请求数 / Token，达配额只告警不拦截' },
+  { type: 'feat', text: '请求改写规则：作用域（默认 / Codex / 客户端 / 全局）与 max_tokens、工具重试可配置' },
+  { type: 'feat', text: '接入信息卡：本机 IP、baseurl 与 model id 一键复制；日志按天滚动与缓存清理入口' },
+  { type: 'feat', text: '导航收口为总览 / 网关 / 规则 / 接入 / 设置五组横向子页，设置页交互保持一致' },
   { type: 'fix', text: 'Codex 工具层：Responses → Chat 回落补齐工具判定、SSE 生命周期与失败对象；截断 tool_call 不再静默丢参' },
   { type: 'fix', text: 'Codex 释放接管：按快照精确还原配置与登录态；兼容 1.1.7 无快照遗留态' },
-  { type: 'feat', text: '技能本地页：添加折叠、勾选后挂载条、行信息降噪；推荐库刷新单仓失败不阻断其它仓' },
-  { type: 'feat', text: '客户端展示名对齐：Codex ChatGPT；控制台去掉开发向「最近命中」文案' },
-  { type: 'fix', text: '主窗口默认 1040×730，并继续记住用户调整后的尺寸' },
-  { type: 'feat', text: '设置重组 / 22 客户端目录 / GitHub 技能安装 / SOUL 只读编排 / 发布链路固定资产名（延续）' },
+  { type: 'feat', text: '桌面精灵小su：表驱动动作、拖拽起落三段、睡醒/漫游与活感层；默认开启、中号窗口' },
+  { type: 'feat', text: 'Linux：CI 自动打包 sugt-cli 无头网关（x64 / arm64），Release 固定资产名不含版本号' },
 ];
