@@ -73,6 +73,14 @@ export function AccessInfoCard({ pushToast }: Props) {
     void load()
   }, [load])
 
+  // 主密钥在「接入密钥」页改完后后端会同步到 get_local_access_info，
+  // 这里监听同一个事件重新拉取，保证卡片里的 key 提示不落后。
+  useEffect(() => {
+    const onAccessInfoChanged = () => void load()
+    window.addEventListener('sugt:access-info-changed', onAccessInfoChanged)
+    return () => window.removeEventListener('sugt:access-info-changed', onAccessInfoChanged)
+  }, [load])
+
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)

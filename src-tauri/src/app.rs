@@ -42,6 +42,7 @@ pub fn run() {
             commands::create_client_key,
             commands::update_client_key,
             commands::delete_client_key,
+            commands::reset_client_key_usage,
             commands::set_failover,
             commands::update_gateway_settings,
             commands::get_lan_share_info,

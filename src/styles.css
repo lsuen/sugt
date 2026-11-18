@@ -3679,6 +3679,67 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .client-key-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .client-key-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
+/* 主密钥行：不可删除 / 不可停用，用底色和标记区分，不隐藏任何用量信息 */
+.client-key-table tbody tr.is-primary td { background: var(--accent-soft, rgba(22, 241, 255, .06)); }
+.client-key-name-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.client-key-primary-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--accent);
+  background: var(--accent-soft, rgba(22, 241, 255, .12));
+}
+.client-key-disabled-note { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+/* 用量 / 配额：数字 + 进度条 + 超限徽标（仅告警，不拦截请求） */
+.client-key-usage { display: flex; flex-direction: column; gap: 4px; min-width: 110px; }
+.client-key-usage-value { font-variant-numeric: tabular-nums; }
+.client-key-meter {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.client-key-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width .2s ease;
+}
+.client-key-meter-fill.is-over { background: var(--danger, #ff95a7); }
+.client-key-over-badge {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--danger, #ff95a7);
+  background: var(--danger-soft, rgba(255, 77, 109, .13));
+}
+.client-key-quota-cell { display: flex; flex-direction: column; gap: 6px; min-width: 168px; }
+.client-key-quota-inputs { display: flex; flex-wrap: wrap; gap: 6px; }
+.client-key-quota-inputs .field-input { width: 90px; }
+.client-key-limit-hint,
+.client-key-sync-hint { font-size: 11px; color: var(--muted); }
+/* 行内改 key */
+.client-key-edit-cell { display: flex; flex-direction: column; gap: 6px; min-width: 190px; }
+.client-key-edit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.client-key-expand-btn { padding: 2px; }
+/* 客户端明细：展开行内的小表格 */
+.client-key-detail-row td { padding: 0; background: var(--surface-2); }
+.client-key-detail { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; }
+.client-key-detail-title { font-size: 12px; font-weight: 600; color: var(--muted); }
+.client-key-client-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.client-key-client-table th,
+.client-key-client-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.client-key-client-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.client-key-client-table tbody tr:last-child td { border-bottom: none; }
+.client-key-client-time { white-space: nowrap; color: var(--muted); }
 
 /* 模型列表顶部接入信息（v1.1.11 R4）：本机 models 地址 + 各入口 baseurl / modelid 复制，全部走主题 token */
 .access-info-card { margin-bottom: 14px; }

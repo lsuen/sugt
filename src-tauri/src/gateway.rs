@@ -14,7 +14,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, Request, Response, StatusCode},
     response::IntoResponse,
     routing::{any, get, post},
@@ -207,12 +207,16 @@ impl GatewayState {
         let key_pools_io = Arc::new(Mutex::new(()));
 
         // 入站客户端密钥：与池文件同一 config 目录；文件缺失/损坏时退化为空表。
-        let client_keys = config_dir
+        let mut client_keys = config_dir
             .as_deref()
             .map(crate::client_keys::load)
             .unwrap_or_default();
+        // 池内必须有一把主密钥；空池用配置 key 补种，非空但无 primary 则提升第一条。
+        let primary_seeded =
+            crate::client_keys::ensure_primary(&mut client_keys, &config.gateway_client_api_key);
         let client_keys = Arc::new(RwLock::new(client_keys));
-        let client_keys_dirty = Arc::new(AtomicBool::new(false));
+        // 补种/提升过的 primary 也要落盘，避免每次启动重复推导。
+        let client_keys_dirty = Arc::new(AtomicBool::new(primary_seeded));
 
         // 用量增量定期落盘：只在有配置目录且当前处于 tokio 运行时内时启动后台任务。
         // `GatewayState::new` 也会被同步 #[test] / Tauri 启动早期以 None 或无运行时调用，
@@ -384,9 +388,17 @@ impl GatewayState {
     }
 
     /// 记一次入站请求：内存累加 + 置 dirty，不在这里写盘（由后台任务或 flush 落盘）。
-    pub async fn record_client_key_use(&self, key: &str) {
+    pub async fn record_client_request(&self, key: &str, label: &str, ip: &str) {
         let mut file = self.client_keys.write().await;
-        if crate::client_keys::record_use(&mut file, key) {
+        if crate::client_keys::record_request(&mut file, key, label, ip) {
+            self.client_keys_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 把一次响应的 token 用量记到入站密钥与对应客户端上。
+    pub async fn record_client_tokens(&self, key: &str, label: &str, ip: &str, tokens: u64) {
+        let mut file = self.client_keys.write().await;
+        if crate::client_keys::record_tokens(&mut file, key, label, ip, tokens) {
             self.client_keys_dirty.store(true, Ordering::Relaxed);
         }
     }
@@ -712,11 +724,14 @@ impl GatewayState {
         let state = self.clone();
         tokio::spawn(async move {
             info!(%bound_addr, "SUGT gateway started");
-            let result = axum::serve(listener, app)
-                .with_graceful_shutdown(async {
-                    let _ = rx.await;
-                })
-                .await;
+            let result = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await;
 
             if let Err(err) = result {
                 error!(error = %err, "gateway server error");
@@ -832,32 +847,82 @@ async fn workspace_rules_preview(State(state): State<GatewayState>) -> impl Into
     }))
 }
 
-/// 入站校验通过后，把「用了池里的哪把 key」记到用量上。
+/// 本次请求的入站客户端标识：哪个 key、哪个客户端、哪个 IP。
+#[derive(Clone, Debug)]
+pub struct InboundTarget {
+    pub key: String,
+    pub label: String,
+    pub ip: String,
+}
+
+/// 入站校验通过后，把「用了池里的哪把 key」记到用量上，并把客户端标识沿链路下传。
 ///
-/// 配置里的 `gateway_client_api_key` 与兼容占位符 `sugt-local-key` 不算池内 key，
-/// 只有真正启用中的入站密钥才累加计数。
+/// 只有命中池内启用 key（含主密钥）才计数；兼容占位符 `sugt-local-key` 不计。
 async fn note_client_key_use(
     state: &GatewayState,
     headers: &HeaderMap,
-    config: &AppConfig,
     allowed: &[String],
-) {
-    let Some(presented) = crate::gateway_auth::extract_client_api_key(headers) else {
-        return;
-    };
-    if presented == config.gateway_client_api_key.trim()
-        || presented == crate::gateway_auth::DUMMY_LOCAL_KEY
+    peer: Option<std::net::SocketAddr>,
+) -> Option<InboundTarget> {
+    let target = inbound_target(headers, allowed, peer)?;
+    state
+        .record_client_request(&target.key, &target.label, &target.ip)
+        .await;
+    Some(target)
+}
+
+fn inbound_target(
+    headers: &HeaderMap,
+    allowed: &[String],
+    peer: Option<std::net::SocketAddr>,
+) -> Option<InboundTarget> {
+    let presented = crate::gateway_auth::extract_client_api_key(headers)?;
+    if presented == crate::gateway_auth::DUMMY_LOCAL_KEY {
+        return None;
+    }
+    if !allowed.iter().any(|key| key == &presented) {
+        return None;
+    }
+    Some(InboundTarget {
+        key: presented,
+        label: inbound_label(headers),
+        ip: inbound_ip(headers, peer),
+    })
+}
+
+/// 客户端标签优先级：`X-SUGT-Client` → User-Agent 推断；截断 48 字符。
+fn inbound_label(headers: &HeaderMap) -> String {
+    if let Some(raw) = headers
+        .get("x-sugt-client")
+        .and_then(|value| value.to_str().ok())
     {
-        return;
+        let label: String = raw.trim().chars().take(48).collect();
+        if !label.is_empty() {
+            return label;
+        }
     }
-    if allowed.iter().any(|key| key == &presented) {
-        state.record_client_key_use(&presented).await;
+    crate::gateway_stats::client_label_from_headers(headers)
+}
+
+/// IP 优先级：真实连接地址 → `X-Forwarded-For` 第一段 → 空串。
+fn inbound_ip(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> String {
+    if let Some(addr) = peer {
+        return addr.ip().to_string();
     }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .map(str::trim)
+        .filter(|first| !first.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 本地代发 webhook：密钥只留配置里。无 Key 时与本地网关其它接口一致放行；错误 Key 拒绝。
 async fn notify_endpoint(
     State(state): State<GatewayState>,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response<Body> {
@@ -873,7 +938,7 @@ async fn notify_endpoint(
         )
             .into_response();
     }
-    note_client_key_use(&state, &headers, &config, &allowed).await;
+    note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
     let rules = &config.workspace_rules;
     if !rules.notify_enabled {
         return (
@@ -1021,6 +1086,7 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
 
 async fn proxy_openai(
     State(state): State<GatewayState>,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
@@ -1034,12 +1100,12 @@ async fn proxy_openai(
             .await;
         return json_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
-    note_client_key_use(&state, &headers, &config, &allowed).await;
+    let inbound = note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = %path, "inbound openai-compatible request");
     let active_guard = state.begin_request();
     let started = std::time::Instant::now();
-    match proxy_request(state.clone(), headers.clone(), request).await {
+    match proxy_request(state.clone(), headers.clone(), request, inbound).await {
         Ok(response) => hold_guard_through_body(response, active_guard),
         Err(err) => {
             error!(client = %client, path = %path, error = %err, "inbound request failed");
@@ -1058,6 +1124,7 @@ async fn proxy_openai(
 
 async fn proxy_anthropic_messages(
     State(state): State<GatewayState>,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
@@ -1070,7 +1137,7 @@ async fn proxy_anthropic_messages(
             .await;
         return anthropic_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
-    note_client_key_use(&state, &headers, &config, &allowed).await;
+    let inbound = note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
     let active_guard = state.begin_request();
@@ -1086,7 +1153,7 @@ async fn proxy_anthropic_messages(
     let stream = crate::anthropic_adapter::request_wants_stream(&bytes);
     let client_model = client_model_of(&bytes);
     let request = Request::from_parts(parts, Body::from(bytes));
-    let run = proxy_anthropic_request(state.clone(), headers.clone(), request);
+    let run = proxy_anthropic_request(state.clone(), headers.clone(), request, inbound);
     let response = if stream {
         let client_model = client_model.clone();
         hold_stream(async move {
@@ -1164,6 +1231,7 @@ async fn proxy_anthropic_request(
     state: GatewayState,
     headers: HeaderMap,
     request: Request<Body>,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
@@ -1209,8 +1277,15 @@ async fn proxy_anthropic_request(
         let (result, mode) = match access_mode {
             // 强制 OpenAI 协议：始终走转换，不尝试原生端点
             AnthropicAccessMode::OpenAi => (
-                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider, &effects)
-                    .await,
+                proxy_anthropic_via_openai(
+                    &state,
+                    &headers,
+                    body_bytes.clone(),
+                    provider,
+                    &effects,
+                    inbound.clone(),
+                )
+                .await,
                 "openai_adapter",
             ),
             // 强制 Anthropic 原生协议：不走转换；无原生端点时给出明确错误并尝试下一个
@@ -1223,6 +1298,7 @@ async fn proxy_anthropic_request(
                         provider,
                         Some(target),
                         &effects,
+                        inbound.clone(),
                     )
                     .await
                     .map_err(|_| crate::upstream_resilience::classify_network()),
@@ -1259,6 +1335,7 @@ async fn proxy_anthropic_request(
                         provider,
                         native_target,
                         &effects,
+                        inbound.clone(),
                     )
                     .await
                     {
@@ -1277,6 +1354,7 @@ async fn proxy_anthropic_request(
                                     body_bytes.clone(),
                                     provider,
                                     &effects,
+                                    inbound.clone(),
                                 )
                                 .await,
                                 "openai_adapter",
@@ -1295,6 +1373,7 @@ async fn proxy_anthropic_request(
                             body_bytes.clone(),
                             provider,
                             &effects,
+                            inbound.clone(),
                         )
                         .await,
                         "openai_adapter",
@@ -1419,6 +1498,7 @@ async fn proxy_anthropic_native(
     provider: &ProviderConfig,
     native_target: Option<String>,
     effects: &RuleEffects,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     // 原生端点优先用解析结果（可能来自服务商目录的 anthropic_base_url），兜底用 provider.base_url
     let target = build_target_url(
@@ -1463,6 +1543,7 @@ async fn proxy_anthropic_native(
     let key_target = key_target_of(provider);
     // Anthropic 形响应的 input tokens 在 `message.usage` 下（SSE），共享 tap 只认顶层
     // `usage`，这里用专门的包装记录，避免漏计或重复计数。
+    // 入站 key 的 token 只在 `tap_response_for_key_usage` 里记一次（传 None 防止双计）。
     let delivered = into_axum_response(
         response,
         Some(state.stats.clone()),
@@ -1470,9 +1551,15 @@ async fn proxy_anthropic_native(
         state.clone(),
         None,
         &client_model,
+        None,
     )
     .await?;
-    Ok(tap_response_for_key_usage(delivered, state.clone(), key_target))
+    Ok(tap_response_for_key_usage(
+        delivered,
+        state.clone(),
+        key_target,
+        inbound,
+    ))
 }
 
 async fn proxy_anthropic_via_openai(
@@ -1481,6 +1568,7 @@ async fn proxy_anthropic_via_openai(
     body: Bytes,
     provider: &ProviderConfig,
     effects: &RuleEffects,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>, crate::upstream_resilience::FailureClass> {
     let failover = state.config().await.failover_enabled;
     let attempts = upstream_attempts(provider, failover);
@@ -1609,7 +1697,12 @@ async fn proxy_anthropic_via_openai(
                     };
                     return delivered
                         .map(|response| {
-                            tap_response_for_key_usage(response, state.clone(), key_target)
+                            tap_response_for_key_usage(
+                                response,
+                                state.clone(),
+                                key_target,
+                                inbound.clone(),
+                            )
                         })
                         .map_err(|_| {
                             crate::upstream_resilience::FailureClass::Terminal(
@@ -1628,7 +1721,12 @@ async fn proxy_anthropic_via_openai(
                 )
                 .await
                 .map(|delivered| {
-                    tap_response_for_key_usage(delivered, state.clone(), key_target)
+                    tap_response_for_key_usage(
+                        delivered,
+                        state.clone(),
+                        key_target,
+                        inbound.clone(),
+                    )
                 })
                 .map_err(|_| {
                     crate::upstream_resilience::FailureClass::Terminal(
@@ -1693,6 +1791,7 @@ async fn proxy_request(
     state: GatewayState,
     headers: HeaderMap,
     request: Request<Body>,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let path = request.uri().path().trim_start_matches('/').to_string();
     let query = request
@@ -1716,6 +1815,7 @@ async fn proxy_request(
             let body_bytes = body_bytes.clone();
             let query = query.clone();
             let client_model = client_model.clone();
+            let inbound = inbound.clone();
             async move {
                 match proxy_responses_via_chat(
                     state,
@@ -1724,6 +1824,7 @@ async fn proxy_request(
                     body_bytes,
                     &query,
                     rules_injected,
+                    inbound,
                 )
                 .await
                 {
@@ -1760,6 +1861,7 @@ async fn proxy_request(
         body_bytes,
         rules_injected,
         config,
+        inbound,
     );
     if stream {
         let client_model = client_model.clone();
@@ -1804,6 +1906,7 @@ async fn proxy_chat_upstream(
     body_bytes: Bytes,
     rules_injected: bool,
     config: AppConfig,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let (effects, is_codex) = request_rule_effects(&state, &headers, false).await;
     let client_model = client_model_of(&body_bytes);
@@ -1945,6 +2048,7 @@ async fn proxy_chat_upstream(
                                         state_for_tap,
                                         key_target_of(attempt),
                                         &client_model,
+                                        inbound.clone(),
                                     )
                                 } else {
                                     json_from_hold(
@@ -1952,6 +2056,7 @@ async fn proxy_chat_upstream(
                                         &client_model,
                                         state.clone(),
                                         key_target_of(attempt),
+                                        inbound.clone(),
                                     )
                                 };
                             }
@@ -1984,6 +2089,7 @@ async fn proxy_chat_upstream(
                                 state.clone(),
                                 key_target_of(attempt),
                                 &client_model,
+                                inbound.clone(),
                             )
                             .await;
                         }
@@ -2066,6 +2172,7 @@ async fn proxy_responses_via_chat(
     body_bytes: Bytes,
     query: &str,
     rules_injected: bool,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let config = state.config().await;
     // /v1/responses 只由 Codex 走：is_codex 恒为真
@@ -2191,6 +2298,7 @@ async fn proxy_responses_via_chat(
                             state.clone(),
                             key_target_of(attempt),
                             &client_model,
+                            inbound.clone(),
                         )
                         .await;
                     }
@@ -2413,6 +2521,7 @@ async fn proxy_responses_via_chat(
                                     Some(token_attr_from(&headers, attempt)),
                                     state.clone(),
                                     key_target_of(attempt),
+                                    inbound.clone(),
                                 );
                             }
                             state.reset_circuit(&key).await;
@@ -2450,6 +2559,7 @@ async fn proxy_responses_via_chat(
                                 Some(token_attr_from(&headers, attempt)),
                                 Some(state.clone()),
                                 key_target_of(attempt),
+                                inbound.clone(),
                             );
                             return event_stream_response(tapped);
                         }
@@ -3467,6 +3577,7 @@ fn chat_stream_from_hold(
     state: GatewayState,
     key_target: Option<KeyTarget>,
     client_model: &str,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let replay = replay_upstream(held.prefix, held.rest);
     let mapped = tap_stream_for_token_stats(
@@ -3475,6 +3586,7 @@ fn chat_stream_from_hold(
         token_attr,
         Some(state),
         key_target,
+        inbound,
     );
     let rewritten = rewrite_model_stream(mapped, client_model.to_string());
     event_stream_response(rewritten)
@@ -3485,23 +3597,35 @@ fn json_from_hold(
     client_model: &str,
     state: GatewayState,
     key_target: Option<KeyTarget>,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let mut raw = Vec::new();
     for chunk in held.prefix {
         raw.extend_from_slice(&chunk);
     }
-    // 非流式 Chat 没有 tap 流可挂，这里直接把 usage 记到池 key 上（取不到就估 output）。
-    if let Some(target) = key_target {
-        let (input, output) = parse_usage_from_bytes(&raw).unwrap_or_else(|| {
-            (
-                0,
-                crate::quick_chat::estimate_output_tokens(&String::from_utf8_lossy(&raw)),
-            )
-        });
-        if input + output > 0 {
+    // 非流式 Chat 没有 tap 流可挂，这里直接把 usage 记到池 key / 入站 key 上
+    //（取不到就估 output）。
+    let (input, output) = parse_usage_from_bytes(&raw).unwrap_or_else(|| {
+        (
+            0,
+            crate::quick_chat::estimate_output_tokens(&String::from_utf8_lossy(&raw)),
+        )
+    });
+    let tokens = input + output;
+    if tokens > 0 {
+        if let Some(target) = key_target {
+            let state = state.clone();
             tokio::spawn(async move {
                 state
-                    .record_key_tokens(&target.provider_id, &target.key, input + output)
+                    .record_key_tokens(&target.provider_id, &target.key, tokens)
+                    .await;
+            });
+        }
+        if let Some(target) = inbound {
+            let state = state.clone();
+            tokio::spawn(async move {
+                state
+                    .record_client_tokens(&target.key, &target.label, &target.ip, tokens)
                     .await;
             });
         }
@@ -3522,6 +3646,7 @@ fn responses_stream_from_hold(
     token_attr: Option<(String, String)>,
     state: GatewayState,
     key_target: Option<KeyTarget>,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let replay = replay_upstream(held.prefix, held.rest);
     let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
@@ -3530,8 +3655,14 @@ fn responses_stream_from_hold(
         tool_meta,
         estimated_input,
     );
-    let tapped =
-        tap_stream_for_token_stats(mapped, stats, token_attr, Some(state), key_target);
+    let tapped = tap_stream_for_token_stats(
+        mapped,
+        stats,
+        token_attr,
+        Some(state),
+        key_target,
+        inbound,
+    );
     event_stream_response(tapped)
 }
 
@@ -3585,6 +3716,7 @@ async fn into_axum_response(
     state: GatewayState,
     key_target: Option<KeyTarget>,
     client_model: &str,
+    inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let status = response.status();
     let headers = response.headers().clone();
@@ -3594,6 +3726,7 @@ async fn into_axum_response(
         token_attr,
         Some(state),
         key_target,
+        inbound,
     );
     let rewritten = rewrite_model_stream(mapped, client_model.to_string());
     let mut builder = Response::builder().status(status);
@@ -3688,7 +3821,7 @@ fn parse_key_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
-/// 把 Anthropic 形响应（JSON 或 SSE）里的 usage 增量记到池 key 上，不改动响应字节。
+/// 把 Anthropic 形响应（JSON 或 SSE）里的 usage 增量记到池 key 与入站 key 上，不改动响应字节。
 ///
 /// `message_start` 与 `message_delta` 会分别带 input / output，这里按「已见过的最大值」
 /// 做增量，避免同一段 usage 被重复累计。
@@ -3696,10 +3829,11 @@ fn tap_response_for_key_usage(
     response: Response<Body>,
     state: GatewayState,
     key_target: Option<KeyTarget>,
+    inbound: Option<InboundTarget>,
 ) -> Response<Body> {
-    let Some(target) = key_target else {
+    if key_target.is_none() && inbound.is_none() {
         return response;
-    };
+    }
     let (parts, body) = response.into_parts();
     let source = body
         .into_data_stream()
@@ -3717,13 +3851,27 @@ fn tap_response_for_key_usage(
                         seen_input = seen_input.max(input);
                         seen_output = seen_output.max(output);
                         if delta > 0 {
-                            let state = state.clone();
-                            let target = target.clone();
-                            tokio::spawn(async move {
-                                state
-                                    .record_key_tokens(&target.provider_id, &target.key, delta)
-                                    .await;
-                            });
+                            if let Some(target) = key_target.clone() {
+                                let state = state.clone();
+                                tokio::spawn(async move {
+                                    state
+                                        .record_key_tokens(&target.provider_id, &target.key, delta)
+                                        .await;
+                                });
+                            }
+                            if let Some(target) = inbound.clone() {
+                                let state = state.clone();
+                                tokio::spawn(async move {
+                                    state
+                                        .record_client_tokens(
+                                            &target.key,
+                                            &target.label,
+                                            &target.ip,
+                                            delta,
+                                        )
+                                        .await;
+                                });
+                            }
                         }
                     }
                     yield Ok::<Bytes, std::io::Error>(bytes);
@@ -3742,6 +3890,7 @@ fn tap_stream_for_token_stats<S>(
     token_attr: Option<(String, String)>,
     state: Option<GatewayState>,
     key_target: Option<KeyTarget>,
+    inbound: Option<InboundTarget>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -3765,6 +3914,18 @@ where
                 tokio::spawn(async move {
                     state
                         .record_key_tokens(&target.provider_id, &target.key, input + output)
+                        .await;
+                });
+            }
+            if let (Some(state), Some(target)) = (state.clone(), inbound.clone()) {
+                tokio::spawn(async move {
+                    state
+                        .record_client_tokens(
+                            &target.key,
+                            &target.label,
+                            &target.ip,
+                            input + output,
+                        )
                         .await;
                 });
             }

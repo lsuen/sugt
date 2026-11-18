@@ -19,6 +19,22 @@ const KEYS_VERSION: u32 = 1;
 /// 生成密钥的固定前缀。
 const KEY_PREFIX: &str = "sk-sugt-";
 
+/// 单个客户端（label + ip）的用量，用于展示「谁在用、用到什么程度」。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientUsage {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub ip: String,
+    #[serde(default)]
+    pub request_count: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub last_seen_at: String,
+}
+
 /// 单把密钥的运行时用量（只累加，不参与拦截）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,9 +42,24 @@ pub struct ClientKeyUsage {
     #[serde(default)]
     pub request_count: u64,
     #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
     pub last_used_at: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+    /// 最近使用过的客户端（最多 [`MAX_CLIENTS`] 条，按 `last_seen_at` 倒序）。
+    #[serde(default)]
+    pub clients: Vec<ClientUsage>,
+}
+
+/// 配额（只展示与编辑，不参与拦截）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientQuota {
+    #[serde(default)]
+    pub request_limit: Option<u64>,
+    #[serde(default)]
+    pub token_limit: Option<u64>,
 }
 
 /// 一把入站密钥。
@@ -42,6 +73,11 @@ pub struct ClientKey {
     pub key: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 主密钥：不可删除、不可停用；其 key 同步到 `gateway_client_api_key`。
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(default)]
+    pub quota: ClientQuota,
     #[serde(default)]
     pub usage: ClientKeyUsage,
 }
@@ -49,6 +85,9 @@ pub struct ClientKey {
 fn default_enabled() -> bool {
     true
 }
+
+/// 每个密钥最多保留多少个客户端条目。
+pub const MAX_CLIENTS: usize = 32;
 
 /// 密钥文件顶层结构。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,11 +212,85 @@ pub fn record_use(file: &mut ClientKeysFile, key: &str) -> bool {
     match file.keys.iter_mut().find(|entry| entry.key.trim() == target) {
         Some(entry) => {
             entry.usage.request_count = entry.usage.request_count.saturating_add(1);
-            entry.usage.last_used_at = Some(Utc::now().to_rfc3339());
+            entry.usage.last_used_at = Some(now_rfc3339());
             true
         }
         None => false,
     }
+}
+
+/// 记一次入站请求，并更新对应客户端（`label + ip`）的计数。
+///
+/// 与 [`record_use`] 的区别：这里同时维护 `usage.clients`，是「谁在用」的数据来源。
+pub fn record_request(file: &mut ClientKeysFile, key: &str, label: &str, ip: &str) -> bool {
+    let target = key.trim();
+    let Some(entry) = file.keys.iter_mut().find(|entry| entry.key.trim() == target) else {
+        return false;
+    };
+    entry.usage.request_count = entry.usage.request_count.saturating_add(1);
+    entry.usage.last_used_at = Some(now_rfc3339());
+    {
+        let client = touch_client(&mut entry.usage.clients, label, ip);
+        client.request_count = client.request_count.saturating_add(1);
+    }
+    trim_clients(&mut entry.usage.clients);
+    true
+}
+
+/// 把一次响应的 token 用量累加到密钥与对应客户端上（客户端不存在则创建）。
+pub fn record_tokens(
+    file: &mut ClientKeysFile,
+    key: &str,
+    label: &str,
+    ip: &str,
+    tokens: u64,
+) -> bool {
+    let target = key.trim();
+    let Some(entry) = file.keys.iter_mut().find(|entry| entry.key.trim() == target) else {
+        return false;
+    };
+    entry.usage.total_tokens = entry.usage.total_tokens.saturating_add(tokens);
+    entry.usage.last_used_at = Some(now_rfc3339());
+    {
+        let client = touch_client(&mut entry.usage.clients, label, ip);
+        client.total_tokens = client.total_tokens.saturating_add(tokens);
+    }
+    trim_clients(&mut entry.usage.clients);
+    true
+}
+
+/// 找到或插入一个客户端条目，并刷新 `last_seen_at`。
+fn touch_client<'a>(
+    clients: &'a mut Vec<ClientUsage>,
+    label: &str,
+    ip: &str,
+) -> &'a mut ClientUsage {
+    let position = clients
+        .iter()
+        .position(|client| client.label == label && client.ip == ip);
+    let index = match position {
+        Some(index) => index,
+        None => {
+            clients.push(ClientUsage {
+                label: label.to_string(),
+                ip: ip.to_string(),
+                ..Default::default()
+            });
+            clients.len() - 1
+        }
+    };
+    clients[index].last_seen_at = now_rfc3339();
+    &mut clients[index]
+}
+
+/// 按 `last_seen_at` 倒序并截断到 [`MAX_CLIENTS`]。
+fn trim_clients(clients: &mut Vec<ClientUsage>) {
+    clients.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
+    clients.truncate(MAX_CLIENTS);
+}
+
+fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339()
 }
 
 /// 记录最近一次错误（截断到 300 字符，避免把整段上游响应写进配置）。
@@ -193,6 +306,59 @@ pub fn record_error(file: &mut ClientKeysFile, key: &str, message: &str) -> bool
     }
 }
 
+/// 保证池内存在一把主密钥。
+///
+/// - 已有 primary：幂等返回 `false`；
+/// - 池非空但没有 primary：提升第一条（并强制启用）；
+/// - 池为空：用配置里的 `gateway_client_api_key`（trim 后为空则 `sugt-local-key`）补种。
+pub fn ensure_primary(file: &mut ClientKeysFile, configured_key: &str) -> bool {
+    if file.keys.iter().any(|key| key.primary) {
+        return false;
+    }
+    if let Some(first) = file.keys.first_mut() {
+        first.primary = true;
+        first.enabled = true;
+        return true;
+    }
+    let configured = configured_key.trim();
+    let key = if configured.is_empty() {
+        crate::gateway_auth::DUMMY_LOCAL_KEY.to_string()
+    } else {
+        configured.to_string()
+    };
+    file.keys.push(ClientKey {
+        id: "local".to_string(),
+        name: "本机默认密钥".to_string(),
+        key,
+        enabled: true,
+        primary: true,
+        quota: ClientQuota::default(),
+        usage: ClientKeyUsage::default(),
+    });
+    true
+}
+
+/// 主密钥不可停用。命令层调用它给出中文错误。
+pub fn validate_update(existing: &ClientKey, enabled: Option<bool>) -> Result<(), String> {
+    if existing.primary && enabled == Some(false) {
+        return Err("主密钥不可停用".to_string());
+    }
+    Ok(())
+}
+
+/// 主密钥不可删除。
+pub fn validate_delete(existing: &ClientKey) -> Result<(), String> {
+    if existing.primary {
+        return Err("主密钥不可删除".to_string());
+    }
+    Ok(())
+}
+
+/// 清空用量（保留 key、名称、启用状态与配额）。
+pub fn reset_usage(key: &mut ClientKey) {
+    key.usage = ClientKeyUsage::default();
+}
+
 /// 单个密钥的展示视图：`key` 保留明文（与 provider 表单一致），另给脱敏副本。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +368,8 @@ pub struct ClientKeyView {
     pub key: String,
     pub key_masked: String,
     pub enabled: bool,
+    pub primary: bool,
+    pub quota: ClientQuota,
     pub usage: ClientKeyUsage,
 }
 
@@ -213,6 +381,8 @@ impl From<&ClientKey> for ClientKeyView {
             key: key.key.clone(),
             key_masked: crate::model::mask_secret(&key.key),
             enabled: key.enabled,
+            primary: key.primary,
+            quota: key.quota.clone(),
             usage: key.usage.clone(),
         }
     }
@@ -286,6 +456,8 @@ mod tests {
             name: name.to_string(),
             key: key.to_string(),
             enabled: true,
+            primary: false,
+            quota: ClientQuota::default(),
             usage: ClientKeyUsage::default(),
         }
     }
@@ -307,6 +479,7 @@ mod tests {
             request_count: 5,
             last_used_at: Some("2026-11-18T01:02:03+00:00".to_string()),
             last_error: Some("429".to_string()),
+            ..Default::default()
         };
         let mut second = entry("k2", "备用", "sk-sugt-second");
         second.enabled = false;
@@ -367,6 +540,7 @@ mod tests {
             request_count: 9,
             last_used_at: Some("2026-11-18T01:02:03+00:00".to_string()),
             last_error: Some("timeout".to_string()),
+            ..Default::default()
         };
 
         let updated = upsert(&mut keys, entry(&id, "团队改名", "sk-sugt-a"));
@@ -455,5 +629,185 @@ mod tests {
         assert_eq!(view.key, "sk-sugt-1234567890abcd");
         assert_eq!(view.key_masked, "sk-s****abcd");
         assert_eq!(view.usage.request_count, 3);
+        assert!(!view.primary);
+        assert_eq!(view.usage.total_tokens, 0);
+        assert!(view.usage.clients.is_empty());
+    }
+
+    #[test]
+    fn ensure_primary_seeds_once_and_is_idempotent() {
+        let mut file = ClientKeysFile::default();
+        assert!(ensure_primary(&mut file, "  sk-config  "));
+        assert_eq!(file.keys.len(), 1);
+        assert_eq!(file.keys[0].id, "local");
+        assert_eq!(file.keys[0].name, "本机默认密钥");
+        assert_eq!(file.keys[0].key, "sk-config");
+        assert!(file.keys[0].primary);
+        assert!(file.keys[0].enabled);
+
+        // 幂等：再来一次不新增也不改动。
+        assert!(!ensure_primary(&mut file, "sk-other"));
+        assert_eq!(file.keys.len(), 1);
+        assert_eq!(file.keys[0].key, "sk-config");
+
+        // 配置为空时回退占位 key。
+        let mut blank = ClientKeysFile::default();
+        assert!(ensure_primary(&mut blank, "   "));
+        assert_eq!(blank.keys[0].key, crate::gateway_auth::DUMMY_LOCAL_KEY);
+    }
+
+    #[test]
+    fn ensure_primary_promotes_first_existing_key() {
+        let mut disabled = entry("k1", "旧的", "sk-1");
+        disabled.enabled = false;
+        let mut file = ClientKeysFile {
+            version: KEYS_VERSION,
+            keys: vec![disabled, entry("k2", "二", "sk-2")],
+        };
+        assert!(ensure_primary(&mut file, "sk-config"));
+        assert_eq!(file.keys.len(), 2);
+        assert!(file.keys[0].primary);
+        assert!(file.keys[0].enabled, "提升为主密钥时必须启用");
+        assert!(!file.keys[1].primary);
+    }
+
+    #[test]
+    fn clients_are_capped_and_sorted_by_last_seen() {
+        let mut file = ClientKeysFile {
+            version: KEYS_VERSION,
+            keys: vec![entry("k1", "一", "sk-1")],
+        };
+        for index in 0..(MAX_CLIENTS + 5) {
+            let label = format!("client-{index:02}");
+            assert!(record_request(&mut file, "sk-1", &label, "10.0.0.1"));
+        }
+        let clients = &file.keys[0].usage.clients;
+        assert_eq!(clients.len(), MAX_CLIENTS);
+        // 最新插入的排在前面。
+        assert_eq!(clients[0].label, format!("client-{:02}", MAX_CLIENTS + 4));
+        let mut sorted = clients.clone();
+        sorted.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
+        assert_eq!(
+            clients.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
+            sorted.iter().map(|c| c.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn request_and_tokens_accumulate_on_the_same_client() {
+        let mut file = ClientKeysFile {
+            version: KEYS_VERSION,
+            keys: vec![entry("k1", "一", "sk-1")],
+        };
+        assert!(record_request(&mut file, "sk-1", "codex", "127.0.0.1"));
+        assert!(record_tokens(&mut file, "sk-1", "codex", "127.0.0.1", 10));
+        assert!(record_request(&mut file, "sk-1", "codex", "127.0.0.1"));
+        assert!(record_tokens(&mut file, "sk-1", "codex", "127.0.0.1", 7));
+        // 不同 ip 视为不同客户端。
+        assert!(record_request(&mut file, "sk-1", "codex", "10.0.0.2"));
+
+        let usage = &file.keys[0].usage;
+        assert_eq!(usage.request_count, 3);
+        assert_eq!(usage.total_tokens, 17);
+        assert_eq!(usage.clients.len(), 2);
+        let same = usage
+            .clients
+            .iter()
+            .find(|client| client.ip == "127.0.0.1")
+            .expect("同客户端条目");
+        assert_eq!(same.label, "codex");
+        assert_eq!(same.request_count, 2);
+        assert_eq!(same.total_tokens, 17);
+        // token 先于请求到达也能创建客户端条目。
+        assert!(record_tokens(&mut file, "sk-1", "claude", "", 5));
+        assert!(usage_or(&file, "claude").total_tokens == 5);
+        assert!(!record_tokens(&mut file, "sk-unknown", "x", "", 1));
+    }
+
+    fn usage_or<'a>(file: &'a ClientKeysFile, label: &str) -> &'a ClientUsage {
+        file.keys[0]
+            .usage
+            .clients
+            .iter()
+            .find(|client| client.label == label)
+            .expect("client exists")
+    }
+
+    #[test]
+    fn reset_usage_keeps_key_and_quota() {
+        let mut key = entry("k1", "团队", "sk-1");
+        key.quota = ClientQuota {
+            request_limit: Some(100),
+            token_limit: Some(1000),
+        };
+        key.usage.request_count = 4;
+        key.usage.total_tokens = 99;
+        key.usage.last_error = Some("boom".to_string());
+        key.usage.clients.push(ClientUsage {
+            label: "codex".to_string(),
+            ip: "127.0.0.1".to_string(),
+            request_count: 4,
+            total_tokens: 99,
+            last_seen_at: "2026-11-18T01:02:03+00:00".to_string(),
+        });
+
+        reset_usage(&mut key);
+        assert_eq!(key.id, "k1");
+        assert_eq!(key.key, "sk-1");
+        assert_eq!(key.quota.request_limit, Some(100));
+        assert_eq!(key.quota.token_limit, Some(1000));
+        assert_eq!(key.usage.request_count, 0);
+        assert_eq!(key.usage.total_tokens, 0);
+        assert!(key.usage.clients.is_empty());
+        assert!(key.usage.last_error.is_none());
+    }
+
+    #[test]
+    fn quota_roundtrips_both_ways() {
+        let dir = temp_dir("quota");
+        let mut key = entry("k1", "团队", "sk-1");
+        key.primary = true;
+        key.quota = ClientQuota {
+            request_limit: Some(50),
+            token_limit: None,
+        };
+        save(
+            &dir,
+            &ClientKeysFile {
+                version: KEYS_VERSION,
+                keys: vec![key],
+            },
+        )
+        .expect("save");
+
+        let loaded = load(&dir);
+        assert!(loaded.keys[0].primary);
+        assert_eq!(loaded.keys[0].quota.request_limit, Some(50));
+        assert_eq!(loaded.keys[0].quota.token_limit, None);
+
+        // 旧文件缺字段时用 serde default 兜底（向后兼容）。
+        let raw = r#"{"version":1,"keys":[{"id":"old","name":"旧","key":"sk-old","enabled":true}]}"#;
+        std::fs::write(keys_path(&dir), raw).expect("write old");
+        let old = load(&dir);
+        assert!(!old.keys[0].primary);
+        assert!(old.keys[0].quota.request_limit.is_none());
+        assert_eq!(old.keys[0].usage.total_tokens, 0);
+        assert!(old.keys[0].usage.clients.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn primary_cannot_be_disabled_or_removed() {
+        let mut key = entry("k1", "主", "sk-main");
+        key.primary = true;
+        assert!(validate_update(&key, Some(false)).is_err());
+        assert!(validate_update(&key, Some(true)).is_ok());
+        assert!(validate_update(&key, None).is_ok());
+        assert!(validate_delete(&key).is_err());
+
+        let other = entry("k2", "普通", "sk-other");
+        assert!(validate_update(&other, Some(false)).is_ok());
+        assert!(validate_delete(&other).is_ok());
     }
 }

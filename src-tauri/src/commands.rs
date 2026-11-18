@@ -890,6 +890,11 @@ pub struct ResetKeyUsageInput {
 pub struct CreateClientKeyInput {
     pub name: String,
     pub key: Option<String>,
+    /// 可选创建第二把主密钥；默认 `false`，且不允许出现第二个 primary。
+    #[serde(default)]
+    pub primary: Option<bool>,
+    #[serde(default)]
+    pub quota: Option<ClientQuotaInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -898,11 +903,44 @@ pub struct UpdateClientKeyInput {
     pub name: Option<String>,
     pub key: Option<String>,
     pub enabled: Option<bool>,
+    /// 传 `Some` 才覆盖配额；各限值用 `Option<Option<u64>>` 区分「不动」与「清除」。
+    #[serde(default)]
+    pub quota: Option<ClientQuotaInput>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteClientKeyInput {
     pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetClientKeyUsageInput {
+    pub id: String,
+}
+
+/// 配额输入：字段缺失 = 保持原值，显式 `null` = 清除该限值。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientQuotaInput {
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    pub request_limit: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_limit")]
+    pub token_limit: Option<Option<u64>>,
+}
+
+fn deserialize_optional_limit<'de, D>(deserializer: D) -> Result<Option<Option<u64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<u64>::deserialize(deserializer)?))
+}
+
+fn quota_from_input(input: Option<ClientQuotaInput>) -> crate::client_keys::ClientQuota {
+    let input = input.unwrap_or_default();
+    crate::client_keys::ClientQuota {
+        request_limit: input.request_limit.flatten(),
+        token_limit: input.token_limit.flatten(),
+    }
 }
 
 /// 请求改写规则列表（磁盘为准；文件缺失时返回内置默认规则）。
@@ -1040,6 +1078,10 @@ pub async fn create_client_key(
     {
         return Err(format!("密钥名称已存在: {name}"));
     }
+    let primary = input.primary.unwrap_or(false);
+    if primary && file.keys.iter().any(|key| key.primary) {
+        return Err("已存在主密钥".to_string());
+    }
     let key = match input
         .key
         .map(|key| key.trim().to_string())
@@ -1049,7 +1091,8 @@ pub async fn create_client_key(
         None => crate::client_keys::generate_key(),
     };
     // 与既有 key（含 config 里的 gateway_client_api_key）重复会造成归属歧义。
-    if let Some(existing) = duplicate_key_source(&runtime, &file.keys, &key).await {
+    // 主密钥本身就要占用 config 里的 key，因此只在非主密钥时检查配置项。
+    if let Some(existing) = duplicate_key_source(&runtime, &file.keys, &key, !primary).await {
         return Err(format!("密钥已存在: {existing}"));
     }
     let created = crate::client_keys::upsert(
@@ -1059,6 +1102,8 @@ pub async fn create_client_key(
             name,
             key,
             enabled: true,
+            primary,
+            quota: quota_from_input(input.quota),
             usage: crate::client_keys::ClientKeyUsage::default(),
         },
     );
@@ -1078,6 +1123,8 @@ pub async fn update_client_key(
         .iter()
         .position(|key| key.id == input.id)
         .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
+    let is_primary = file.keys[position].primary;
+    crate::client_keys::validate_update(&file.keys[position], input.enabled)?;
 
     if let Some(name) = input.name.as_deref() {
         crate::client_keys::validate_name(name)?;
@@ -1093,6 +1140,7 @@ pub async fn update_client_key(
         file.keys[position].name = name;
     }
 
+    let mut key_changed = false;
     if let Some(key) = input.key.as_deref() {
         let key = key.trim().to_string();
         if key.is_empty() {
@@ -1105,10 +1153,23 @@ pub async fn update_client_key(
             .filter(|(index, _)| *index != position)
             .map(|(_, key)| key.clone())
             .collect();
-        if let Some(existing) = duplicate_key_source(&runtime, &others, &key).await {
+        if let Some(existing) =
+            duplicate_key_source(&runtime, &others, &key, !is_primary).await
+        {
             return Err(format!("密钥已存在: {existing}"));
         }
+        key_changed = file.keys[position].key != key;
         file.keys[position].key = key;
+    }
+
+    if let Some(quota) = input.quota {
+        let target = &mut file.keys[position].quota;
+        if let Some(limit) = quota.request_limit {
+            target.request_limit = limit;
+        }
+        if let Some(limit) = quota.token_limit {
+            target.token_limit = limit;
+        }
     }
 
     if let Some(enabled) = input.enabled {
@@ -1117,38 +1178,74 @@ pub async fn update_client_key(
 
     let updated = file.keys[position].clone();
     runtime.gateway.persist_client_keys(file).await?;
+
+    // 主密钥的 key 就是网关入站 key：改完立即同步配置，接入信息卡与 Codex 环境变量同步更新。
+    if is_primary && key_changed {
+        {
+            let mut config = runtime.config.write().await;
+            config.gateway_client_api_key = updated.key.clone();
+        }
+        runtime.persist().await.map_err(|err| err.to_string())?;
+    }
+
     Ok(crate::client_keys::ClientKeyView::from(&updated))
 }
 
-/// 删除一把入站密钥。
+/// 删除一把入站密钥；主密钥不可删除。
 #[tauri::command]
 pub async fn delete_client_key(
     runtime: State<'_, AppRuntime>,
     input: DeleteClientKeyInput,
 ) -> Result<(), String> {
     let mut file = runtime.gateway.client_keys_snapshot().await;
-    if !crate::client_keys::remove_key(&mut file.keys, &input.id) {
-        return Err(format!("未找到入站密钥: {}", input.id));
-    }
+    let existing = file
+        .keys
+        .iter()
+        .find(|key| key.id == input.id)
+        .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
+    crate::client_keys::validate_delete(existing)?;
+    crate::client_keys::remove_key(&mut file.keys, &input.id);
     runtime.gateway.persist_client_keys(file).await
 }
 
+/// 清空一把入站密钥的用量，保留 key 与配额。
+#[tauri::command]
+pub async fn reset_client_key_usage(
+    runtime: State<'_, AppRuntime>,
+    input: ResetClientKeyUsageInput,
+) -> Result<crate::client_keys::ClientKeyView, String> {
+    let mut file = runtime.gateway.client_keys_snapshot().await;
+    let entry = file
+        .keys
+        .iter_mut()
+        .find(|key| key.id == input.id)
+        .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
+    crate::client_keys::reset_usage(entry);
+    let view = crate::client_keys::ClientKeyView::from(&*entry);
+    runtime.gateway.persist_client_keys(file).await?;
+    Ok(view)
+}
+
 /// 检查 key 是否已被占用（池内其它 key 或网关配置里的 key）。
+/// `check_configured=false` 时只看池内其它 key（主密钥改 key 时用）。
 /// 返回脱敏后的重复值，便于直接拼进错误信息。
 async fn duplicate_key_source(
     runtime: &State<'_, AppRuntime>,
     others: &[crate::client_keys::ClientKey],
     key: &str,
+    check_configured: bool,
 ) -> Option<String> {
-    let configured = runtime
-        .gateway
-        .config()
-        .await
-        .gateway_client_api_key
-        .trim()
-        .to_string();
-    if !configured.is_empty() && configured == key {
-        return Some(crate::model::mask_secret(key));
+    if check_configured {
+        let configured = runtime
+            .gateway
+            .config()
+            .await
+            .gateway_client_api_key
+            .trim()
+            .to_string();
+        if !configured.is_empty() && configured == key {
+            return Some(crate::model::mask_secret(key));
+        }
     }
     others
         .iter()
