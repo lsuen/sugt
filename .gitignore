@@ -100,7 +100,9 @@ __pycache__/
 
 # Pet design trials / concept art / huge previews — local only.
 # Shipped pet bitmaps live exclusively in src/assets/pet/.
-/docs/design/
+/docs/design/**
+# 版本 PRD 需要随 commit/task 一起追溯，单独放行；其余 design 内容仍留本机
+!/docs/design/PRD-v1.1.11.md
 
 # Heavy binaries under maintenance/trace trees stay local; scripts & markdown still tracked
 # (these must come AFTER the !/docs/孙测测/** and !/docs/小精灵维护/** un-ignores)
