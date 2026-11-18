@@ -171,3 +171,195 @@ fn orders_failover_providers() {
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].model_name, "m2");
 }
+
+// ---- 策略盒子选路（R3 / T3.2 + T3.3） ----
+
+fn route_provider(id: &str, model: &str) -> ProviderConfig {
+    let mut provider = ProviderConfig::new(
+        format!("厂商 {id}"),
+        "openai",
+        "https://example.com/v1",
+        "sk-test",
+        model,
+    );
+    provider.id = id.to_string();
+    provider
+}
+
+fn route_member(
+    provider_id: &str,
+    model_name: &str,
+    weight: u32,
+    priority: u32,
+) -> strategy_box::StrategyMember {
+    strategy_box::StrategyMember {
+        provider_id: provider_id.to_string(),
+        model_name: model_name.to_string(),
+        weight,
+        priority,
+    }
+}
+
+fn route_box(id: &str, public_id: &str, members: Vec<strategy_box::StrategyMember>) -> StrategyBox {
+    StrategyBox {
+        id: id.to_string(),
+        name: format!("盒子 {id}"),
+        public_model_id: public_id.to_string(),
+        members,
+        mode: strategy_box::StrategyMode::Priority,
+        speed_threshold_ms: None,
+        cooldown_ms: None,
+        enabled: true,
+    }
+}
+
+fn route_config() -> AppConfig {
+    let mut config = AppConfig::default();
+    config.failover_enabled = true;
+    config.providers.push(route_provider("p1", "m1"));
+    config.providers.push(route_provider("p2", "m2"));
+    config.active_provider_id = Some("p1".to_string());
+    config
+}
+
+#[test]
+fn resolve_box_prefers_client_model_then_active_model() {
+    let boxes = vec![
+        route_box("b-active", "box-active", vec![route_member("p1", "m1", 1, 1)]),
+        route_box("b-client", "box-client", vec![route_member("p2", "m2", 1, 1)]),
+    ];
+    // ① 请求体 model 命中优先于激活 provider 的 model_name。
+    let hit = resolve_box(&boxes, "box-client", Some("box-active")).expect("client hit");
+    assert_eq!(hit.id, "b-client");
+    // ② 请求体未命中时看激活 provider。
+    let hit = resolve_box(&boxes, "unknown", Some("box-active")).expect("active hit");
+    assert_eq!(hit.id, "b-active");
+    // ③ 都不命中 → None（回退 ordered_providers）。
+    assert!(resolve_box(&boxes, "unknown", Some("unknown")).is_none());
+    assert!(resolve_box(&boxes, "", None).is_none());
+
+    let mut disabled = route_box("b-off", "box-off", vec![route_member("p1", "m1", 1, 1)]);
+    disabled.enabled = false;
+    assert!(resolve_box(&[disabled], "box-off", None).is_none());
+}
+
+#[test]
+fn expand_members_skips_disabled_provider_disabled_model_and_unknown_provider() {
+    let mut config = AppConfig::default();
+    config.providers.push(route_provider("p1", "m1"));
+    let mut stopped = route_provider("p2", "m2");
+    stopped.enabled = false;
+    config.providers.push(stopped);
+    let registry = vec![ModelEntry {
+        id: "p1::off".to_string(),
+        provider_id: "p1".to_string(),
+        model_name: "off".to_string(),
+        enabled: false,
+        last_probe: None,
+    }];
+    let members = vec![
+        route_member("p1", "ok", 1, 1),
+        route_member("p1", "off", 1, 2),
+        route_member("p2", "m2", 1, 3),
+        route_member("missing", "x", 1, 4),
+    ];
+    let expanded = expand_members(&config, &members, &registry);
+    assert_eq!(expanded.len(), 1, "只应保留 p1::ok");
+    assert_eq!(expanded[0].id, "p1");
+    assert_eq!(expanded[0].model_name, "ok");
+}
+
+#[test]
+fn member_key_of_matches_strategy_box_key() {
+    let provider = route_provider("p1", "m1");
+    assert_eq!(
+        member_key_of("box", &provider),
+        strategy_box::member_key("box", &route_member("p1", "m1", 1, 1))
+    );
+}
+
+#[tokio::test]
+async fn request_route_uses_box_chain_when_client_model_hits() {
+    let config = route_config();
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    state
+        .set_strategy_boxes(vec![route_box(
+            "b1",
+            "box-a",
+            vec![
+                route_member("p2", "m2-alt", 1, 2),
+                route_member("p1", "m1-alt", 1, 1),
+            ],
+        )])
+        .await;
+
+    let route = request_route(&state, &config, "box-a").await;
+    assert_eq!(route.box_id.as_deref(), Some("b1"));
+    let chain: Vec<&str> = route
+        .providers
+        .iter()
+        .map(|provider| provider.model_name.as_str())
+        .collect();
+    // priority 1 在前，成员的 model_name 覆盖 provider 自己的。
+    assert_eq!(chain, vec!["m1-alt", "m2-alt"]);
+}
+
+#[tokio::test]
+async fn request_route_uses_box_chain_when_active_model_hits() {
+    let mut config = route_config();
+    config.providers[0].model_name = "box-a".to_string();
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    state
+        .set_strategy_boxes(vec![route_box(
+            "b1",
+            "box-a",
+            vec![route_member("p2", "m2", 1, 1)],
+        )])
+        .await;
+
+    let route = request_route(&state, &config, "whatever-the-client-sent").await;
+    assert_eq!(route.box_id.as_deref(), Some("b1"));
+    assert_eq!(route.providers.len(), 1);
+    assert_eq!(route.providers[0].id, "p2");
+}
+
+#[tokio::test]
+async fn request_route_without_hit_matches_ordered_providers() {
+    let config = route_config();
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    state
+        .set_strategy_boxes(vec![route_box(
+            "b1",
+            "box-a",
+            vec![route_member("p2", "m2", 1, 1)],
+        )])
+        .await;
+
+    let route = request_route(&state, &config, "not-a-box").await;
+    assert!(route.box_id.is_none());
+    assert!(route.cooldown_ms.is_none());
+    let ids: Vec<&str> = route.providers.iter().map(|p| p.id.as_str()).collect();
+    let expected: Vec<String> = ordered_providers(&config)
+        .iter()
+        .map(|provider| provider.id.clone())
+        .collect();
+    assert_eq!(ids, expected);
+}
+
+#[tokio::test]
+async fn request_route_falls_back_when_every_member_invalid() {
+    let config = route_config();
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    state
+        .set_strategy_boxes(vec![route_box(
+            "b1",
+            "box-a",
+            vec![route_member("missing", "x", 1, 1)],
+        )])
+        .await;
+
+    let route = request_route(&state, &config, "box-a").await;
+    assert!(route.box_id.is_none(), "空链必须回退，而不是判死请求");
+    assert!(!route.providers.is_empty());
+}
+

@@ -3,7 +3,9 @@ use crate::{
     model::{
         AnthropicAccessMode, AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit,
     },
+    model_registry::ModelEntry,
     provider_catalog,
+    strategy_box::{self, StrategyBox, StrategyRuntime, StrategyState},
     workspace_rules::{self, RequestShape},
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -56,6 +58,10 @@ pub struct GatewayState {
     stats: GatewayStatsCollector,
     /// 真实在途 LLM 请求数；只有代理入口会计数，桌面精灵据此播放 typing 动作
     active_requests: Arc<AtomicU64>,
+    /// 策略盒子配置 + 进程内健康度（PRD v1.1.11 R3）
+    strategy: Arc<RwLock<StrategyState>>,
+    /// 模型注册表快照（PRD v1.1.11 R2）：盒子成员里被禁用（enabled = false）的模型不参与编排
+    registry: Arc<RwLock<Vec<ModelEntry>>>,
 }
 
 /// RAII 计数：请求进入 +1，无论成功、失败还是提前返回都在析构时 -1，避免计数泄漏。
@@ -147,6 +153,20 @@ impl GatewayState {
         // 总超时会在半路掐断 SSE，客户端只看到截断。连接超时 + keepalive 即可。
         let client = build_upstream_client()?;
 
+        // 启动时从 config_dir（config.toml 所在目录）加载已保存的策略盒子。
+        let boxes = config_file
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(strategy_box::load_boxes)
+            .unwrap_or_default();
+
+        // 模型注册表同样在启动时载入内存；任何读取/解析失败都退化为空表，不 panic。
+        let registry = config_file
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|dir| crate::model_registry::load(dir).entries)
+            .unwrap_or_default();
+
         Ok(Self {
             inner: Arc::new(RwLock::new(GatewayInner {
                 config,
@@ -161,7 +181,63 @@ impl GatewayState {
             last_hit: Arc::new(RwLock::new(None)),
             stats: GatewayStatsCollector::new(),
             active_requests: Arc::new(AtomicU64::new(0)),
+            strategy: Arc::new(RwLock::new(StrategyState {
+                boxes,
+                runtime: StrategyRuntime::default(),
+            })),
+            registry: Arc::new(RwLock::new(registry)),
         })
+    }
+
+    /// 当前策略盒子快照（不含健康度）。
+    pub async fn strategy_boxes(&self) -> Vec<StrategyBox> {
+        self.strategy.read().await.boxes.clone()
+    }
+
+    /// 用新的盒子配置替换内存副本；健康度与轮换游标保留，不清空。
+    pub async fn set_strategy_boxes(&self, boxes: Vec<StrategyBox>) {
+        self.strategy.write().await.boxes = boxes;
+    }
+
+    /// 供选路阶段读取/写入运行态（健康度、轮换游标）。
+    pub fn strategy_state(&self) -> Arc<RwLock<StrategyState>> {
+        self.strategy.clone()
+    }
+
+    /// 模型注册表快照：选路阶段据此跳过被禁用的成员模型。
+    pub async fn model_registry_snapshot(&self) -> Vec<ModelEntry> {
+        self.registry.read().await.clone()
+    }
+
+    /// 注册表写盘后同步内存副本（禁用状态立即生效，无需等重启）。
+    pub async fn set_model_registry_snapshot(&self, entries: Vec<ModelEntry>) {
+        *self.registry.write().await = entries;
+    }
+
+    /// 盒子成员的一次 attempt 判成功：延迟覆盖、失败计数清零。
+    async fn note_member_success(&self, box_id: &str, provider: &ProviderConfig, latency_ms: u64) {
+        let key = member_key_of(box_id, provider);
+        self.strategy
+            .write()
+            .await
+            .runtime
+            .record_success(&key, latency_ms);
+    }
+
+    /// 盒子成员的一次 attempt 判失败：失败计数 +1，配置了冷却则进入冷却期。
+    async fn note_member_failure(
+        &self,
+        box_id: &str,
+        provider: &ProviderConfig,
+        error: &str,
+        cooldown_ms: Option<u64>,
+    ) {
+        let key = member_key_of(box_id, provider);
+        self.strategy
+            .write()
+            .await
+            .runtime
+            .record_failure(&key, error, cooldown_ms);
     }
 
     pub fn http_client(&self) -> &Client {
@@ -665,7 +741,7 @@ fn apply_workspace_rules(
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let config = state.config().await;
     let mut seen = std::collections::HashSet::new();
-    let data: Vec<Value> = config
+    let mut data: Vec<Value> = config
         .providers
         .iter()
         .filter(|provider| provider.enabled)
@@ -682,6 +758,20 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
             }))
         })
         .collect();
+
+    // 启用中的策略盒子同样对外暴露一个统一 model id，客户端才能发现并选中它。
+    for box_spec in state.strategy_boxes().await.iter().filter(|box_spec| box_spec.enabled) {
+        let id = box_spec.public_model_id.trim().to_string();
+        if id.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        data.push(json!({
+            "id": id,
+            "object": "model",
+            "created": 0,
+            "owned_by": "strategy",
+        }));
+    }
 
     Json(json!({ "object": "list", "data": data }))
 }
@@ -832,7 +922,12 @@ async fn proxy_anthropic_request(
         apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages, &headers);
     // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
     let access_mode = config.anthropic_access_mode;
-    let providers = ordered_providers(&config);
+    // 用请求体原始 model 判定策略盒子；命不中时与 ordered_providers 完全一致。
+    let client_model = client_model_of(&body_bytes);
+    let route = request_route(&state, &config, &client_model).await;
+    let box_id = route.box_id;
+    let cooldown_ms = route.cooldown_ms;
+    let providers = route.providers;
 
     if providers.is_empty() {
         bail!("没有可用模型配置");
@@ -841,7 +936,6 @@ async fn proxy_anthropic_request(
     // 识别调用来源：Claude 系 TUI/GUI 优先走原生 Anthropic 端点（转换作为 fallback）
     let anthropic_client = crate::anthropic_client_detect::detect_anthropic_client(&headers);
 
-    let client_model = client_model_of(&body_bytes);
     let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
     let mut memory = crate::upstream_resilience::FailureMemory::new();
     let mut budget = retry_budget(&config);
@@ -856,6 +950,7 @@ async fn proxy_anthropic_request(
             warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
             continue;
         }
+        let attempt_started = std::time::Instant::now();
 
         let native_target = anthropic_native_target(provider);
 
@@ -955,6 +1050,15 @@ async fn proxy_anthropic_request(
 
         match result {
             Ok(response) if response.status().is_success() => {
+                if let Some(box_id) = box_id.as_deref() {
+                    state
+                        .note_member_success(
+                            box_id,
+                            provider,
+                            attempt_started.elapsed().as_millis() as u64,
+                        )
+                        .await;
+                }
                 state.reset_circuit(&route_key(provider)).await;
                 state
                     .record_proxy_hit(
@@ -982,6 +1086,16 @@ async fn proxy_anthropic_request(
                     .unwrap_or_default();
                 let text = String::from_utf8_lossy(&bytes);
                 warn!(provider = %provider.name, %status, body = %text, "provider returned anthropic error");
+                if let Some(box_id) = box_id.as_deref() {
+                    state
+                        .note_member_failure(
+                            box_id,
+                            provider,
+                            &format!("HTTP {} {}", status.as_u16(), text),
+                            cooldown_ms,
+                        )
+                        .await;
+                }
                 let class = crate::upstream_resilience::classify_http(
                     status.as_u16(),
                     &text,
@@ -1000,6 +1114,16 @@ async fn proxy_anthropic_request(
             }
             Err(class) => {
                 warn!(provider = %provider.name, "provider anthropic request error");
+                if let Some(box_id) = box_id.as_deref() {
+                    state
+                        .note_member_failure(
+                            box_id,
+                            provider,
+                            &format!("{class:?}"),
+                            cooldown_ms,
+                        )
+                        .await;
+                }
                 if let Some(kind) = memory.observe(class) {
                     return Ok(session_notice(
                         crate::upstream_resilience::Wire::Anthropic,
@@ -1370,11 +1494,14 @@ async fn proxy_chat_upstream(
     rules_injected: bool,
     config: AppConfig,
 ) -> Result<Response<Body>> {
-    let providers = ordered_providers(&config);
+    let client_model = client_model_of(&body_bytes);
+    let route = request_route(&state, &config, &client_model).await;
+    let box_id = route.box_id;
+    let cooldown_ms = route.cooldown_ms;
+    let providers = route.providers;
     if providers.is_empty() {
         bail!("没有可用模型配置");
     }
-    let client_model = client_model_of(&body_bytes);
     let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
     let tools = crate::upstream_resilience::request_declares_tools(&body_bytes);
     let mut memory = crate::upstream_resilience::FailureMemory::new();
@@ -1399,6 +1526,7 @@ async fn proxy_chat_upstream(
                 let target = build_target_url(&attempt.base_url, &path, &query);
                 let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
                 let mut text_tries = 0u32;
+                let attempt_started = std::time::Instant::now();
                 let class = loop {
                     let mut builder = state.client.request(method.clone(), &target);
                     builder =
@@ -1475,6 +1603,15 @@ async fn proxy_chat_upstream(
                                         rules_injected,
                                     )
                                     .await;
+                                if let Some(box_id) = box_id.as_deref() {
+                                    state
+                                        .note_member_success(
+                                            box_id,
+                                            provider,
+                                            attempt_started.elapsed().as_millis() as u64,
+                                        )
+                                        .await;
+                                }
                                 return if stream {
                                     chat_stream_from_hold(
                                         held,
@@ -1499,6 +1636,15 @@ async fn proxy_chat_upstream(
                                     rules_injected,
                                 )
                                 .await;
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_success(
+                                        box_id,
+                                        provider,
+                                        attempt_started.elapsed().as_millis() as u64,
+                                    )
+                                    .await;
+                            }
                             return into_axum_response(
                                 response,
                                 Some(state.stats.clone()),
@@ -1535,6 +1681,11 @@ async fn proxy_chat_upstream(
                 let Some(class) = class else {
                     continue;
                 };
+                if let Some(box_id) = box_id.as_deref() {
+                    state
+                        .note_member_failure(box_id, provider, &format!("{class:?}"), cooldown_ms)
+                        .await;
+                }
                 if let Some(kind) = memory.observe(class) {
                     remember_route_failure(&state, attempt).await;
                     return Ok(session_notice(
@@ -1576,7 +1727,11 @@ async fn proxy_responses_via_chat(
     rules_injected: bool,
 ) -> Result<Response<Body>> {
     let config = state.config().await;
-    let providers = ordered_providers(&config);
+    let client_model = client_model_of(&body_bytes);
+    let route = request_route(&state, &config, &client_model).await;
+    let box_id = route.box_id;
+    let cooldown_ms = route.cooldown_ms;
+    let providers = route.providers;
     if providers.is_empty() {
         bail!("没有可用模型配置");
     }
@@ -1585,7 +1740,6 @@ async fn proxy_responses_via_chat(
         .ok()
         .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
         .unwrap_or(false);
-    let client_model = client_model_of(&body_bytes);
     let mut memory = crate::upstream_resilience::FailureMemory::new();
     let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
@@ -1607,6 +1761,7 @@ async fn proxy_responses_via_chat(
                 continue;
             }
             let own_key = !attempt.api_key.trim().is_empty();
+            let attempt_started = std::time::Instant::now();
             // Codex 几乎每轮都带 tools。火山原生 /responses 常「200 纯文本收工」不发
             // tool call；带 tools 时一律走 Chat Completions 桥，保证任意 OpenAI 兼容 LLM
             // 都能跑完工具环，而不是只宣布计划就停。
@@ -1669,6 +1824,15 @@ async fn proxy_responses_via_chat(
                                 rules_injected,
                             )
                             .await;
+                        if let Some(box_id) = box_id.as_deref() {
+                            state
+                                .note_member_success(
+                                    box_id,
+                                    provider,
+                                    attempt_started.elapsed().as_millis() as u64,
+                                )
+                                .await;
+                        }
                         return into_axum_response(
                             response,
                             Some(state.stats.clone()),
@@ -1688,6 +1852,16 @@ async fn proxy_responses_via_chat(
                             own_key,
                             is_free,
                         );
+                        if let Some(box_id) = box_id.as_deref() {
+                            state
+                                .note_member_failure(
+                                    box_id,
+                                    provider,
+                                    &format!("HTTP {} {}", status.as_u16(), text),
+                                    cooldown_ms,
+                                )
+                                .await;
+                        }
                         if let Some(kind) = memory.observe(class) {
                             return Ok(session_notice(
                                 crate::upstream_resilience::Wire::Responses,
@@ -1846,6 +2020,15 @@ async fn proxy_responses_via_chat(
                                         rules_injected,
                                     )
                                     .await;
+                                if let Some(box_id) = box_id.as_deref() {
+                                    state
+                                        .note_member_success(
+                                            box_id,
+                                            provider,
+                                            attempt_started.elapsed().as_millis() as u64,
+                                        )
+                                        .await;
+                                }
                                 return responses_stream_from_hold(
                                     held,
                                     client_model.clone(),
@@ -1868,6 +2051,15 @@ async fn proxy_responses_via_chat(
                                     rules_injected,
                                 )
                                 .await;
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_success(
+                                        box_id,
+                                        provider,
+                                        attempt_started.elapsed().as_millis() as u64,
+                                    )
+                                    .await;
+                            }
                             let model = client_model.clone();
                             let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
                                 response.bytes_stream(),
@@ -1914,6 +2106,16 @@ async fn proxy_responses_via_chat(
                                 body = %text,
                                 "codex chat stream upstream error"
                             );
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_failure(
+                                        box_id,
+                                        provider,
+                                        &format!("HTTP {} {}", status.as_u16(), text),
+                                        cooldown_ms,
+                                    )
+                                    .await;
+                            }
                             if let Some(kind) = memory.observe(class) {
                                 return Ok(session_notice(
                                     crate::upstream_resilience::Wire::Responses,
@@ -1942,6 +2144,16 @@ async fn proxy_responses_via_chat(
                                 own_key,
                                 is_free,
                             );
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_failure(
+                                        box_id,
+                                        provider,
+                                        &format!("HTTP {} {}", status.as_u16(), text),
+                                        cooldown_ms,
+                                    )
+                                    .await;
+                            }
                             if let Some(kind) = memory.observe(class) {
                                 return Ok(session_notice(
                                     crate::upstream_resilience::Wire::Responses,
@@ -1958,6 +2170,16 @@ async fn proxy_responses_via_chat(
                                 error = %err,
                                 "codex chat stream request error"
                             );
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_failure(
+                                        box_id,
+                                        provider,
+                                        &err.to_string(),
+                                        cooldown_ms,
+                                    )
+                                    .await;
+                            }
                             if let Some(kind) = memory.observe(crate::upstream_resilience::classify_network()) {
                                 return Ok(session_notice(
                                     crate::upstream_resilience::Wire::Responses,
@@ -2011,6 +2233,16 @@ async fn proxy_responses_via_chat(
                                 own_key,
                                 is_free,
                             );
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_failure(
+                                        box_id,
+                                        provider,
+                                        &format!("HTTP {} {}", status.as_u16(), body_text),
+                                        cooldown_ms,
+                                    )
+                                    .await;
+                            }
                             if let Some(kind) = memory.observe(class) {
                                 return Ok(session_notice(
                                     crate::upstream_resilience::Wire::Responses,
@@ -2022,6 +2254,16 @@ async fn proxy_responses_via_chat(
                             break;
                         }
                         if looks_error && is_free {
+                            if let Some(box_id) = box_id.as_deref() {
+                                state
+                                    .note_member_failure(
+                                        box_id,
+                                        provider,
+                                        &format!("HTTP {} {}", status.as_u16(), body_text),
+                                        cooldown_ms,
+                                    )
+                                    .await;
+                            }
                             let _ = memory.observe(crate::upstream_resilience::FailureClass::Switch);
                             break;
                         }
@@ -2107,6 +2349,15 @@ async fn proxy_responses_via_chat(
                         } else {
                             Bytes::from(body_text)
                         };
+                        if let Some(box_id) = box_id.as_deref() {
+                            state
+                                .note_member_success(
+                                    box_id,
+                                    provider,
+                                    attempt_started.elapsed().as_millis() as u64,
+                                )
+                                .await;
+                        }
                         return Ok(Response::builder()
                             .status(status)
                             .header(http::header::CONTENT_TYPE, "application/json")
@@ -2123,6 +2374,16 @@ async fn proxy_responses_via_chat(
                             own_key,
                             is_free,
                         );
+                        if let Some(box_id) = box_id.as_deref() {
+                            state
+                                .note_member_failure(
+                                    box_id,
+                                    provider,
+                                    &format!("HTTP {} {}", status.as_u16(), text),
+                                    cooldown_ms,
+                                )
+                                .await;
+                        }
                         if let Some(kind) = memory.observe(class) {
                             return Ok(session_notice(
                                 crate::upstream_resilience::Wire::Responses,
@@ -2135,6 +2396,16 @@ async fn proxy_responses_via_chat(
                     }
                     Err(err) => {
                         warn!(provider = %attempt.name, error = %err, "codex responses request error");
+                        if let Some(box_id) = box_id.as_deref() {
+                            state
+                                .note_member_failure(
+                                    box_id,
+                                    provider,
+                                    &err.to_string(),
+                                    cooldown_ms,
+                                )
+                                .await;
+                        }
                         if let Some(kind) =
                             memory.observe(crate::upstream_resilience::classify_network())
                         {
@@ -2345,6 +2616,131 @@ fn select_provider(config: &AppConfig) -> Option<&ProviderConfig> {
         }
     }
     config.providers.iter().find(|provider| provider.enabled)
+}
+
+/// 一次请求的选路结果：attempt 链 + 命中盒子时的 id 与冷却配置。
+struct Route {
+    providers: Vec<ProviderConfig>,
+    box_id: Option<String>,
+    cooldown_ms: Option<u64>,
+}
+
+/// 触发键：客户端请求体 model 优先，其次当前激活 provider 的 model_name。
+///
+/// 只认 `enabled` 的盒子；两边都不命中返回 None，调用方回退 `ordered_providers`。
+fn resolve_box<'a>(
+    boxes: &'a [StrategyBox],
+    client_model: &str,
+    active_model: Option<&str>,
+) -> Option<&'a StrategyBox> {
+    let enabled = || boxes.iter().filter(|box_spec| box_spec.enabled);
+    let client_model = client_model.trim();
+    if !client_model.is_empty() {
+        if let Some(hit) = enabled().find(|box_spec| box_spec.public_model_id.trim() == client_model) {
+            return Some(hit);
+        }
+    }
+    if let Some(active_model) = active_model.map(str::trim).filter(|model| !model.is_empty()) {
+        if let Some(hit) = enabled().find(|box_spec| box_spec.public_model_id.trim() == active_model) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// 成员 → `ProviderConfig` 克隆：跳过停用 provider、不存在的 provider 与注册表禁用的模型。
+/// `model_name` 覆盖成成员自己的，保持传入的成员顺序。
+fn expand_members(
+    config: &AppConfig,
+    members: &[strategy_box::StrategyMember],
+    registry: &[ModelEntry],
+) -> Vec<ProviderConfig> {
+    let mut out = Vec::new();
+    for member in members {
+        let Some(provider) = config
+            .providers
+            .iter()
+            .find(|provider| provider.enabled && provider.id == member.provider_id)
+        else {
+            continue;
+        };
+        // R2 注册表里显式禁用的模型不参与编排；没有条目的模型按「未登记」放行。
+        if let Some(entry) = registry.iter().find(|entry| {
+            entry.provider_id == member.provider_id && entry.model_name == member.model_name
+        }) {
+            if !entry.enabled {
+                continue;
+            }
+        }
+        let mut expanded = provider.clone();
+        expanded.model_name = member.model_name.clone();
+        out.push(expanded);
+    }
+    out
+}
+
+/// 按盒子模式排好成员再展开成 attempt 链（纯函数，便于单测）。
+fn expand_box_chain(
+    config: &AppConfig,
+    box_spec: &StrategyBox,
+    registry: &[ModelEntry],
+    health: &HashMap<String, strategy_box::MemberHealth>,
+    rotation: u64,
+) -> Vec<ProviderConfig> {
+    let ordered = strategy_box::order_members(
+        &box_spec.id,
+        &box_spec.members,
+        box_spec.mode,
+        box_spec.speed_threshold_ms,
+        health,
+        rotation,
+    );
+    expand_members(config, &ordered, registry)
+}
+
+/// 健康度键的反推：`{box_id}::{provider_id}::{model_name}`。
+fn member_key_of(box_id: &str, provider: &ProviderConfig) -> String {
+    format!("{box_id}::{}::{}", provider.id, provider.model_name)
+}
+
+/// 选路入口：命中策略盒子时用盒子成员链，否则与既有 `ordered_providers` 完全一致。
+async fn request_route(state: &GatewayState, config: &AppConfig, client_model: &str) -> Route {
+    let active_model = select_provider(config).map(|provider| provider.model_name.clone());
+    let registry = state.model_registry_snapshot().await;
+    let strategy = state.strategy_state();
+
+    // 先用读锁判定是否命中：非盒子请求（绝大多数）不争写锁。
+    let hit = {
+        let guard = strategy.read().await;
+        resolve_box(&guard.boxes, client_model, active_model.as_deref()).cloned()
+    };
+    let Some(box_spec) = hit else {
+        return Route {
+            providers: ordered_providers(config),
+            box_id: None,
+            cooldown_ms: None,
+        };
+    };
+
+    // 命中后才推进轮换游标并读取健康度。
+    let providers = {
+        let mut guard = strategy.write().await;
+        let rotation = guard.runtime.next_rotation(&box_spec.id);
+        expand_box_chain(config, &box_spec, &registry, &guard.runtime.health, rotation)
+    };
+    if providers.is_empty() {
+        // 成员全部无效：回退既有链路，不把请求判死。
+        return Route {
+            providers: ordered_providers(config),
+            box_id: None,
+            cooldown_ms: None,
+        };
+    }
+    Route {
+        providers,
+        box_id: Some(box_spec.id),
+        cooldown_ms: box_spec.cooldown_ms,
+    }
 }
 
 pub(crate) fn build_target_url(base_url: &str, path: &str, query: &str) -> String {

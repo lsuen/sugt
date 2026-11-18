@@ -24,6 +24,7 @@ pub mod logging;
 pub mod me_agent;
 pub mod model;
 pub mod model_registry;
+pub mod strategy_box;
 pub mod tray;
 pub mod update;
 pub mod product;

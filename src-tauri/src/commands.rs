@@ -13,12 +13,13 @@ use crate::{
     model_registry::{self, ModelEntry, ModelProbe},
     probe,
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
+    strategy_box::{self, StrategyBox},
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
 };
 use anyhow::Result;
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -695,7 +696,13 @@ pub async fn set_model_enabled(
         &input.model_name,
         input.enabled,
     );
-    model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())
+    model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())?;
+    // 禁用状态立即对策略盒子选路生效：同步网关内存副本。
+    runtime
+        .gateway
+        .set_model_registry_snapshot(registry.entries.clone())
+        .await;
+    Ok(())
 }
 
 /// 批量探测指定模型（限并发 3），结果一次性回写注册表并返回最新条目。
@@ -775,11 +782,121 @@ pub async fn probe_models(
         model_registry::apply_probe(&mut registry, &provider.id, &model_name, probe);
     }
     model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())?;
+    runtime
+        .gateway
+        .set_model_registry_snapshot(registry.entries.clone())
+        .await;
     Ok(model_registry::entries_for_provider(
         &registry,
         &provider.id,
         &input.model_names,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveStrategyBoxInput {
+    pub spec: StrategyBox,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StrategyBoxIdInput {
+    pub box_id: String,
+}
+
+/// 一个成员的运行态健康度，前端只读展示。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyMemberStatus {
+    pub provider_id: String,
+    pub model_name: String,
+    pub last_latency_ms: Option<u64>,
+    pub consecutive_failures: u32,
+    pub cooldown_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_error: Option<String>,
+}
+
+/// 策略盒子列表（磁盘为准；启动时网关也已加载同一份）。
+#[tauri::command]
+pub async fn list_strategy_boxes(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<StrategyBox>, String> {
+    Ok(strategy_box::load_boxes(&runtime.paths.config_dir))
+}
+
+/// 保存（新建或整体替换）一个策略盒子：读盘 → 校验 → upsert → 落盘 → 刷新网关内存副本。
+#[tauri::command]
+pub async fn save_strategy_box(
+    runtime: State<'_, AppRuntime>,
+    input: SaveStrategyBoxInput,
+) -> Result<StrategyBox, String> {
+    let providers = runtime.config.read().await.providers.clone();
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut boxes = strategy_box::load_boxes(&config_dir);
+    strategy_box::validate(&input.spec, &providers)?;
+    strategy_box::check_public_id_conflict(&boxes, &input.spec)?;
+    let saved = strategy_box::upsert(&mut boxes, input.spec);
+    strategy_box::save_boxes(&config_dir, &boxes).map_err(|err| err.to_string())?;
+    runtime.gateway.set_strategy_boxes(boxes).await;
+    Ok(saved)
+}
+
+/// 删除一个策略盒子（写盘后同步刷新网关内存副本）。
+#[tauri::command]
+pub async fn delete_strategy_box(
+    runtime: State<'_, AppRuntime>,
+    input: StrategyBoxIdInput,
+) -> Result<(), String> {
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut boxes = strategy_box::load_boxes(&config_dir);
+    let before = boxes.len();
+    boxes.retain(|item| item.id != input.box_id);
+    if boxes.len() == before {
+        return Err(format!("未找到策略盒子: {}", input.box_id));
+    }
+    strategy_box::save_boxes(&config_dir, &boxes).map_err(|err| err.to_string())?;
+    runtime.gateway.set_strategy_boxes(boxes).await;
+    Ok(())
+}
+
+/// 读取成员健康度（只读，不发探测请求）。
+#[tauri::command]
+pub async fn get_strategy_box_status(
+    runtime: State<'_, AppRuntime>,
+    input: StrategyBoxIdInput,
+) -> Result<Vec<StrategyMemberStatus>, String> {
+    let state = runtime.gateway.strategy_state();
+    let guard = state.read().await;
+    let box_spec = guard
+        .boxes
+        .iter()
+        .find(|item| item.id == input.box_id)
+        .ok_or_else(|| format!("未找到策略盒子: {}", input.box_id))?;
+    let now = Instant::now();
+    let statuses = box_spec
+        .members
+        .iter()
+        .map(|member| {
+            let health = guard
+                .runtime
+                .status(&strategy_box::member_key(&box_spec.id, member));
+            // Instant 不能序列化，换算成「现在 + 剩余时长」的 UTC 时间点。
+            let cooldown_until = health.cooldown_until.and_then(|deadline| {
+                deadline
+                    .checked_duration_since(now)
+                    .and_then(|left| chrono::Duration::from_std(left).ok())
+                    .map(|left| chrono::Utc::now() + left)
+            });
+            StrategyMemberStatus {
+                provider_id: member.provider_id.clone(),
+                model_name: member.model_name.clone(),
+                last_latency_ms: health.last_latency_ms,
+                consecutive_failures: health.consecutive_failures,
+                cooldown_until,
+                last_error: health.last_error,
+            }
+        })
+        .collect();
+    Ok(statuses)
 }
 
 #[tauri::command]

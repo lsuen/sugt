@@ -74,6 +74,26 @@ description = "Enables the probe_models command"
 commands.allow = ["probe_models"]
 
 [[permission]]
+identifier = "allow-list-strategy-boxes"
+description = "Enables the list_strategy_boxes command"
+commands.allow = ["list_strategy_boxes"]
+
+[[permission]]
+identifier = "allow-save-strategy-box"
+description = "Enables the save_strategy_box command"
+commands.allow = ["save_strategy_box"]
+
+[[permission]]
+identifier = "allow-delete-strategy-box"
+description = "Enables the delete_strategy_box command"
+commands.allow = ["delete_strategy_box"]
+
+[[permission]]
+identifier = "allow-get-strategy-box-status"
+description = "Enables the get_strategy_box_status command"
+commands.allow = ["get_strategy_box_status"]
+
+[[permission]]
 identifier = "allow-set-failover"
 description = "Enables the set_failover command"
 commands.allow = ["set_failover"]
