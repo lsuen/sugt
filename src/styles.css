@@ -2,6 +2,11 @@
   color-scheme: dark;
   /* 状态栏占用的内容区净高；窗口初始高度 680 → 714 即补偿这个值（见 window_state.rs）。 */
   --status-bar-h: 34px;
+  /* 控件原语（B4）：所有输入框 / 下拉 / 多行文本共用这套圆角与内边距。
+     主题只需覆盖颜色 token，不必也不应该再各自定义控件圆角。 */
+  --control-radius: 8px;
+  --control-pad-y: 8px;
+  --control-pad-x: 10px;
   font-family: var(--font-ui, Inter, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif);
   font-size: 14px;
   background: var(--bg, #070b14);
@@ -17,18 +22,42 @@ html, body, #root {
   background: var(--bg, #070b14);
   color: var(--text, #edf7ff);
 }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 
-/* 全局下拉：避免系统白底灰字 */
+/* 控件原语（B4）：输入框 / 下拉 / 多行文本共用同一套外观。
+   新页面直接用裸元素或 .field-* 类即可，不要在业务选择器里写死圆角与内边距，
+   否则同一个产品里会出现 8px / 10px / 12px 混排（由 tests/css-guard.mjs 守护）。 */
+/* 用 :where() 把排除项的特异性归零，业务选择器（.store-search input 等）
+   仍能按需覆盖边框和底色；这里只负责「没写过的就用统一默认」。 */
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])),
 select,
-.app-select {
+.app-select,
+textarea,
+.field-input,
+.field-select,
+.field-textarea {
   color: var(--text, #e8f0f8);
   background-color: var(--input-bg, #121a28);
-  border: 1px solid var(--border, rgba(142, 232, 255, .22));
-  border-radius: 8px;
-  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(142, 232, 255, .18));
+  border-radius: var(--control-radius, 8px);
+  padding: var(--control-pad-y, 8px) var(--control-pad-x, 10px);
   font-size: 13px;
   outline: none;
+}
+input:where(:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"])):focus,
+select:focus,
+.app-select:focus,
+textarea:focus,
+.field-input:focus,
+.field-select:focus,
+.field-textarea:focus {
+  border-color: var(--accent, #16f1ff);
+  box-shadow: 0 0 0 1px var(--focus-ring, rgba(22, 241, 255, .25));
+}
+
+/* 全局下拉：避免系统白底灰字，箭头与原生控件保持一致 */
+select,
+.app-select {
   cursor: pointer;
   appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--accent, #8ee8ff) 50%),
@@ -37,11 +66,6 @@ select,
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   padding-right: 28px;
-}
-select:focus,
-.app-select:focus {
-  border-color: var(--accent, #16f1ff);
-  box-shadow: 0 0 0 1px var(--focus-ring, rgba(22, 241, 255, .25));
 }
 select option,
 .app-select option {
@@ -562,8 +586,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .modal-body input:not([type="checkbox"]):not([type="radio"]),
 .modal-body select,
 .modal-body textarea {
-  border: 1px solid var(--border, rgba(142,232,255,.18)); border-radius: 10px;
-  padding: 10px 12px; color: var(--text, #fff); background: var(--input-bg, rgba(2,8,16,.75)); outline: none; font-size: 13px;
+  color: var(--text, #fff); background: var(--input-bg, rgba(2,8,16,.75)); font-size: 13px;
 }
 .modal-body input:not([type="checkbox"]):not([type="radio"]):focus,
 .modal-body select:focus,
@@ -1165,13 +1188,10 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   outline: none;
   font-size: 13px;
 }
+/* 搜索框的内边距由外层 .store-search 容器提供，输入框自身不再叠加 */
+.store-search input { padding: 0; }
 .store-filters select {
   min-width: 180px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.08);
-  color: inherit;
 }
 .store-skill-list { display: flex; flex-direction: column; gap: 8px; }
 .store-skill-list.compact .store-skill-row { padding: 10px; }
@@ -1272,8 +1292,8 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .store-repo-form input {
   min-width: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
+  padding: var(--control-pad-y, 8px) var(--control-pad-x, 10px);
+  border-radius: var(--control-radius, 8px);
   background: rgba(255,255,255,.04);
   border: 1px solid rgba(255,255,255,.08);
 }
@@ -2208,8 +2228,8 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   min-height: 110px;
   max-height: 280px;
   resize: vertical;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: var(--control-pad-y, 8px) var(--control-pad-x, 10px);
+  border-radius: var(--control-radius, 8px);
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(0,0,0,.25);
   color: #e8f1f7;
@@ -2289,8 +2309,8 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   flex: 1;
   min-width: 0;
   height: 34px;
-  padding: 0 10px;
-  border-radius: 8px;
+  padding: 0 var(--control-pad-x, 10px);
+  border-radius: var(--control-radius, 8px);
   border: 1px solid rgba(255,255,255,.12);
   background: rgba(0,0,0,.25);
   color: #e8f1f7;
@@ -2734,7 +2754,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   border: 1px solid color-mix(in srgb, var(--border, #3a465c) 80%, transparent);
   background: color-mix(in srgb, var(--surface, #1a2230) 88%, transparent);
   color: var(--text, #e8eef8);
-  border-radius: 8px;
+  border-radius: var(--control-radius, 8px);
   padding: 4px 22px 4px 8px;
   font-size: 12px;
   line-height: 1.3;
@@ -3094,8 +3114,8 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   color: #edf7ff;
   background: rgba(2, 8, 16, .75);
   border: 1px solid rgba(142, 232, 255, .22);
-  border-radius: 12px;
-  padding: 10px 12px;
+  border-radius: var(--control-radius, 8px);
+  padding: var(--control-pad-y, 8px) var(--control-pad-x, 10px);
   line-height: 1.5;
   font: inherit;
 }
@@ -3566,6 +3586,100 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .key-pool-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .key-pool-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
 
+/* 接入密钥：客户端连本机网关时携带的入站 key。表单 + 列表 + 新建后一次性完整 key 展示，全部走主题 token */
+.client-key-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.client-key-note { color: var(--muted); font-size: 12px; }
+.client-key-empty-text { margin: 8px 0 0; }
+.client-key-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+.client-key-form .field-label { flex: 1 1 220px; min-width: 0; }
+.client-key-submit { flex: 0 0 auto; }
+.client-key-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft, rgba(22, 241, 255, .08));
+}
+.client-key-reveal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.client-key-reveal-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.client-key-reveal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.client-key-reveal-code {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.client-key-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.client-key-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.client-key-table th,
+.client-key-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+.client-key-table th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.client-key-table tbody tr:last-child td { border-bottom: none; }
+.client-key-table tbody tr.is-off td { opacity: .62; }
+.client-key-name { font-weight: 600; }
+.client-key-code { overflow-wrap: anywhere; }
+.client-key-switch {
+  width: 40px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.client-key-last-used { white-space: nowrap; color: var(--muted); }
+.client-key-error-cell { max-width: 220px; }
+.client-key-error {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger, #ff95a7);
+}
+.client-key-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.client-key-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
+
 /* 模型列表顶部接入信息（v1.1.11 R4）：本机 models 地址 + 各入口 baseurl / modelid 复制，全部走主题 token */
 .access-info-card { margin-bottom: 14px; }
 .access-info-head {
@@ -3759,7 +3873,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   width: 76px;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--control-radius, 8px);
   background: var(--input-bg);
   color: var(--text);
   font-size: 13px;
