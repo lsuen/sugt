@@ -472,7 +472,7 @@ pub enum RuleAction {
 | T3.1 | R3 | strategy_box.rs 数据模型 + 持久化 | 待开发 | | |
 | T3.2 | R3 | 策略模式选路逻辑（4 模式） | 待开发 | | |
 | T3.3 | R3 | 网关选路集成 + 控制台可选策略盒子 | 待开发 | | |
-| T4.1 | R4 | get_local_access_info + 接入信息/复制 UI | 待开发 | | |
+| T4.1 | R4 | get_local_access_info + 接入信息/复制 UI | 已完成 | f5782d0 / b0f6737 | 4 条单测：回退/首条 sutai/去重/停用不收 |
 | T5.1 | R5 | api_key_pool.rs 数据模型 + 持久化 | 待开发 | | |
 | T5.2 | R5 | key 轮换 + 网关埋点 + 用量监控 | 待开发 | | |
 | T5.3 | R5 | Key 池主 tab UI + 用量展示/告警 | 待开发 | | |
