@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { t } from './i18n';
 import {
   PET_SIZES,
-  petModePatch,
+  petEnabledPatch,
   petSizePatch,
   type OverlayConfigView,
 } from './pet/config';
@@ -17,7 +17,7 @@ type Props = {
 };
 
 export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
-  const petOn = Boolean(overlay?.pet_enabled);
+  const petOn = Boolean(overlay?.enabled);
   // 互动：会话开关与「长期互动」合并展示，任一为真即视为开启
   const interactiveOn = Boolean(overlay?.pet_interactive || overlay?.pet_always_interactive);
   // 滑块本地草稿：松手 / 方向键再写入，避免拖动时每步打 IPC
@@ -40,19 +40,20 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
 
   const posText =
     !overlay || overlay.x < 0 || overlay.y < 0
-      ? t('set.overlayPos')
-      : t('set.overlayPosAt', { x: overlay.x, y: overlay.y });
+      ? t('set.petPos')
+      : t('set.petPosAt', { x: overlay.x, y: overlay.y });
 
-  const togglePet = (enabled: boolean) => onPatch(petModePatch(enabled, overlay));
+  // 启用态只写 enabled：尺寸、落点、不透明度与行为开关各自独立持久化。
+  const togglePet = (enabled: boolean) => onPatch(petEnabledPatch(enabled));
 
   const setPetSize = (size: (typeof PET_SIZES)[number]) => onPatch(petSizePatch(size));
 
   const setInteractive = (enabled: boolean) => {
-    // 合并写入：长期互动与会话互动同开同关，避免两套开关打架
+    // 合并写入：长期互动与会话互动同开同关，避免两套开关打架。
+    // 关着精灵时也只记录偏好，不再把精灵自动打开。
     onPatch({
       pet_interactive: enabled,
       pet_always_interactive: enabled,
-      ...(enabled && !petOn ? petModePatch(true, overlay) : {}),
     });
   };
 

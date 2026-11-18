@@ -29,12 +29,6 @@ export type LanShareInfo = {
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
 
-// 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
-const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
-  column: { width: 280, height: 108 },
-  row: { width: 520, height: 72 },
-};
-
 type AppConfigView = {
   autostart?: boolean;
   failover_enabled?: boolean;
@@ -117,9 +111,6 @@ export function SettingsPanel({
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
-  const [opacity, setOpacity] = useState(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
-  const [width, setWidth] = useState(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
-  const [height, setHeight] = useState(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
   const [internalTab, setInternalTab] = useState<SettingsTab>('overview');
   const [lanOpen, setLanOpen] = useState(false);
   const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
@@ -172,8 +163,9 @@ export function SettingsPanel({
     }
   };
 
-  // 悬浮窗配置更新：合并当前配置 + 增量，持久化并即时应用
-  // 本地草稿：父级 config 由 3s 轮询刷新，快速连点两个开关时不能各自拿旧 base 覆盖
+  // 精灵配置按域增量写入：合并当前快照 + 增量，持久化并即时应用。
+  // 本地草稿：父级 config 由 3s 轮询刷新，快速连点两个开关时不能各自拿旧 base 覆盖。
+  // 后端只 merge 补丁字段，菜单窗 / 透明窗的并发写入不会互相抹掉。
   const overlayDraft = useRef<OverlayConfigView | null>(null);
   const pendingWrites = useRef(0);
   useEffect(() => {
@@ -182,47 +174,15 @@ export function SettingsPanel({
 
   const setOverlay = (patch: Partial<OverlayConfigView>) => {
     const base = overlayDraft.current ?? config?.overlay ?? DEFAULT_OVERLAY;
-    const next = { ...base, ...patch };
-    overlayDraft.current = next;
+    overlayDraft.current = { ...base, ...patch };
     pendingWrites.current += 1;
     run(async () => {
       try {
-        await invoke('set_overlay_config', { cfg: next });
+        await invoke('patch_overlay_config', { patch });
       } finally {
         pendingWrites.current -= 1;
       }
     }, t('common.update'));
-  };
-
-  // 外部配置刷新后同步滑块显示值
-  useEffect(() => {
-    setOpacity(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
-    setWidth(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
-    setHeight(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
-  }, [config?.overlay?.opacity, config?.overlay?.width, config?.overlay?.height]);
-
-  // 切换横/竖排：同时应用对应推荐尺寸，让布局一眼可见
-  const switchOverlayLayout = (layout: 'column' | 'row') => {
-    const size = LAYOUT_SIZE[layout];
-    setWidth(size.width);
-    setHeight(size.height);
-    setOverlay({ layout, width: size.width, height: size.height });
-  };
-
-  // 恢复默认：重置位置、透明度、布局与尺寸（保留启用/显示项开关）
-  const resetOverlay = () => {
-    setWidth(DEFAULT_OVERLAY.width);
-    setHeight(DEFAULT_OVERLAY.height);
-    setOpacity(DEFAULT_OVERLAY.opacity);
-    setOverlay({
-      opacity: DEFAULT_OVERLAY.opacity,
-      x: DEFAULT_OVERLAY.x,
-      y: DEFAULT_OVERLAY.y,
-      layout: DEFAULT_OVERLAY.layout,
-      width: DEFAULT_OVERLAY.width,
-      height: DEFAULT_OVERLAY.height,
-      edit: false,
-    });
   };
 
   const openProxy = async () => {
@@ -234,11 +194,6 @@ export function SettingsPanel({
       toast(formatError(error), 'error');
     }
   };
-
-  const posText = (cfg?: OverlayConfigView) =>
-    !cfg || cfg.x < 0 || cfg.y < 0
-      ? t('set.overlayPos')
-      : t('set.overlayPosAt', { x: cfg.x, y: cfg.y });
 
   return (
     <div className="settings-layout-wrap">
@@ -428,112 +383,6 @@ export function SettingsPanel({
             onStatusBarEnabled={onStatusBarEnabled}
           />
 
-          <div className="card settings-group switches">
-            <h4>{t('set.overlay')}</h4>
-            <p className="hint compact">{t('set.overlayHint')}</p>
-            <label className="switch-line">
-              <span>{t('set.overlayEnable')}</span>
-              <input type="checkbox" checked={Boolean(config?.overlay?.enabled)} onChange={(e) => setOverlay({ enabled: e.target.checked })} />
-            </label>
-            {config?.overlay?.enabled && !config?.overlay?.pet_enabled && (
-              <>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowRequests')}</span>
-                  <input type="checkbox" checked={config.overlay.show_requests !== false} onChange={(e) => setOverlay({ show_requests: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowTokens')}</span>
-                  <input type="checkbox" checked={config.overlay.show_tokens} onChange={(e) => setOverlay({ show_tokens: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowClient')}</span>
-                  <input type="checkbox" checked={config.overlay.show_client} onChange={(e) => setOverlay({ show_client: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowChannel')}</span>
-                  <input type="checkbox" checked={config.overlay.show_channel !== false} onChange={(e) => setOverlay({ show_channel: e.target.checked })} />
-                </label>
-                <div className="switch-line">
-                  <span>{t('set.overlayOpacity', { p: Math.round(config.overlay.opacity * 100) })}</span>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={1}
-                    step={0.05}
-                    value={opacity}
-                    onChange={(e) => setOpacity(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ opacity: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayLayout')}</span>
-                  <div className="overlay-layout-switch">
-                    <button
-                      type="button"
-                      className={`ghost tiny-btn${config.overlay.layout !== 'row' ? ' active' : ''}`}
-                      onClick={() => switchOverlayLayout('column')}
-                    >
-                      {t('set.overlayColumn')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`ghost tiny-btn${config.overlay.layout === 'row' ? ' active' : ''}`}
-                      onClick={() => switchOverlayLayout('row')}
-                    >
-                      {t('set.overlayRow')}
-                    </button>
-                  </div>
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayWidth', { w: Math.round(width) })}</span>
-                  <input
-                    type="range"
-                    min={200}
-                    max={600}
-                    step={10}
-                    value={width}
-                    onChange={(e) => setWidth(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ width: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ width: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ width: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayHeight', { h: Math.round(height) })}</span>
-                  <input
-                    type="range"
-                    min={48}
-                    max={200}
-                    step={4}
-                    value={height}
-                    onChange={(e) => setHeight(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ height: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ height: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ height: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="settings-actions-row">
-                  <button type="button" className="ghost tiny-btn" onClick={() => setOverlay({ edit: true })}>
-                    {t('set.overlayMove')}
-                  </button>
-                  <button type="button" className="ghost tiny-btn" onClick={resetOverlay}>
-                    {t('set.overlayReset')}
-                  </button>
-                  <span className="hint compact">
-                    {posText(config.overlay)} · {t('set.overlayMoveHint')}
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       )}
 

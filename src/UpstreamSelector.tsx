@@ -4,11 +4,9 @@ import { Play, RefreshCw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
 
 /**
- * 实验免费通道自动探测：仅「首次打开时已选中」或「用户主动选中」时触发，
- * 不做定时轮询。会话内同一 provider 只自动探一次（手动刷新除外）。
+ * 实验免费通道：打开控制台只列出路由和主机，不打真实补全。
+ * 手动刷新才探测可用性，并且不改当前首选模型。
  */
-const sessionAutoProbed = new Set<string>()
-
 type ProviderOption = {
   id: string
   name: string
@@ -20,11 +18,14 @@ type ProviderOption = {
   protocol: 'openai' | 'anthropic' | 'open_ai'
   provider: string
   experimental?: boolean
+  tool_text_retry_enabled?: boolean
+  tool_text_retry_extra?: number
 }
 
 type FreeModelProbe = { name: string; available: boolean }
+type FreeRouteChoice = { model: string; host: string }
 
-type ModelOption = { name: string; available: boolean | null }
+type ModelOption = { name: string; host?: string; available: boolean | null }
 
 type Props = {
   providers: ProviderOption[]
@@ -67,12 +68,10 @@ export function UpstreamSelector({
     })
   }, [activeProviderId, providers])
 
-  // 打开控制台且当前已是实验通道 → 会话内自动探测一次（无定时）
+  // 打开控制台只拉路由表。探测留给手动刷新。
   useEffect(() => {
     if (!upstreamProviderId || !isExperimental) return
-    if (sessionAutoProbed.has(upstreamProviderId)) return
-    sessionAutoProbed.add(upstreamProviderId)
-    void fetchModels({ silentSelect: true })
+    void loadFreeRoutes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upstreamProviderId, isExperimental])
 
@@ -80,57 +79,44 @@ export function UpstreamSelector({
     setUpstreamProviderId(id)
     setModels([])
     setModelsLoaded(false)
-    const next = providers.find((p) => p.id === id)
-    // 用户主动选中实验通道 → 允许再探一次
-    if (next?.experimental) {
-      sessionAutoProbed.delete(id)
-    }
     onActiveProviderChange(id)
   }
 
-  const fetchModels = async (opts?: { silentSelect?: boolean }) => {
+  const loadFreeRoutes = async () => {
+    const choices = await invoke<FreeRouteChoice[]>('list_experimental_free_candidates')
+    setModels(
+      choices.map((choice) => ({
+        name: choice.model,
+        host: choice.host,
+        available: null,
+      })),
+    )
+    setModelsLoaded(true)
+  }
+
+  const fetchModels = async () => {
     const provider = providers.find((p) => p.id === upstreamProviderId)
     if (!provider) return
     setModelsBusy(true)
     try {
       if (provider.experimental) {
-        const candidates = await invoke<string[]>(
+        const choices = await invoke<FreeRouteChoice[]>(
           'list_experimental_free_candidates',
         )
-        setModels(candidates.map((name) => ({ name, available: null })))
-        setModelsLoaded(true)
         const probes = await invoke<FreeModelProbe[]>(
           'probe_experimental_free_models',
         )
-        const available = probes.filter((p) => p.available)
-        if (available.length === 0) {
-          setModels([])
+        const availability = new Map(probes.map((probe) => [probe.name, probe.available]))
+        setModels(
+          choices.map((choice) => ({
+            name: choice.model,
+            host: choice.host,
+            available: availability.get(choice.model) ?? false,
+          })),
+        )
+        setModelsLoaded(true)
+        if (!probes.some((probe) => probe.available)) {
           pushToast(t('upstream.freeEmpty'), 'error')
-        } else {
-          // 默认优先：openrouter/free → kilo-auto/free → 其余（与后端 ROUTES 一致）
-          const preferredOrder = [
-            'openrouter/free',
-            'kilo-auto/free',
-            'openai-fast',
-            'openai',
-            'fast',
-            'default',
-          ]
-          const sorted = [...available].sort((a, b) => {
-            const ia = preferredOrder.indexOf(a.name)
-            const ib = preferredOrder.indexOf(b.name)
-            return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
-          })
-          setModels(sorted.map((p) => ({ name: p.name, available: true })))
-          const stillOk = available.some(
-            (p) => p.name === provider.model_name,
-          )
-          if (!stillOk) {
-            // 后台自动纠正当前模型时不要走全局 run()/busy，否则各页「添加」会一起变灰
-            await selectModel(sorted[0].name, {
-              silent: opts?.silentSelect === true,
-            })
-          }
         }
         onRefresh()
       } else {
@@ -169,6 +155,8 @@ export function UpstreamSelector({
         provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
       enabled: provider.enabled,
       auto_adapt_base_url: true,
+      tool_text_retry_enabled: provider.tool_text_retry_enabled ?? true,
+      tool_text_retry_extra: provider.tool_text_retry_extra ?? 2,
     }
     if (opts?.silent) {
       try {
@@ -240,7 +228,9 @@ export function UpstreamSelector({
                 )}
                 {models.map((m) => (
                   <option key={m.name} value={m.name}>
-                    {m.available === true ? `● ${m.name}` : m.name}
+                    {m.available === true ? '● ' : m.available === false ? '○ ' : ''}
+                    {m.name}
+                    {m.host ? ` · ${m.host}` : ''}
                   </option>
                 ))}
               </select>
@@ -263,10 +253,7 @@ export function UpstreamSelector({
               type="button"
               className="tiny icon-only"
               disabled={modelsBusy}
-              onClick={() => {
-                if (upstreamProviderId) sessionAutoProbed.add(upstreamProviderId)
-                void fetchModels({ silentSelect: false })
-              }}
+              onClick={() => void fetchModels()}
               aria-label={t('upstream.fetchModels')}
             >
               <RefreshCw size={14} className={modelsBusy ? 'spin' : ''} />

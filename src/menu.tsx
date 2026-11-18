@@ -5,7 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { PetContextMenu } from './pet/PetContextMenu';
 import {
-  petModePatch,
+  petEnabledPatch,
   petSizePatch,
   type OverlayConfigView,
 } from './pet/config';
@@ -45,7 +45,8 @@ function MenuApp() {
 
   if (!cfg) return null;
   const patch = (next: Partial<OverlayConfigView>) => {
-    void invoke('set_overlay_config', { cfg: { ...cfg, ...next } }).catch(() => undefined);
+    // 只发增量，后端按当前配置 merge；不覆盖设置页 / 透明窗的其它写入。
+    void invoke('patch_overlay_config', { patch: next }).catch(() => undefined);
   };
 
   return (
@@ -62,7 +63,7 @@ function MenuApp() {
       onToggleRoam={() => patch({ pet_roam: cfg.pet_roam === false })}
       onSize={(size) => patch(petSizePatch(size))}
       onDock={() => patch({ x: -1, y: -1 })}
-      onHide={() => patch(petModePatch(false, cfg))}
+      onHide={() => patch(petEnabledPatch(false))}
       onClose={closeMenu}
     />
   );

@@ -32,7 +32,7 @@ export default defineConfig({
     // 这里对精灵素材禁用内联，其它资源仍走默认策略。
     assetsInlineLimit: (filePath: string) =>
       filePath.replace(/\\/g, '/').includes('/assets/pet/') ? false : undefined,
-    // 主窗口、流量悬浮窗、精灵右键菜单三入口
+    // 主窗口、精灵透明窗、精灵右键菜单三入口
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),

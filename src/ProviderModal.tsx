@@ -286,6 +286,30 @@ export function ProviderModal({
             </div>
           </div>
 
+          <div className="tool-retry-row">
+            <label className="switch-line">
+              <span>{t('pm.toolRetry')}</span>
+              <input
+                type="checkbox"
+                checked={form.tool_text_retry_enabled}
+                onChange={(e) => onChange({ ...form, tool_text_retry_enabled: e.target.checked })}
+              />
+            </label>
+            <input
+              className="tool-retry-count"
+              value={form.tool_text_retry_extra}
+              disabled={!form.tool_text_retry_enabled}
+              inputMode="numeric"
+              placeholder={t('pm.toolRetryPlaceholder')}
+              aria-label={t('pm.toolRetry')}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/\D/g, '').slice(0, 1);
+                onChange({ ...form, tool_text_retry_extra: raw });
+              }}
+            />
+            <span className="hint tool-retry-hint">{t('pm.toolRetryHint')}</span>
+          </div>
+
           <label className="switch-line">
             <span>{t('pm.enabled')}</span>
             <input

@@ -197,6 +197,12 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 .switch-line { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
 .switch-line-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .switch-line input[type="checkbox"] { width: 40px; height: 20px; accent-color: var(--accent, #16f1ff); }
+.tool-retry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.tool-retry-row .switch-line { flex: 1 1 160px; margin: 0; }
+.tool-retry-row .tool-retry-count { flex: 1 1 200px; min-width: 180px; }
+.tool-retry-row .tool-retry-count::placeholder { color: var(--muted, #8aa0b4); opacity: 1; }
+.tool-retry-row .tool-retry-count:disabled { opacity: 0.45; }
+.tool-retry-row .tool-retry-hint { flex: 1 0 100%; margin: 0; font-size: 11px; line-height: 1.4; }
 .lan-share-wrap { position: relative; display: inline-flex; }
 .lan-share-btn { color: var(--warn, #f5c542); }
 /* LAN 共享信息改走 ModalPortal 弹窗，避免被 .tab-body 裁切 */
