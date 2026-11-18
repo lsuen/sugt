@@ -11,6 +11,7 @@ pub mod common;
 pub mod config;
 pub mod experimental_free;
 pub mod platform;
+pub mod probe;
 pub mod error_hint;
 pub mod gateway;
 pub mod gateway_auth;

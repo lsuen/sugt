@@ -2335,7 +2335,7 @@ fn select_provider(config: &AppConfig) -> Option<&ProviderConfig> {
     config.providers.iter().find(|provider| provider.enabled)
 }
 
-fn build_target_url(base_url: &str, path: &str, query: &str) -> String {
+pub(crate) fn build_target_url(base_url: &str, path: &str, query: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     let relative = if crate::model::openai_base_has_version_suffix(base) {
@@ -2590,7 +2590,7 @@ fn paid_text_total(provider: &ProviderConfig) -> Option<u32> {
 }
 
 /// 克隆并绑定实验免费通道路由；用户自定义源原样返回。
-fn prepare_upstream_provider(provider: &ProviderConfig) -> ProviderConfig {
+pub(crate) fn prepare_upstream_provider(provider: &ProviderConfig) -> ProviderConfig {
     let mut p = provider.clone();
     if crate::experimental_free::is_experimental_free(&p) {
         crate::experimental_free::apply_route(&mut p);
@@ -2800,116 +2800,19 @@ fn anthropic_error(status: StatusCode, message: &str) -> Response<Body> {
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
+/// 探测上游是否可用。真正的请求逻辑在 `probe::probe_llm_connectivity`，
+/// 这里只保留 `Result` 形态给状态探测（`GatewayState::test_provider`）使用。
 pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
-    match provider.protocol {
-        ProviderProtocol::Anthropic => test_anthropic_connection(client, provider).await,
-        ProviderProtocol::OpenAi => test_openai_connection(client, provider).await,
-    }
-}
-
-async fn test_openai_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
-    let provider = prepare_upstream_provider(provider);
-    let chat_url = build_target_url(&provider.base_url, "v1/chat/completions", "");
-    tracing::info!(
-        provider = %provider.name,
-        base_url = %provider.base_url,
-        chat_url = %chat_url,
-        model = %provider.model_name,
-        "test_openai_connection"
-    );
-
-    let body = json!({
-        "model": provider.model_name,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 8,
-        "stream": false
-    });
-    let mut req = client
-        .post(&chat_url)
-        .json(&body)
-        .timeout(Duration::from_secs(20));
-    if !provider.api_key.trim().is_empty() {
-        req = req.bearer_auth(&provider.api_key);
-    }
-    let response = match req.send().await {
-        Ok(response) => response,
-        Err(err) => bail!(error_hint::classify_request_error(&err)),
-    };
-
-    if response.status().is_success() {
-        return Ok(());
-    }
-
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    warn!(provider = %provider.name, %status, body = %text, "chat completion test failed");
-
-    // 实验免费通道：无 models 兜底语义，直接报错
-    if crate::experimental_free::is_experimental_free(&provider) {
-        bail!(error_hint::classify_http_error(status, &text));
-    }
-
-    let models_url = build_target_url(&provider.base_url, "v1/models", "");
-    let mut models_req = client.get(&models_url).timeout(Duration::from_secs(12));
-    if !provider.api_key.trim().is_empty() {
-        models_req = models_req.bearer_auth(&provider.api_key);
-    }
-    match models_req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            bail!(
-                "{}；models 接口可访问",
-                error_hint::classify_http_error(status, &text)
-            )
-        }
-        Ok(resp) => {
-            let models_status = resp.status();
-            bail!(
-                "{}；models 接口 {}",
-                error_hint::classify_http_error(status, &text),
-                error_hint::classify_http_error(models_status, "")
-            )
-        }
-        Err(err) => bail!(
-            "{}；models 接口 {}",
-            error_hint::classify_http_error(status, &text),
-            error_hint::classify_request_error(&err)
-        ),
-    }
-}
-
-async fn test_anthropic_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
-    let messages_url = build_target_url(&provider.base_url, "v1/messages", "");
-    let response = match client
-        .post(&messages_url)
-        .header("x-api-key", &provider.api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&json!({
-            "model": provider.model_name,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "ping"}]
-        }))
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(err) => bail!(error_hint::classify_request_error(&err)),
-    };
-
-    if response.status().is_success() {
-        return Ok(());
-    }
-
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-
-    if status == StatusCode::NOT_FOUND && test_openai_connection(client, provider).await.is_ok() {
+    let report = crate::probe::probe_llm_connectivity(client, provider).await;
+    if report.ok {
+        Ok(())
+    } else {
         bail!(
-            "上游无 Anthropic /v1/messages（404），但 OpenAI chat 可用。请将协议改为 OpenAI Compatible"
-        );
+            report
+                .error
+                .unwrap_or_else(|| "上游未返回可读的回复内容".to_string())
+        )
     }
-
-    bail!(error_hint::classify_http_error(status, &text))
 }
 
 pub fn save_runtime_config(paths: &config::AppPaths, config: &AppConfig) -> Result<()> {

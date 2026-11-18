@@ -10,6 +10,7 @@ use crate::{
         ProviderInput, ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior,
         RuntimeStatus, WorkspaceRules,
     },
+    probe,
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
@@ -552,7 +553,7 @@ pub async fn test_provider_draft(
     runtime: State<'_, AppRuntime>,
     input: ListModelsInput,
     model_name: String,
-) -> Result<String, String> {
+) -> Result<probe::ProbeReport, String> {
     if input.api_key.trim().is_empty() {
         return Err("请先填写 API Key".to_string());
     }
@@ -576,10 +577,8 @@ pub async fn test_provider_draft(
     );
     provider.protocol = input.protocol;
     provider.auto_adapt_base_url = input.auto_adapt_base_url;
-    gateway::test_provider_connection(runtime.gateway.http_client(), &provider)
-        .await
-        .map_err(|err| err.to_string())?;
-    Ok("连接成功".to_string())
+    // 失败也返回报告（ok=false + error），前端统一按 ProbeReport 渲染延迟与原因
+    Ok(probe::probe_llm_connectivity(runtime.gateway.http_client(), &provider).await)
 }
 
 #[tauri::command]

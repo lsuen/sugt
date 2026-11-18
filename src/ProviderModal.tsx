@@ -25,6 +25,16 @@ type ProviderModalProps = {
   onInfo?: (message: string) => void;
 };
 
+type ProbeReport = {
+  ok: boolean;
+  reply: string | null;
+  latencyMs: number;
+  tokensPerSec: number;
+  completionTokens: number;
+  estimated: boolean;
+  error: string | null;
+};
+
 export function ProviderModal({
   form, busy, isEdit, onChange, onClose, onSave, onError, onInfo,
 }: ProviderModalProps) {
@@ -127,11 +137,24 @@ export function ProviderModal({
     }
     setTesting(true);
     try {
-      const msg = await invoke<string>('test_provider_draft', {
+      const report = await invoke<ProbeReport>('test_provider_draft', {
         input: draftInput(),
         modelName: form.model_name.trim(),
       });
-      onInfo?.(msg);
+      if (report.ok) {
+        const estimated = report.estimated ? t('pm.probeEstimated') : '';
+        onInfo?.(
+          report.tokensPerSec > 0
+            ? t('pm.probeOk', {
+              latency: report.latencyMs,
+              speed: report.tokensPerSec.toFixed(1),
+              estimated,
+            })
+            : t('pm.probeOkNoSpeed', { latency: report.latencyMs }),
+        );
+      } else {
+        onError(t('pm.probeFail', { error: report.error ?? '—' }));
+      }
     } catch (error) {
       onError(String(error));
     } finally {
