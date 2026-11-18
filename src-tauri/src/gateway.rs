@@ -1,5 +1,7 @@
 use crate::{
-    anthropic_adapter, config, error_hint, gateway_stats::{GatewayStatsCollector, RequestRecord},
+    anthropic_adapter,
+    api_key_pool::{self, ApiKeyPoolsFile, KeyPoolRuntime},
+    config, error_hint, gateway_stats::{GatewayStatsCollector, RequestRecord},
     model::{
         AnthropicAccessMode, AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus, ProxyHit,
     },
@@ -29,13 +31,13 @@ use std::{
     path::PathBuf,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{oneshot, RwLock},
+    sync::{oneshot, Mutex, RwLock},
 };
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -65,6 +67,16 @@ pub struct GatewayState {
     registry: Arc<RwLock<Vec<ModelEntry>>>,
     /// 请求改写规则（PRD v1.1.11 R6）：按作用域匹配后改写发往上游的请求
     rules: Arc<RwLock<Vec<RequestRule>>>,
+    /// API Key 池（PRD v1.1.11 T5）：选路时替换 provider.api_key，用量累加在内存
+    key_pools: Arc<RwLock<ApiKeyPoolsFile>>,
+    /// 进程内轮换游标，不落盘
+    key_runtime: Arc<Mutex<KeyPoolRuntime>>,
+    /// 内存里有未落盘的用量增量；后台任务据此定期写盘
+    key_pools_dirty: Arc<AtomicBool>,
+    /// 池文件写盘串行锁：后台定时任务与命令保存不能交叉覆盖
+    key_pools_io: Arc<Mutex<()>>,
+    /// 池文件所在目录；`None` 表示没有可持久化的配置目录（例如测试构造）
+    config_dir: Option<PathBuf>,
 }
 
 /// RAII 计数：请求进入 +1，无论成功、失败还是提前返回都在析构时 -1，避免计数泄漏。
@@ -177,6 +189,44 @@ impl GatewayState {
             .map(request_rules::load_rules)
             .unwrap_or_else(request_rules::builtin_rules);
 
+        // API Key 池（T5）：与策略盒子同一 config 目录；文件缺失/损坏时退化为空表。
+        let config_dir = config_file
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|path| path.to_path_buf());
+        let key_pools = config_dir
+            .as_deref()
+            .map(api_key_pool::load)
+            .unwrap_or_default();
+        let key_pools = Arc::new(RwLock::new(key_pools));
+        let key_pools_dirty = Arc::new(AtomicBool::new(false));
+        let key_pools_io = Arc::new(Mutex::new(()));
+
+        // 用量增量定期落盘：只在有配置目录且当前处于 tokio 运行时内时启动后台任务。
+        // `GatewayState::new` 也会被同步 #[test] / Tauri 启动早期以 None 或无运行时调用，
+        // 无条件 spawn 会 panic。
+        if let (Some(dir), Ok(handle)) = (
+            config_dir.clone(),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            let pools = key_pools.clone();
+            let dirty = key_pools_dirty.clone();
+            let io = key_pools_io.clone();
+            handle.spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(20)).await;
+                    // 顺序固定：锁 → swap → 读快照 → save，避免旧快照覆盖命令刚写入的文件。
+                    let _guard = io.lock().await;
+                    if dirty.swap(false, Ordering::Relaxed) {
+                        let snapshot = pools.read().await.clone();
+                        if let Err(err) = api_key_pool::save(&dir, &snapshot) {
+                            warn!(error = %err, "保存 API Key 池用量失败");
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(Self {
             inner: Arc::new(RwLock::new(GatewayInner {
                 config,
@@ -197,6 +247,11 @@ impl GatewayState {
             })),
             registry: Arc::new(RwLock::new(registry)),
             rules: Arc::new(RwLock::new(rules)),
+            key_pools,
+            key_runtime: Arc::new(Mutex::new(KeyPoolRuntime::default())),
+            key_pools_dirty,
+            key_pools_io,
+            config_dir,
         })
     }
 
@@ -208,6 +263,80 @@ impl GatewayState {
     /// 规则写盘后同步内存副本，无需重启网关即可生效。
     pub async fn set_request_rules(&self, rules: Vec<RequestRule>) {
         *self.rules.write().await = rules;
+    }
+
+    /// API Key 池快照（内存为准，含最新累计用量）。
+    pub async fn key_pools_snapshot(&self) -> ApiKeyPoolsFile {
+        self.key_pools.read().await.clone()
+    }
+
+    /// 命令保存池：串行写盘后再替换内存副本，清掉 dirty。
+    ///
+    /// 写盘锁与后台定时任务共用，避免后台用旧快照覆盖刚保存的配置。
+    pub async fn persist_key_pools(&self, file: ApiKeyPoolsFile) -> Result<(), String> {
+        let _guard = self.key_pools_io.lock().await;
+        if let Some(dir) = self.config_dir.as_deref() {
+            api_key_pool::save(dir, &file).map_err(|err| err.to_string())?;
+        }
+        *self.key_pools.write().await = file;
+        self.key_pools_dirty.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// 为一次上游请求挑选池 key（只选路，不改用量）。
+    ///
+    /// 该 provider 没有池时直接返回 `None`，不争写锁。
+    pub async fn select_pool_key(&self, provider_id: &str) -> Option<String> {
+        // 先用读锁判定：绝大多数 provider 没有池，不该为它们排队等写锁。
+        {
+            let pools = self.key_pools.read().await;
+            if api_key_pool::pool_for_provider(&pools.pools, provider_id).is_none() {
+                return None;
+            }
+        }
+        let mut runtime = self.key_runtime.lock().await;
+        let pools = self.key_pools.read().await;
+        let pool = api_key_pool::pool_for_provider(&pools.pools, provider_id)?;
+        api_key_pool::select_entry(pool, &mut runtime).map(|entry| entry.key.clone())
+    }
+
+    /// 记一次真正发往上游的尝试；无池或未命中静默返回。
+    pub async fn record_key_request(&self, provider_id: &str, key: &str) {
+        let mut pools = self.key_pools.write().await;
+        if api_key_pool::record_request(&mut pools, provider_id, key) {
+            self.key_pools_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 把一次响应的 token 用量记到对应 key 上；无池或未命中静默返回。
+    pub async fn record_key_tokens(&self, provider_id: &str, key: &str, tokens: u64) {
+        let mut pools = self.key_pools.write().await;
+        if api_key_pool::record_tokens(&mut pools, provider_id, key, tokens) {
+            self.key_pools_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 记录最近一次上游错误；无池或未命中静默返回。
+    pub async fn record_key_error(&self, provider_id: &str, key: &str, message: &str) {
+        let mut pools = self.key_pools.write().await;
+        if api_key_pool::record_error(&mut pools, provider_id, key, message) {
+            self.key_pools_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 有未落盘增量时立即写盘；失败只告警。
+    pub async fn flush_key_pools(&self) {
+        let Some(dir) = self.config_dir.as_deref() else {
+            return;
+        };
+        let _guard = self.key_pools_io.lock().await;
+        if !self.key_pools_dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let snapshot = self.key_pools.read().await.clone();
+        if let Err(err) = api_key_pool::save(dir, &snapshot) {
+            warn!(error = %err, "保存 API Key 池用量失败");
+        }
     }
 
     /// 当前策略盒子快照（不含健康度）。
@@ -1221,14 +1350,30 @@ async fn proxy_anthropic_native(
         "proxying anthropic messages request"
     );
 
-    let response = builder.body(payload).send().await?;
-    into_axum_response(
+    let response = match builder.body(payload).send().await {
+        Ok(response) => {
+            note_key_attempt(state, provider).await;
+            response
+        }
+        Err(err) => {
+            note_key_attempt(state, provider).await;
+            note_key_error(state, provider, &err.to_string()).await;
+            return Err(err.into());
+        }
+    };
+    let key_target = key_target_of(provider);
+    // Anthropic 形响应的 input tokens 在 `message.usage` 下（SSE），共享 tap 只认顶层
+    // `usage`，这里用专门的包装记录，避免漏计或重复计数。
+    let delivered = into_axum_response(
         response,
         Some(state.stats.clone()),
         Some(token_attr_from(headers, provider)),
+        state.clone(),
+        None,
         &client_model,
     )
-    .await
+    .await?;
+    Ok(tap_response_for_key_usage(delivered, state.clone(), key_target))
 }
 
 async fn proxy_anthropic_via_openai(
@@ -1285,7 +1430,9 @@ async fn proxy_anthropic_via_openai(
                 mode = "openai_adapter",
                 "proxying anthropic messages request"
             );
-            match builder.body(payload.clone()).send().await {
+            let sent = builder.body(payload.clone()).send().await;
+            note_key_attempt(state, attempt).await;
+            match sent {
             Ok(response) if response.status().is_success() => {
                 let client = crate::gateway_stats::client_label_from_headers(headers);
                 if tools {
@@ -1337,6 +1484,7 @@ async fn proxy_anthropic_via_openai(
                         }
                     }
                     state.reset_circuit(&key).await;
+                    let key_target = key_target_of(attempt);
                     let delivered = if stream {
                         let replay = replay_upstream(held.prefix, held.rest);
                         anthropic_adapter::anthropic_stream_response(
@@ -1360,13 +1508,18 @@ async fn proxy_anthropic_via_openai(
                         )
                         .await
                     };
-                    return delivered.map_err(|_| {
-                        crate::upstream_resilience::FailureClass::Terminal(
-                            crate::upstream_resilience::NoticeKind::UpstreamDown,
-                        )
-                    });
+                    return delivered
+                        .map(|response| {
+                            tap_response_for_key_usage(response, state.clone(), key_target)
+                        })
+                        .map_err(|_| {
+                            crate::upstream_resilience::FailureClass::Terminal(
+                                crate::upstream_resilience::NoticeKind::UpstreamDown,
+                            )
+                        });
                 }
                 state.reset_circuit(&key).await;
+                let key_target = key_target_of(attempt);
                 return anthropic_adapter::openai_to_anthropic_response(
                     response,
                     &client_model,
@@ -1375,6 +1528,9 @@ async fn proxy_anthropic_via_openai(
                     Some(attempt.name.as_str()),
                 )
                 .await
+                .map(|delivered| {
+                    tap_response_for_key_usage(delivered, state.clone(), key_target)
+                })
                 .map_err(|_| {
                     crate::upstream_resilience::FailureClass::Terminal(
                         crate::upstream_resilience::NoticeKind::UpstreamDown,
@@ -1392,6 +1548,12 @@ async fn proxy_anthropic_via_openai(
                     body = %text,
                     "anthropic adapter upstream error"
                 );
+                note_key_error(
+                    state,
+                    attempt,
+                    &format!("HTTP {} {}", status.as_u16(), text),
+                )
+                .await;
                 break Some(crate::upstream_resilience::classify_http(
                     status.as_u16(),
                     &text,
@@ -1402,6 +1564,7 @@ async fn proxy_anthropic_via_openai(
             }
             Err(err) => {
                 warn!(provider = %attempt.name, error = %err, "anthropic adapter request error");
+                note_key_error(state, attempt, &err.to_string()).await;
                 break Some(crate::upstream_resilience::classify_network());
             }
         }
@@ -1600,7 +1763,9 @@ async fn proxy_chat_upstream(
                         "proxying request"
                     );
                     let own_key = !attempt.api_key.trim().is_empty();
-                    match builder.body(payload.clone()).send().await {
+                    let sent = builder.body(payload.clone()).send().await;
+                    note_key_attempt(&state, attempt).await;
+                    match sent {
                         Ok(response) if response.status().is_success() => {
                             if tools {
                                 let held = match if stream {
@@ -1673,14 +1838,22 @@ async fn proxy_chat_upstream(
                                         .await;
                                 }
                                 return if stream {
+                                    let state_for_tap = state.clone();
                                     chat_stream_from_hold(
                                         held,
                                         Some(state.stats.clone()),
                                         Some(token_attr_from(&headers, attempt)),
+                                        state_for_tap,
+                                        key_target_of(attempt),
                                         &client_model,
                                     )
                                 } else {
-                                    json_from_hold(held, &client_model)
+                                    json_from_hold(
+                                        held,
+                                        &client_model,
+                                        state.clone(),
+                                        key_target_of(attempt),
+                                    )
                                 };
                             }
                             state.reset_circuit(&key).await;
@@ -1709,6 +1882,8 @@ async fn proxy_chat_upstream(
                                 response,
                                 Some(state.stats.clone()),
                                 Some(token_attr_from(&headers, attempt)),
+                                state.clone(),
+                                key_target_of(attempt),
                                 &client_model,
                             )
                             .await;
@@ -1724,6 +1899,12 @@ async fn proxy_chat_upstream(
                                 body = %text,
                                 "provider returned error"
                             );
+                            note_key_error(
+                                &state,
+                                attempt,
+                                &format!("HTTP {} {}", status.as_u16(), text),
+                            )
+                            .await;
                             break Some(crate::upstream_resilience::classify_http(
                                 status.as_u16(),
                                 &text,
@@ -1734,6 +1915,7 @@ async fn proxy_chat_upstream(
                         }
                         Err(err) => {
                             warn!(provider = %attempt.name, error = %err, "provider request error");
+                            note_key_error(&state, attempt, &err.to_string()).await;
                             break Some(crate::upstream_resilience::classify_network());
                         }
                     }
@@ -1877,7 +2059,9 @@ async fn proxy_responses_via_chat(
                     "proxying codex responses to upstream Responses API"
                 );
 
-                match builder.body(upstream_body).send().await {
+                let sent = builder.body(upstream_body).send().await;
+                note_key_attempt(&state, attempt).await;
+                match sent {
                     Ok(response) if response.status().is_success() => {
                         state.reset_circuit(&key).await;
                         state
@@ -1905,6 +2089,8 @@ async fn proxy_responses_via_chat(
                             response,
                             Some(state.stats.clone()),
                             Some(token_attr_from(&headers, attempt)),
+                            state.clone(),
+                            key_target_of(attempt),
                             &client_model,
                         )
                         .await;
@@ -1920,6 +2106,12 @@ async fn proxy_responses_via_chat(
                             own_key,
                             is_free,
                         );
+                        note_key_error(
+                            &state,
+                            attempt,
+                            &format!("HTTP {} {}", status.as_u16(), text),
+                        )
+                        .await;
                         if let Some(box_id) = box_id.as_deref() {
                             state
                                 .note_member_failure(
@@ -1950,6 +2142,12 @@ async fn proxy_responses_via_chat(
                             body = %text,
                             "native responses upstream error, will try chat/completions"
                         );
+                        note_key_error(
+                            &state,
+                            attempt,
+                            &format!("HTTP {} {}", status.as_u16(), text),
+                        )
+                        .await;
                     }
                     Err(err) => {
                         warn!(
@@ -1957,6 +2155,7 @@ async fn proxy_responses_via_chat(
                             error = %err,
                             "native responses request failed, will try chat/completions"
                         );
+                        note_key_error(&state, attempt, &err.to_string()).await;
                     }
                 }
             }
@@ -2022,7 +2221,9 @@ async fn proxy_responses_via_chat(
                 );
 
                 if stream {
-                    match builder.body(chat_body).send().await {
+                    let sent = builder.body(chat_body).send().await;
+                    note_key_attempt(&state, attempt).await;
+                    match sent {
                         Ok(response) if response.status().is_success() => {
                             if has_tools {
                                 let held = match hold_chat_sse(response).await {
@@ -2111,6 +2312,8 @@ async fn proxy_responses_via_chat(
                                     estimated_input,
                                     Some(state.stats.clone()),
                                     Some(token_attr_from(&headers, attempt)),
+                                    state.clone(),
+                                    key_target_of(attempt),
                                 );
                             }
                             state.reset_circuit(&key).await;
@@ -2146,6 +2349,8 @@ async fn proxy_responses_via_chat(
                                 mapped,
                                 Some(state.stats.clone()),
                                 Some(token_attr_from(&headers, attempt)),
+                                Some(state.clone()),
+                                key_target_of(attempt),
                             );
                             return event_stream_response(tapped);
                         }
@@ -2181,6 +2386,12 @@ async fn proxy_responses_via_chat(
                                 body = %text,
                                 "codex chat stream upstream error"
                             );
+                            note_key_error(
+                                &state,
+                                attempt,
+                                &format!("HTTP {} {}", status.as_u16(), text),
+                            )
+                            .await;
                             if let Some(box_id) = box_id.as_deref() {
                                 state
                                     .note_member_failure(
@@ -2212,6 +2423,12 @@ async fn proxy_responses_via_chat(
                                 body = %text,
                                 "codex chat stream upstream error, trying next attempt"
                             );
+                            note_key_error(
+                                &state,
+                                attempt,
+                                &format!("HTTP {} {}", status.as_u16(), text),
+                            )
+                            .await;
                             let class = crate::upstream_resilience::classify_http(
                                 status.as_u16(),
                                 &text,
@@ -2245,6 +2462,7 @@ async fn proxy_responses_via_chat(
                                 error = %err,
                                 "codex chat stream request error"
                             );
+                            note_key_error(&state, attempt, &err.to_string()).await;
                             if let Some(box_id) = box_id.as_deref() {
                                 state
                                     .note_member_failure(
@@ -2267,7 +2485,9 @@ async fn proxy_responses_via_chat(
                         }
                     }
                 } else {
-                match builder.body(chat_body).send().await {
+                let sent = builder.body(chat_body).send().await;
+                note_key_attempt(&state, attempt).await;
+                match sent {
                     Ok(response)
                         if response.status().is_success() || response.status().as_u16() < 500 =>
                     {
@@ -2301,6 +2521,12 @@ async fn proxy_responses_via_chat(
                                 body = %body_text,
                                 "upstream error for codex responses"
                             );
+                            note_key_error(
+                                &state,
+                                attempt,
+                                &format!("HTTP {} {}", status.as_u16(), body_text),
+                            )
+                            .await;
                             let class = crate::upstream_resilience::classify_http(
                                 status.as_u16(),
                                 &body_text,
@@ -2413,6 +2639,15 @@ async fn proxy_responses_via_chat(
                                         Some(attr.1.as_str()),
                                     )
                                     .await;
+                                if let Some(target) = key_target_of(attempt) {
+                                    state
+                                        .record_key_tokens(
+                                            &target.provider_id,
+                                            &target.key,
+                                            input + output,
+                                        )
+                                        .await;
+                                }
                             }
                         }
                         let bytes = if status.is_success() {
@@ -2442,6 +2677,12 @@ async fn proxy_responses_via_chat(
                         let status = response.status();
                         let retry_after = header_str(response.headers(), "retry-after");
                         let text = response.text().await.unwrap_or_default();
+                        note_key_error(
+                            &state,
+                            attempt,
+                            &format!("HTTP {} {}", status.as_u16(), text),
+                        )
+                        .await;
                         let class = crate::upstream_resilience::classify_http(
                             status.as_u16(),
                             &text,
@@ -2471,6 +2712,7 @@ async fn proxy_responses_via_chat(
                     }
                     Err(err) => {
                         warn!(provider = %attempt.name, error = %err, "codex responses request error");
+                        note_key_error(&state, attempt, &err.to_string()).await;
                         if let Some(box_id) = box_id.as_deref() {
                             state
                                 .note_member_failure(
@@ -2789,32 +3031,46 @@ async fn request_route(state: &GatewayState, config: &AppConfig, client_model: &
         let guard = strategy.read().await;
         resolve_box(&guard.boxes, client_model, active_model.as_deref()).cloned()
     };
-    let Some(box_spec) = hit else {
-        return Route {
+    let mut route = match hit {
+        None => Route {
             providers: ordered_providers(config),
             box_id: None,
             cooldown_ms: None,
-        };
+        },
+        Some(box_spec) => {
+            // 命中后才推进轮换游标并读取健康度。
+            let providers = {
+                let mut guard = strategy.write().await;
+                let rotation = guard.runtime.next_rotation(&box_spec.id);
+                expand_box_chain(config, &box_spec, &registry, &guard.runtime.health, rotation)
+            };
+            if providers.is_empty() {
+                // 成员全部无效：回退既有链路，不把请求判死。
+                Route {
+                    providers: ordered_providers(config),
+                    box_id: None,
+                    cooldown_ms: None,
+                }
+            } else {
+                Route {
+                    providers,
+                    box_id: Some(box_spec.id),
+                    cooldown_ms: box_spec.cooldown_ms,
+                }
+            }
+        }
     };
+    // 池 key 在克隆出来的 provider 上替换，不会污染配置；无池的 provider 无副作用。
+    apply_pool_keys(state, &mut route.providers).await;
+    route
+}
 
-    // 命中后才推进轮换游标并读取健康度。
-    let providers = {
-        let mut guard = strategy.write().await;
-        let rotation = guard.runtime.next_rotation(&box_spec.id);
-        expand_box_chain(config, &box_spec, &registry, &guard.runtime.health, rotation)
-    };
-    if providers.is_empty() {
-        // 成员全部无效：回退既有链路，不把请求判死。
-        return Route {
-            providers: ordered_providers(config),
-            box_id: None,
-            cooldown_ms: None,
-        };
-    }
-    Route {
-        providers,
-        box_id: Some(box_spec.id),
-        cooldown_ms: box_spec.cooldown_ms,
+/// 给每个 provider 换上池里选中的 key（仅当该 provider 绑定了池）。
+async fn apply_pool_keys(state: &GatewayState, providers: &mut [ProviderConfig]) {
+    for provider in providers.iter_mut() {
+        if let Some(key) = state.select_pool_key(&provider.id).await {
+            provider.api_key = key;
+        }
     }
 }
 
@@ -3109,6 +3365,8 @@ fn chat_stream_from_hold(
     held: ChatHold,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
+    state: GatewayState,
+    key_target: Option<KeyTarget>,
     client_model: &str,
 ) -> Result<Response<Body>> {
     let replay = replay_upstream(held.prefix, held.rest);
@@ -3116,15 +3374,38 @@ fn chat_stream_from_hold(
         replay.map(|item| item.map_err(std::io::Error::other)),
         stats,
         token_attr,
+        Some(state),
+        key_target,
     );
     let rewritten = rewrite_model_stream(mapped, client_model.to_string());
     event_stream_response(rewritten)
 }
 
-fn json_from_hold(held: ChatHold, client_model: &str) -> Result<Response<Body>> {
+fn json_from_hold(
+    held: ChatHold,
+    client_model: &str,
+    state: GatewayState,
+    key_target: Option<KeyTarget>,
+) -> Result<Response<Body>> {
     let mut raw = Vec::new();
     for chunk in held.prefix {
         raw.extend_from_slice(&chunk);
+    }
+    // 非流式 Chat 没有 tap 流可挂，这里直接把 usage 记到池 key 上（取不到就估 output）。
+    if let Some(target) = key_target {
+        let (input, output) = parse_usage_from_bytes(&raw).unwrap_or_else(|| {
+            (
+                0,
+                crate::quick_chat::estimate_output_tokens(&String::from_utf8_lossy(&raw)),
+            )
+        });
+        if input + output > 0 {
+            tokio::spawn(async move {
+                state
+                    .record_key_tokens(&target.provider_id, &target.key, input + output)
+                    .await;
+            });
+        }
     }
     let rewritten = crate::upstream_resilience::rewrite_json_model(&raw, client_model);
     Ok(Response::builder()
@@ -3140,6 +3421,8 @@ fn responses_stream_from_hold(
     estimated_input: u64,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
+    state: GatewayState,
+    key_target: Option<KeyTarget>,
 ) -> Result<Response<Body>> {
     let replay = replay_upstream(held.prefix, held.rest);
     let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
@@ -3148,7 +3431,8 @@ fn responses_stream_from_hold(
         tool_meta,
         estimated_input,
     );
-    let tapped = tap_stream_for_token_stats(mapped, stats, token_attr);
+    let tapped =
+        tap_stream_for_token_stats(mapped, stats, token_attr, Some(state), key_target);
     event_stream_response(tapped)
 }
 
@@ -3199,6 +3483,8 @@ async fn into_axum_response(
     response: reqwest::Response,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
+    state: GatewayState,
+    key_target: Option<KeyTarget>,
     client_model: &str,
 ) -> Result<Response<Body>> {
     let status = response.status();
@@ -3207,6 +3493,8 @@ async fn into_axum_response(
         response.bytes_stream().map(|item| item.map_err(std::io::Error::other)),
         stats,
         token_attr,
+        Some(state),
+        key_target,
     );
     let rewritten = rewrite_model_stream(mapped, client_model.to_string());
     let mut builder = Response::builder().status(status);
@@ -3221,11 +3509,140 @@ async fn into_axum_response(
     Ok(builder.body(Body::from_stream(rewritten))?)
 }
 
+/// 一次上游尝试使用的池 key（provider + key 字符串），用于把用量记到达标的 key 上。
+#[derive(Clone)]
+struct KeyTarget {
+    provider_id: String,
+    key: String,
+}
+
+fn key_target_of(provider: &ProviderConfig) -> Option<KeyTarget> {
+    let key = provider.api_key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some(KeyTarget {
+        provider_id: provider.id.clone(),
+        key: key.to_string(),
+    })
+}
+
+/// 记录一次「最近错误」；provider 没带 key（或 key 不在池里）时静默跳过。
+async fn note_key_error(state: &GatewayState, provider: &ProviderConfig, message: &str) {
+    if let Some(target) = key_target_of(provider) {
+        state
+            .record_key_error(&target.provider_id, &target.key, message)
+            .await;
+    }
+}
+
+/// 记一次真实发往上游的尝试（每个 send 点调用一次，Ok / Err 都要计）。
+async fn note_key_attempt(state: &GatewayState, provider: &ProviderConfig) {
+    if let Some(target) = key_target_of(provider) {
+        state
+            .record_key_request(&target.provider_id, &target.key)
+            .await;
+    }
+}
+
+/// Anthropic 形响应的 usage 解析：非流式在顶层 `usage`；
+/// SSE 的 `message_start` 把 usage 放在 `message.usage` 下。
+fn extract_key_usage(value: &Value) -> Option<(u64, u64)> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("message").and_then(|message| message.get("usage")))?;
+    let read = |names: [&str; 2]| -> u64 {
+        names
+            .iter()
+            .find_map(|name| usage.get(*name).and_then(Value::as_u64))
+            .unwrap_or(0)
+    };
+    let input = read(["prompt_tokens", "input_tokens"]);
+    let output = read(["completion_tokens", "output_tokens"]);
+    if input == 0 && output == 0 {
+        None
+    } else {
+        Some((input, output))
+    }
+}
+
+fn parse_key_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64)> {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if let Some(usage) = extract_key_usage(&value) {
+            return Some(usage);
+        }
+    }
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines() {
+        let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
+            continue;
+        };
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(payload) {
+            if let Some(usage) = extract_key_usage(&value) {
+                return Some(usage);
+            }
+        }
+    }
+    None
+}
+
+/// 把 Anthropic 形响应（JSON 或 SSE）里的 usage 增量记到池 key 上，不改动响应字节。
+///
+/// `message_start` 与 `message_delta` 会分别带 input / output，这里按「已见过的最大值」
+/// 做增量，避免同一段 usage 被重复累计。
+fn tap_response_for_key_usage(
+    response: Response<Body>,
+    state: GatewayState,
+    key_target: Option<KeyTarget>,
+) -> Response<Body> {
+    let Some(target) = key_target else {
+        return response;
+    };
+    let (parts, body) = response.into_parts();
+    let source = body
+        .into_data_stream()
+        .map(|item| item.map_err(std::io::Error::other));
+    let tapped = stream! {
+        let mut seen_input = 0u64;
+        let mut seen_output = 0u64;
+        let mut source = std::pin::pin!(source);
+        while let Some(item) = source.next().await {
+            match item {
+                Ok(bytes) => {
+                    if let Some((input, output)) = parse_key_usage_from_bytes(&bytes) {
+                        let delta = input.saturating_sub(seen_input)
+                            + output.saturating_sub(seen_output);
+                        seen_input = seen_input.max(input);
+                        seen_output = seen_output.max(output);
+                        if delta > 0 {
+                            let state = state.clone();
+                            let target = target.clone();
+                            tokio::spawn(async move {
+                                state
+                                    .record_key_tokens(&target.provider_id, &target.key, delta)
+                                    .await;
+                            });
+                        }
+                    }
+                    yield Ok::<Bytes, std::io::Error>(bytes);
+                }
+                Err(err) => yield Err(err),
+            }
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(tapped))
+}
+
 /// 从响应字节流中拾取 usage 并记入请求统计（Chat SSE / Responses SSE 均可）。
 fn tap_stream_for_token_stats<S>(
     stream: S,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
+    state: Option<GatewayState>,
+    key_target: Option<KeyTarget>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -3242,6 +3659,13 @@ where
                         .unwrap_or((None, None));
                     collector
                         .record_tokens_attributed(input, output, client, provider)
+                        .await;
+                });
+            }
+            if let (Some(state), Some(target)) = (state.clone(), key_target.clone()) {
+                tokio::spawn(async move {
+                    state
+                        .record_key_tokens(&target.provider_id, &target.key, input + output)
                         .await;
                 });
             }

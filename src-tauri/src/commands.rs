@@ -870,6 +870,22 @@ pub struct DeleteRequestRuleInput {
     pub rule_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SaveApiKeyPoolInput {
+    pub spec: crate::api_key_pool::ApiKeyPool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteApiKeyPoolInput {
+    pub pool_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetKeyUsageInput {
+    pub pool_id: String,
+    pub key_id: Option<String>,
+}
+
 /// 请求改写规则列表（磁盘为准；文件缺失时返回内置默认规则）。
 #[tauri::command]
 pub async fn list_request_rules(
@@ -919,6 +935,61 @@ pub async fn delete_request_rule(
     // 网关内存副本同步：删除/禁用立即生效。
     runtime.gateway.set_request_rules(rules).await;
     Ok(())
+}
+
+/// API Key 池列表（内存为准，含最新累计用量）。
+#[tauri::command]
+pub async fn list_api_key_pools(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<crate::api_key_pool::ApiKeyPoolView>, String> {
+    let snapshot = runtime.gateway.key_pools_snapshot().await;
+    Ok(snapshot
+        .pools
+        .iter()
+        .map(crate::api_key_pool::ApiKeyPoolView::from)
+        .collect())
+}
+
+/// 保存（新建或整体替换）一个池：内存快照 → 校验 → upsert → 落盘 → 换内存。
+#[tauri::command]
+pub async fn save_api_key_pool(
+    runtime: State<'_, AppRuntime>,
+    input: SaveApiKeyPoolInput,
+) -> Result<crate::api_key_pool::ApiKeyPool, String> {
+    let mut file = runtime.gateway.key_pools_snapshot().await;
+    crate::api_key_pool::validate(&input.spec, &file.pools)?;
+    let saved = crate::api_key_pool::upsert(&mut file.pools, input.spec);
+    runtime.gateway.persist_key_pools(file).await?;
+    Ok(saved)
+}
+
+/// 删除一个池。
+#[tauri::command]
+pub async fn delete_api_key_pool(
+    runtime: State<'_, AppRuntime>,
+    input: DeleteApiKeyPoolInput,
+) -> Result<(), String> {
+    let mut file = runtime.gateway.key_pools_snapshot().await;
+    if !crate::api_key_pool::remove_pool(&mut file.pools, &input.pool_id) {
+        return Err(format!("未找到 API Key 池: {}", input.pool_id));
+    }
+    runtime.gateway.persist_key_pools(file).await
+}
+
+/// 清零用量：`key_id` 为空时清整池。
+#[tauri::command]
+pub async fn reset_key_usage(
+    runtime: State<'_, AppRuntime>,
+    input: ResetKeyUsageInput,
+) -> Result<(), String> {
+    let mut file = runtime.gateway.key_pools_snapshot().await;
+    let pool = file
+        .pools
+        .iter_mut()
+        .find(|pool| pool.id == input.pool_id)
+        .ok_or_else(|| format!("未找到 API Key 池: {}", input.pool_id))?;
+    crate::api_key_pool::reset_usage(pool, input.key_id.as_deref());
+    runtime.gateway.persist_key_pools(file).await
 }
 
 /// 读取成员健康度（只读，不发探测请求）。

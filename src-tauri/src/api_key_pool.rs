@@ -9,6 +9,7 @@
 //! `{ "version": 1, "pools": [...] }`，与前端统一 camelCase。
 //! 文件缺失或解析失败回退空表并告警，绝不 panic。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -243,6 +244,163 @@ pub fn reset_usage(pool: &mut ApiKeyPool, entry_id: Option<&str>) {
             if let Some(entry) = pool.keys.iter_mut().find(|entry| entry.id == id) {
                 entry.usage = KeyUsage::default();
             }
+        }
+    }
+}
+
+/// 进程内轮换游标（`pool_id -> 下一个候选下标`），只活在内存，不落盘。
+#[derive(Debug, Clone, Default)]
+pub struct KeyPoolRuntime {
+    pub rotation: HashMap<String, u64>,
+}
+
+/// 按池的轮换策略挑一个可用 key（`enabled` 且 key 非空）。
+///
+/// `RoundRobin` 用 `runtime.rotation` 里的游标取模后自增；`LeastUsed` 取
+/// `usage.request_count` 最小者，平手取 `keys` 中靠前者。无候选返回 `None`。
+pub fn select_entry<'a>(
+    pool: &'a ApiKeyPool,
+    runtime: &mut KeyPoolRuntime,
+) -> Option<&'a ApiKeyEntry> {
+    let candidates: Vec<&ApiKeyEntry> = pool
+        .keys
+        .iter()
+        .filter(|entry| entry.enabled && !entry.key.trim().is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    match pool.selection {
+        KeySelection::RoundRobin => {
+            let cursor = runtime.rotation.entry(pool.id.clone()).or_insert(0);
+            let index = (*cursor as usize) % candidates.len();
+            *cursor = cursor.wrapping_add(1);
+            Some(candidates[index])
+        }
+        KeySelection::LeastUsed => candidates
+            .iter()
+            .copied()
+            .min_by_key(|entry| entry.usage.request_count),
+    }
+}
+
+/// 按 provider_id 取第一个绑定的池。
+pub fn pool_for_provider<'a>(pools: &'a [ApiKeyPool], provider_id: &str) -> Option<&'a ApiKeyPool> {
+    pools.iter().find(|pool| pool.provider_id == provider_id)
+}
+
+/// 在第一个绑定该 provider 的池里按 key 字符串（trim 比较）累计一次请求。
+pub fn record_request(pools: &mut ApiKeyPoolsFile, provider_id: &str, key: &str) -> bool {
+    let target = key.trim();
+    let Some(pool) = pools
+        .pools
+        .iter_mut()
+        .find(|pool| pool.provider_id == provider_id)
+    else {
+        return false;
+    };
+    match pool
+        .keys
+        .iter_mut()
+        .find(|entry| entry.key.trim() == target)
+    {
+        Some(entry) => {
+            entry.usage.request_count = entry.usage.request_count.saturating_add(1);
+            true
+        }
+        None => false,
+    }
+}
+
+/// 累计 token 用量；`tokens = 0` 时命中也不改变计数。
+pub fn record_tokens(pools: &mut ApiKeyPoolsFile, provider_id: &str, key: &str, tokens: u64) -> bool {
+    let target = key.trim();
+    let Some(pool) = pools
+        .pools
+        .iter_mut()
+        .find(|pool| pool.provider_id == provider_id)
+    else {
+        return false;
+    };
+    match pool
+        .keys
+        .iter_mut()
+        .find(|entry| entry.key.trim() == target)
+    {
+        Some(entry) => {
+            entry.usage.total_tokens = entry.usage.total_tokens.saturating_add(tokens);
+            true
+        }
+        None => false,
+    }
+}
+
+/// 记录最近一次错误（截断到 300 字符，避免把整段上游响应写进配置）。
+pub fn record_error(pools: &mut ApiKeyPoolsFile, provider_id: &str, key: &str, message: &str) -> bool {
+    let target = key.trim();
+    let Some(pool) = pools
+        .pools
+        .iter_mut()
+        .find(|pool| pool.provider_id == provider_id)
+    else {
+        return false;
+    };
+    match pool
+        .keys
+        .iter_mut()
+        .find(|entry| entry.key.trim() == target)
+    {
+        Some(entry) => {
+            let summary: String = message.trim().chars().take(300).collect();
+            entry.usage.last_error = Some(summary);
+            true
+        }
+        None => false,
+    }
+}
+
+/// 单个 key 的展示视图：`key` 保留明文（与 provider 表单一致），另给脱敏副本。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyEntryView {
+    pub id: String,
+    pub key: String,
+    pub key_masked: String,
+    pub enabled: bool,
+    pub usage: KeyUsage,
+    pub quota: Option<KeyQuota>,
+}
+
+/// 池的展示视图（含最新内存用量）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyPoolView {
+    pub id: String,
+    pub name: String,
+    pub provider_id: String,
+    pub selection: KeySelection,
+    pub keys: Vec<ApiKeyEntryView>,
+}
+
+impl From<&ApiKeyPool> for ApiKeyPoolView {
+    fn from(pool: &ApiKeyPool) -> Self {
+        Self {
+            id: pool.id.clone(),
+            name: pool.name.clone(),
+            provider_id: pool.provider_id.clone(),
+            selection: pool.selection,
+            keys: pool
+                .keys
+                .iter()
+                .map(|entry| ApiKeyEntryView {
+                    id: entry.id.clone(),
+                    key: entry.key.clone(),
+                    key_masked: mask_key(&entry.key),
+                    enabled: entry.enabled,
+                    usage: entry.usage.clone(),
+                    quota: entry.quota.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -536,5 +694,156 @@ mod tests {
     fn mask_key_reuses_model_mask_secret() {
         assert_eq!(mask_key("sk-1234567890abcd"), "sk-1****abcd");
         assert_eq!(mask_key("short"), "********");
+    }
+
+    fn pools_file_with(pools: Vec<ApiKeyPool>) -> ApiKeyPoolsFile {
+        ApiKeyPoolsFile {
+            version: POOLS_VERSION,
+            pools,
+        }
+    }
+
+    #[test]
+    fn select_entry_round_robin_skips_disabled_and_blank() {
+        let mut disabled = entry("k2", "sk-disabled");
+        disabled.enabled = false;
+        let blank = entry("k3", "   ");
+        let mut spec = pool(
+            "p1",
+            "池",
+            vec![
+                entry("k1", "sk-a"),
+                disabled,
+                blank,
+                entry("k4", "sk-b"),
+            ],
+        );
+        spec.selection = KeySelection::RoundRobin;
+        let mut runtime = KeyPoolRuntime::default();
+
+        let picked: Vec<String> = (0..4)
+            .map(|_| {
+                select_entry(&spec, &mut runtime)
+                    .map(|entry| entry.id.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(picked, vec!["k1", "k4", "k1", "k4"]);
+        // 游标只对候选列表计数，不会把 disabled / 空 key 也算进去。
+        assert_eq!(runtime.rotation.get("p1").copied(), Some(4));
+    }
+
+    #[test]
+    fn select_entry_least_used_picks_min_and_first_on_tie() {
+        let mut first = entry("k1", "sk-a");
+        first.usage.request_count = 5;
+        let mut second = entry("k2", "sk-b");
+        second.usage.request_count = 2;
+        let mut third = entry("k3", "sk-c");
+        third.usage.request_count = 2;
+        let mut spec = pool("p1", "池", vec![first, second, third]);
+        spec.selection = KeySelection::LeastUsed;
+        let mut runtime = KeyPoolRuntime::default();
+
+        assert_eq!(
+            select_entry(&spec, &mut runtime).map(|entry| entry.id.as_str()),
+            Some("k2")
+        );
+        // LeastUsed 不推进 RoundRobin 游标。
+        assert!(runtime.rotation.is_empty());
+
+        spec.keys[1].usage.request_count = 9;
+        assert_eq!(
+            select_entry(&spec, &mut runtime).map(|entry| entry.id.as_str()),
+            Some("k3")
+        );
+    }
+
+    #[test]
+    fn select_entry_returns_none_without_candidates() {
+        let mut disabled = entry("k1", "sk-a");
+        disabled.enabled = false;
+        let spec = pool("p1", "池", vec![disabled, entry("k2", "  ")]);
+        let mut runtime = KeyPoolRuntime::default();
+        assert!(select_entry(&spec, &mut runtime).is_none());
+        assert!(pool_for_provider(&[], "prov").is_none());
+        assert!(select_entry(&pool("p2", "空池", Vec::new()), &mut runtime).is_none());
+    }
+
+    #[test]
+    fn pool_for_provider_and_record_functions_hit_only_matching_key() {
+        let mut spec = pool(
+            "p1",
+            "池",
+            vec![entry("k1", "sk-a"), entry("k2", "sk-b")],
+        );
+        spec.provider_id = "prov".to_string();
+        let other = ApiKeyPool {
+            provider_id: "other".to_string(),
+            ..pool("p2", "别的池", vec![entry("k3", "sk-c")])
+        };
+        let mut file = pools_file_with(vec![spec, other]);
+
+        assert_eq!(
+            pool_for_provider(&file.pools, "prov").map(|pool| pool.id.as_str()),
+            Some("p1")
+        );
+
+        // request：trim 后比较，命中 sk-b。
+        assert!(record_request(&mut file, "prov", " sk-b "));
+        assert_eq!(file.pools[0].keys[1].usage.request_count, 1);
+        assert_eq!(file.pools[0].keys[0].usage.request_count, 0);
+        assert!(!record_request(&mut file, "prov", "sk-unknown"));
+        assert!(!record_request(&mut file, "missing", "sk-a"));
+        // 别的 provider 上的 key 不受影响。
+        assert_eq!(file.pools[1].keys[0].usage.request_count, 0);
+
+        // tokens：0 也返回命中且不改变计数。
+        assert!(record_tokens(&mut file, "prov", "sk-a", 128));
+        assert!(record_tokens(&mut file, "prov", "sk-a", 0));
+        assert_eq!(file.pools[0].keys[0].usage.total_tokens, 128);
+        assert_eq!(file.pools[0].keys[1].usage.total_tokens, 0);
+        assert!(!record_tokens(&mut file, "prov", "sk-unknown", 512));
+
+        // error：只写匹配 key，未知 key 返回 false。
+        assert!(record_error(&mut file, "prov", "sk-b", "HTTP 429 too many requests"));
+        assert_eq!(
+            file.pools[0].keys[1].usage.last_error.as_deref(),
+            Some("HTTP 429 too many requests")
+        );
+        assert!(file.pools[0].keys[0].usage.last_error.is_none());
+        assert!(!record_error(&mut file, "prov", "sk-unknown", "boom"));
+    }
+
+    #[test]
+    fn record_error_truncates_long_message() {
+        let mut file = pools_file_with(vec![pool("p1", "池", vec![entry("k1", "sk-a")])]);
+        let long = "错".repeat(1000);
+        assert!(record_error(&mut file, "prov", "sk-a", &long));
+        let stored = file.pools[0].keys[0]
+            .usage
+            .last_error
+            .as_deref()
+            .expect("last_error");
+        assert_eq!(stored.chars().count(), 300);
+        assert!(stored.chars().all(|ch| ch == '错'));
+    }
+
+    #[test]
+    fn pool_view_masks_key_and_keeps_usage() {
+        let mut first = entry("k1", "sk-1234567890abcd");
+        first.usage = KeyUsage {
+            request_count: 3,
+            total_tokens: 42,
+            last_error: Some("timeout".to_string()),
+        };
+        let spec = pool("p1", "池", vec![first]);
+        let view = ApiKeyPoolView::from(&spec);
+        assert_eq!(view.id, "p1");
+        assert_eq!(view.provider_id, "prov");
+        assert_eq!(view.keys.len(), 1);
+        assert_eq!(view.keys[0].key, "sk-1234567890abcd");
+        assert_eq!(view.keys[0].key_masked, "sk-1****abcd");
+        assert_eq!(view.keys[0].usage.total_tokens, 42);
     }
 }
