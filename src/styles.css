@@ -3678,3 +3678,84 @@ button:disabled { opacity: .46; cursor: not-allowed; }
 }
 .maintenance-days input:disabled { opacity: .5; cursor: not-allowed; }
 .settings-group > .maintenance-hint { margin: 0; }
+
+/* 请求改写规则（v1.1.11 R6）：列表 + 动作编辑，只使用主题 token */
+.request-rules { margin-top: 4px; max-width: 760px; }
+.request-rules-hint { margin: 0 0 10px; }
+.request-rules-note { margin: 0; font-size: 12px; }
+.request-rules-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.request-rules-wrap {
+  overflow: auto;
+  max-height: 52vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.request-rules-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.request-rules-table th,
+.request-rules-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+.request-rules-table th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.request-rules-table tbody tr:last-child td { border-bottom: none; }
+.request-rules-table tbody tr.is-disabled td { opacity: .62; }
+.request-rules-name { font-weight: 600; }
+.request-rules-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.request-rules-actions-cell { color: var(--muted); overflow-wrap: anywhere; }
+.request-rules-switch { width: 40px; height: 20px; accent-color: var(--accent); }
+.request-rules-empty { padding: 18px 10px; text-align: center; color: var(--muted); }
+.request-rules-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.request-rules-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
+.request-rules-modal {
+  max-width: 720px;
+  width: min(720px, 94vw);
+  max-height: min(90vh, 820px);
+  overflow-y: auto;
+}
+.request-rules-form { gap: 10px; }
+.request-rules-enabled-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.request-rules-enabled-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+.request-rules-actions { display: flex; flex-direction: column; gap: 8px; }
+.request-rules-actions > .tiny-btn { align-self: flex-start; }
+.request-rules-actions-head { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.request-rules-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.request-rules-action-row .app-select { flex: 0 1 190px; min-width: 0; }
+.request-rules-action-row input { flex: 1 1 140px; min-width: 0; }
+.request-rules-action-row .tiny-btn { flex: 0 0 auto; }

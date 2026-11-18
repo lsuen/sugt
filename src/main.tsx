@@ -18,6 +18,7 @@ import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
+import { RequestRulesSection } from './RequestRulesSection';
 import { ModelListPanel } from './ModelListPanel';
 import { StrategyBoxPanel } from './StrategyBoxPanel';
 import { AccessInfoCard } from './AccessInfoCard';
@@ -802,6 +803,7 @@ function App() {
                 setConfig((prev) => (prev ? { ...prev, workspace_rules: workspaceRules } : prev));
               }}
             />
+            <RequestRulesSection pushToast={pushToast} run={run} />
           </div>
         )}
 
