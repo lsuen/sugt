@@ -7,9 +7,193 @@ use crate::anthropic_adapter::{anthropic_to_openai, openai_json_to_anthropic_jso
 #[test]
 fn rewrites_json_model() {
     let body = Bytes::from_static(br#"{"model":"old","messages":[]}"#);
-    let rewritten = rewrite_model(body, "new-model");
+    let rewritten = rewrite_model(
+        body,
+        "new-model",
+        Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
+    );
     let value: Value = serde_json::from_slice(&rewritten).unwrap();
     assert_eq!(value["model"], "new-model");
+}
+
+#[test]
+fn rewrite_model_respects_default_max_tokens_switch() {
+    let body = Bytes::from_static(br#"{"model":"old","messages":[]}"#);
+
+    // 规则关闭（None）：不填 max_tokens。
+    let suppressed = rewrite_model(body.clone(), "m", None);
+    let value: Value = serde_json::from_slice(&suppressed).unwrap();
+    assert!(value.get("max_tokens").is_none(), "关闭后不得自动填 max_tokens");
+
+    // 规则覆盖：用规则值。
+    let overridden = rewrite_model(body.clone(), "m", Some(4096));
+    let value: Value = serde_json::from_slice(&overridden).unwrap();
+    assert_eq!(value["max_tokens"], 4096);
+
+    // 请求自带 max_tokens 时保持原值。
+    let explicit = Bytes::from_static(br#"{"model":"old","max_tokens":128}"#);
+    let kept = rewrite_model(explicit, "m", Some(4096));
+    let value: Value = serde_json::from_slice(&kept).unwrap();
+    assert_eq!(value["max_tokens"], 128);
+}
+
+#[test]
+fn rule_body_fields_parse_json_values_and_fallback_to_string() {
+    let effects = RuleEffects {
+        body_fields: vec![
+            ("temperature".to_string(), "0.2".to_string()),
+            ("top_k".to_string(), "40".to_string()),
+            ("stream".to_string(), "true".to_string()),
+            ("metadata".to_string(), r#"{"a":1}"#.to_string()),
+            ("user".to_string(), "alice".to_string()),
+        ],
+        ..Default::default()
+    };
+    let body = Bytes::from_static(br#"{"model":"m"}"#);
+    let out = apply_rule_body_fields(body, &effects);
+    let value: Value = serde_json::from_slice(&out).unwrap();
+
+    assert_eq!(value["temperature"], 0.2, "数字按 JSON 解析");
+    assert_eq!(value["top_k"], 40, "整数按 JSON 解析");
+    assert_eq!(value["stream"], true, "布尔按 JSON 解析");
+    assert_eq!(value["metadata"], serde_json::json!({"a": 1}), "对象按 JSON 解析");
+    assert_eq!(value["user"], "alice", "非 JSON 回退为字符串");
+}
+
+#[test]
+fn rule_body_fields_skip_non_object_body() {
+    let effects = RuleEffects {
+        body_fields: vec![("a".to_string(), "1".to_string())],
+        ..Default::default()
+    };
+    for raw in [&b"[1,2]"[..], &b"not json"[..]] {
+        let body = Bytes::copy_from_slice(raw);
+        assert_eq!(
+            apply_rule_body_fields(body.clone(), &effects),
+            body,
+            "非对象请求体必须原样返回"
+        );
+    }
+}
+
+#[test]
+fn rule_headers_never_override_auth_or_protocol_headers() {
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer client-key"),
+    );
+    headers.insert("x-keep", HeaderValue::from_static("client"));
+    let effects = RuleEffects {
+        headers: vec![
+            ("Authorization".to_string(), "Bearer evil".to_string()),
+            ("x-api-key".to_string(), "evil".to_string()),
+            ("anthropic-version".to_string(), "1999-01-01".to_string()),
+            ("x-keep".to_string(), "rule".to_string()),
+            ("X-Added".to_string(), "1".to_string()),
+        ],
+        ..Default::default()
+    };
+    let request = copy_forward_headers(
+        client.post("http://127.0.0.1:1/"),
+        &headers,
+        "real-key",
+        AuthMode::OpenAi,
+        &effects.headers,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+
+    assert_eq!(
+        request.headers().get(http::header::AUTHORIZATION).unwrap(),
+        "Bearer real-key",
+        "规则不得覆盖网关自己的鉴权头"
+    );
+    assert_eq!(
+        request.headers().get_all(http::header::AUTHORIZATION).iter().count(),
+        1,
+        "同名头必须覆盖而不是追加"
+    );
+    assert!(request.headers().get("x-api-key").is_none());
+    assert!(request.headers().get("anthropic-version").is_none());
+    assert_eq!(request.headers().get("x-keep").unwrap(), "rule", "普通头以规则为准");
+    assert_eq!(request.headers().get("x-added").unwrap(), "1");
+}
+
+#[test]
+fn default_max_tokens_follows_rule_suppression() {
+    let mut effects = RuleEffects {
+        max_tokens: Some(4096),
+        ..Default::default()
+    };
+    assert_eq!(rule_default_max_tokens(&effects, true), Some(4096));
+
+    effects.max_tokens = None;
+    effects.max_tokens_suppressed = true;
+    assert_eq!(rule_default_max_tokens(&effects, true), None, "codex 语境可抑制");
+    assert_eq!(
+        rule_default_max_tokens(&effects, false),
+        Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
+        "Claude 路径保持原默认"
+    );
+}
+
+/// 网关层：规则按 /v1/responses 语境命中，并在出站 header / body 上落地。
+#[tokio::test]
+async fn gateway_applies_request_rules_to_outbound_request() {
+    use crate::request_rules::{RequestRule, RuleAction, RuleScope};
+
+    let state = GatewayState::new(AppConfig::default(), None).expect("网关状态可构造");
+    let rules = vec![
+        RequestRule {
+            id: "codex-extra".to_string(),
+            name: "codex 加头".to_string(),
+            scope: RuleScope::Codex,
+            enabled: true,
+            actions: vec![
+                RuleAction::SetHeader {
+                    key: "X-Rule-Mark".to_string(),
+                    value: "1".to_string(),
+                },
+                RuleAction::SetBodyField {
+                    key: "temperature".to_string(),
+                    value: "0.3".to_string(),
+                },
+            ],
+        },
+        RequestRule {
+            id: "agent-extra".to_string(),
+            name: "其他 agent 加头".to_string(),
+            scope: RuleScope::Agent {
+                label: "trae".to_string(),
+            },
+            enabled: true,
+            actions: vec![RuleAction::SetHeader {
+                key: "X-Agent-Mark".to_string(),
+                value: "1".to_string(),
+            }],
+        },
+    ];
+    state.set_request_rules(rules).await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::USER_AGENT,
+        HeaderValue::from_static("codex_cli_rs/0.20.0"),
+    );
+    let (effects, is_codex) = request_rule_effects(&state, &headers, true).await;
+    assert!(is_codex);
+    assert_eq!(
+        effects.headers,
+        vec![("X-Rule-Mark".to_string(), "1".to_string())],
+        "只应命中 codex 作用域"
+    );
+
+    let body = apply_rule_body_fields(Bytes::from_static(br#"{"model":"m"}"#), &effects);
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["temperature"], 0.3);
 }
 
 #[test]

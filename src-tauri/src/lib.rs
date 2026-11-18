@@ -31,6 +31,7 @@ pub mod update;
 pub mod product;
 pub mod provider_catalog;
 pub mod quick_chat;
+pub mod request_rules;
 pub mod store;
 pub mod codex_config;
 pub mod command_mode;

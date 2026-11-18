@@ -94,6 +94,21 @@ description = "Enables the get_strategy_box_status command"
 commands.allow = ["get_strategy_box_status"]
 
 [[permission]]
+identifier = "allow-list-request-rules"
+description = "Enables the list_request_rules command"
+commands.allow = ["list_request_rules"]
+
+[[permission]]
+identifier = "allow-save-request-rule"
+description = "Enables the save_request_rule command"
+commands.allow = ["save_request_rule"]
+
+[[permission]]
+identifier = "allow-delete-request-rule"
+description = "Enables the delete_request_rule command"
+commands.allow = ["delete_request_rule"]
+
+[[permission]]
 identifier = "allow-set-failover"
 description = "Enables the set_failover command"
 commands.allow = ["set_failover"]

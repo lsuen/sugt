@@ -69,6 +69,16 @@ pub fn responses_to_chat_with_meta(
     body: &Bytes,
     upstream_model: &str,
 ) -> Result<(Bytes, ChatToolMeta)> {
+    responses_to_chat_with_meta_with_default(body, upstream_model, Some(default_codex_max_tokens()))
+}
+
+/// 同 [`responses_to_chat_with_meta`]，但默认 max_tokens 可覆盖（请求改写规则）：
+/// `None` 表示请求未指定输出长度时不要自动填。
+pub fn responses_to_chat_with_meta_with_default(
+    body: &Bytes,
+    upstream_model: &str,
+    default_max: Option<u64>,
+) -> Result<(Bytes, ChatToolMeta)> {
     let value: Value = if body.is_empty() {
         json!({})
     } else {
@@ -139,10 +149,10 @@ pub fn responses_to_chat_with_meta(
                     .filter(|v| !v.is_null());
                 if let Some(v) = explicit_max {
                     out_obj.insert("max_tokens".to_string(), v.clone());
-                } else {
+                } else if let Some(default_max) = default_max {
                     // Codex 没指定任何输出长度限制时，给 Chat 上游一个安全默认，
                     // 避免上游用自己的小默认值（常 4096）截断 tool_call arguments。
-                    let default_max = default_codex_max_tokens();
+                    // 规则显式关闭（default_max = None）时保持不填。
                     out_obj.insert("max_tokens".to_string(), json!(default_max));
                     warn!(
                         default_max,

@@ -399,6 +399,12 @@
           "markdownDescription": "Enables the delete_provider command"
         },
         {
+          "description": "Enables the delete_request_rule command",
+          "type": "string",
+          "const": "allow-delete-request-rule",
+          "markdownDescription": "Enables the delete_request_rule command"
+        },
+        {
           "description": "Enables the delete_strategy_box command",
           "type": "string",
           "const": "allow-delete-strategy-box",
@@ -477,6 +483,12 @@
           "markdownDescription": "Enables the list_providers command"
         },
         {
+          "description": "Enables the list_request_rules command",
+          "type": "string",
+          "const": "allow-list-request-rules",
+          "markdownDescription": "Enables the list_request_rules command"
+        },
+        {
           "description": "Enables the list_strategy_boxes command",
           "type": "string",
           "const": "allow-list-strategy-boxes",
@@ -541,6 +553,12 @@
           "type": "string",
           "const": "allow-save-provider",
           "markdownDescription": "Enables the save_provider command"
+        },
+        {
+          "description": "Enables the save_request_rule command",
+          "type": "string",
+          "const": "allow-save-request-rule",
+          "markdownDescription": "Enables the save_request_rule command"
         },
         {
           "description": "Enables the save_strategy_box command",

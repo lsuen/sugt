@@ -14,6 +14,7 @@ use crate::{
     model_registry::{self, ModelEntry, ModelProbe},
     probe,
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
+    request_rules::{self, RequestRule},
     strategy_box::{self, StrategyBox},
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
@@ -856,6 +857,67 @@ pub async fn delete_strategy_box(
     }
     strategy_box::save_boxes(&config_dir, &boxes).map_err(|err| err.to_string())?;
     runtime.gateway.set_strategy_boxes(boxes).await;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveRequestRuleInput {
+    pub spec: RequestRule,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteRequestRuleInput {
+    pub rule_id: String,
+}
+
+/// 请求改写规则列表（磁盘为准；文件缺失时返回内置默认规则）。
+#[tauri::command]
+pub async fn list_request_rules(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<RequestRule>, String> {
+    Ok(request_rules::load_rules(&runtime.paths.config_dir))
+}
+
+/// 保存（新建或整体替换）一条规则：读盘 → 校验 → upsert → 落盘。
+#[tauri::command]
+pub async fn save_request_rule(
+    runtime: State<'_, AppRuntime>,
+    input: SaveRequestRuleInput,
+) -> Result<RequestRule, String> {
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut rules = request_rules::load_rules(&config_dir);
+    request_rules::validate(&input.spec, &rules)?;
+    let saved = request_rules::upsert(&mut rules, input.spec);
+    request_rules::save_rules(&config_dir, &rules).map_err(|err| err.to_string())?;
+    // 网关内存副本同步：新规则立即对入站请求生效。
+    runtime.gateway.set_request_rules(rules).await;
+    Ok(saved)
+}
+
+/// 删除一条规则；内置规则改为禁用而不是移除，保留「显式关闭」的语义。
+#[tauri::command]
+pub async fn delete_request_rule(
+    runtime: State<'_, AppRuntime>,
+    input: DeleteRequestRuleInput,
+) -> Result<(), String> {
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut rules = request_rules::load_rules(&config_dir);
+    if request_rules::is_builtin_rule_id(&input.rule_id) {
+        let rule = rules
+            .iter_mut()
+            .find(|rule| rule.id == input.rule_id)
+            .ok_or_else(|| format!("未找到请求改写规则: {}", input.rule_id))?;
+        rule.enabled = false;
+    } else {
+        let before = rules.len();
+        rules.retain(|rule| rule.id != input.rule_id);
+        if rules.len() == before {
+            return Err(format!("未找到请求改写规则: {}", input.rule_id));
+        }
+    }
+    request_rules::save_rules(&config_dir, &rules).map_err(|err| err.to_string())?;
+    // 网关内存副本同步：删除/禁用立即生效。
+    runtime.gateway.set_request_rules(rules).await;
     Ok(())
 }
 

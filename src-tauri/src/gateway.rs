@@ -5,6 +5,7 @@ use crate::{
     },
     model_registry::ModelEntry,
     provider_catalog,
+    request_rules::{self, RequestRule, RuleContext, RuleEffects},
     strategy_box::{self, StrategyBox, StrategyRuntime, StrategyState},
     workspace_rules::{self, RequestShape},
 };
@@ -62,6 +63,8 @@ pub struct GatewayState {
     strategy: Arc<RwLock<StrategyState>>,
     /// 模型注册表快照（PRD v1.1.11 R2）：盒子成员里被禁用（enabled = false）的模型不参与编排
     registry: Arc<RwLock<Vec<ModelEntry>>>,
+    /// 请求改写规则（PRD v1.1.11 R6）：按作用域匹配后改写发往上游的请求
+    rules: Arc<RwLock<Vec<RequestRule>>>,
 }
 
 /// RAII 计数：请求进入 +1，无论成功、失败还是提前返回都在析构时 -1，避免计数泄漏。
@@ -167,6 +170,13 @@ impl GatewayState {
             .map(|dir| crate::model_registry::load(dir).entries)
             .unwrap_or_default();
 
+        // 请求改写规则（R6）：与策略盒子同一 config 目录；文件缺失/损坏时 load_rules 已回退内置。
+        let rules = config_file
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(request_rules::load_rules)
+            .unwrap_or_else(request_rules::builtin_rules);
+
         Ok(Self {
             inner: Arc::new(RwLock::new(GatewayInner {
                 config,
@@ -186,7 +196,18 @@ impl GatewayState {
                 runtime: StrategyRuntime::default(),
             })),
             registry: Arc::new(RwLock::new(registry)),
+            rules: Arc::new(RwLock::new(rules)),
         })
+    }
+
+    /// 请求改写规则快照（R6）。
+    pub async fn request_rules_snapshot(&self) -> Vec<RequestRule> {
+        self.rules.read().await.clone()
+    }
+
+    /// 规则写盘后同步内存副本，无需重启网关即可生效。
+    pub async fn set_request_rules(&self, rules: Vec<RequestRule>) {
+        *self.rules.write().await = rules;
     }
 
     /// 当前策略盒子快照（不含健康度）。
@@ -918,6 +939,7 @@ async fn proxy_anthropic_request(
 ) -> Result<Response<Body>> {
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
+    let (effects, _is_codex) = request_rule_effects(&state, &headers, false).await;
     let (body_bytes, rules_injected) =
         apply_workspace_rules(body_bytes, &config, RequestShape::AnthropicMessages, &headers);
     // 用户在控制台选择的接入点协议模式（auto / openai / anthropic）
@@ -959,7 +981,8 @@ async fn proxy_anthropic_request(
         let (result, mode) = match access_mode {
             // 强制 OpenAI 协议：始终走转换，不尝试原生端点
             AnthropicAccessMode::OpenAi => (
-                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider).await,
+                proxy_anthropic_via_openai(&state, &headers, body_bytes.clone(), provider, &effects)
+                    .await,
                 "openai_adapter",
             ),
             // 强制 Anthropic 原生协议：不走转换；无原生端点时给出明确错误并尝试下一个
@@ -971,6 +994,7 @@ async fn proxy_anthropic_request(
                         body_bytes.clone(),
                         provider,
                         Some(target),
+                        &effects,
                     )
                     .await
                     .map_err(|_| crate::upstream_resilience::classify_network()),
@@ -1006,6 +1030,7 @@ async fn proxy_anthropic_request(
                         body_bytes.clone(),
                         provider,
                         native_target,
+                        &effects,
                     )
                     .await
                     {
@@ -1023,6 +1048,7 @@ async fn proxy_anthropic_request(
                                     &headers,
                                     body_bytes.clone(),
                                     provider,
+                                    &effects,
                                 )
                                 .await,
                                 "openai_adapter",
@@ -1040,6 +1066,7 @@ async fn proxy_anthropic_request(
                             &headers,
                             body_bytes.clone(),
                             provider,
+                            &effects,
                         )
                         .await,
                         "openai_adapter",
@@ -1163,6 +1190,7 @@ async fn proxy_anthropic_native(
     body: Bytes,
     provider: &ProviderConfig,
     native_target: Option<String>,
+    effects: &RuleEffects,
 ) -> Result<Response<Body>> {
     // 原生端点优先用解析结果（可能来自服务商目录的 anthropic_base_url），兜底用 provider.base_url
     let target = build_target_url(
@@ -1171,9 +1199,19 @@ async fn proxy_anthropic_native(
         "",
     );
     let client_model = client_model_of(&body);
-    let payload = rewrite_model(body, &provider.model_name);
+    let default_max = rule_default_max_tokens(effects, false);
+    let payload = apply_rule_body_fields(
+        rewrite_model(body, &provider.model_name, default_max),
+        effects,
+    );
     let mut builder = state.client.post(&target);
-    builder = copy_forward_headers(builder, headers, &provider.api_key, AuthMode::Anthropic)?;
+    builder = copy_forward_headers(
+        builder,
+        headers,
+        &provider.api_key,
+        AuthMode::Anthropic,
+        &effects.headers,
+    )?;
 
     info!(
         provider = %provider.name,
@@ -1198,6 +1236,7 @@ async fn proxy_anthropic_via_openai(
     headers: &HeaderMap,
     body: Bytes,
     provider: &ProviderConfig,
+    effects: &RuleEffects,
 ) -> Result<Response<Body>, crate::upstream_resilience::FailureClass> {
     let failover = state.config().await.failover_enabled;
     let attempts = upstream_attempts(provider, failover);
@@ -1212,9 +1251,13 @@ async fn proxy_anthropic_via_openai(
             continue;
         }
         let target = build_target_url(&attempt.base_url, "v1/chat/completions", "");
-        let payload = match anthropic_adapter::anthropic_to_openai(body.clone(), &attempt.model_name)
-        {
-            Ok(payload) => payload,
+        let default_max = rule_default_max_tokens(effects, false);
+        let payload = match anthropic_adapter::anthropic_to_openai_with_default(
+            body.clone(),
+            &attempt.model_name,
+            default_max,
+        ) {
+            Ok(payload) => apply_rule_body_fields(payload, effects),
             Err(_) => {
                 return Err(crate::upstream_resilience::FailureClass::Terminal(
                     crate::upstream_resilience::NoticeKind::BadRequest,
@@ -1225,7 +1268,13 @@ async fn proxy_anthropic_via_openai(
         let mut text_tries = 0u32;
         let class = loop {
             let mut builder = state.client.post(&target);
-            builder = match copy_forward_headers(builder, headers, &attempt.api_key, AuthMode::OpenAi) {
+            builder = match copy_forward_headers(
+                builder,
+                headers,
+                &attempt.api_key,
+                AuthMode::OpenAi,
+                &effects.headers,
+            ) {
                 Ok(builder) => builder,
                 Err(_) => return Err(crate::upstream_resilience::classify_network()),
             };
@@ -1257,7 +1306,7 @@ async fn proxy_anthropic_via_openai(
                             text_tries,
                             attempt_idx,
                             attempt_idx + 1 < attempts.len(),
-                            paid_text_total(attempt),
+                            paid_text_total(attempt, effects),
                         ) {
                             crate::upstream_resilience::TextOnlyStep::RetrySame => {
                                 warn!(
@@ -1494,6 +1543,7 @@ async fn proxy_chat_upstream(
     rules_injected: bool,
     config: AppConfig,
 ) -> Result<Response<Body>> {
+    let (effects, is_codex) = request_rule_effects(&state, &headers, false).await;
     let client_model = client_model_of(&body_bytes);
     let route = request_route(&state, &config, &client_model).await;
     let box_id = route.box_id;
@@ -1504,6 +1554,7 @@ async fn proxy_chat_upstream(
     }
     let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
     let tools = crate::upstream_resilience::request_declares_tools(&body_bytes);
+    let body_bytes = apply_rule_body_fields(body_bytes, &effects);
     let mut memory = crate::upstream_resilience::FailureMemory::new();
     let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
@@ -1524,13 +1575,22 @@ async fn proxy_chat_upstream(
                     continue;
                 }
                 let target = build_target_url(&attempt.base_url, &path, &query);
-                let payload = rewrite_model(body_bytes.clone(), &attempt.model_name);
+                let payload = rewrite_model(
+                    body_bytes.clone(),
+                    &attempt.model_name,
+                    rule_default_max_tokens(&effects, is_codex),
+                );
                 let mut text_tries = 0u32;
                 let attempt_started = std::time::Instant::now();
                 let class = loop {
                     let mut builder = state.client.request(method.clone(), &target);
-                    builder =
-                        copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+                    builder = copy_forward_headers(
+                        builder,
+                        &headers,
+                        &attempt.api_key,
+                        AuthMode::OpenAi,
+                        &effects.headers,
+                    )?;
                     info!(
                         provider = %attempt.name,
                         model = %attempt.model_name,
@@ -1560,7 +1620,7 @@ async fn proxy_chat_upstream(
                                         text_tries,
                                         attempt_idx,
                                         attempt_idx + 1 < attempts.len(),
-                                        paid_text_total(attempt),
+                                        paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
                                             warn!(
@@ -1727,6 +1787,8 @@ async fn proxy_responses_via_chat(
     rules_injected: bool,
 ) -> Result<Response<Body>> {
     let config = state.config().await;
+    // /v1/responses 只由 Codex 走：is_codex 恒为真
+    let (effects, _is_codex) = request_rule_effects(&state, &headers, true).await;
     let client_model = client_model_of(&body_bytes);
     let route = request_route(&state, &config, &client_model).await;
     let box_id = route.box_id;
@@ -1793,10 +1855,16 @@ async fn proxy_responses_via_chat(
                         &body_bytes,
                         &attempt.model_name,
                     )?;
+                let upstream_body = apply_rule_body_fields(upstream_body, &effects);
                 let target = build_target_url(&native_base, "v1/responses", query);
                 let mut builder = state.client.request(method.clone(), &target);
-                builder =
-                    copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+                builder = copy_forward_headers(
+                    builder,
+                    &headers,
+                    &attempt.api_key,
+                    AuthMode::OpenAi,
+                    &effects.headers,
+                )?;
 
                 info!(
                     provider = %attempt.name,
@@ -1894,10 +1962,12 @@ async fn proxy_responses_via_chat(
             }
 
             let (chat_body_base, tool_meta_base) =
-                crate::openai_responses_adapter::responses_to_chat_with_meta(
+                crate::openai_responses_adapter::responses_to_chat_with_meta_with_default(
                     &body_bytes,
                     &attempt.model_name,
+                    rule_default_max_tokens(&effects, true),
                 )?;
+            let chat_body_base = apply_rule_body_fields(chat_body_base, &effects);
             let target = build_target_url(&attempt.base_url, "v1/chat/completions", query);
             let has_tools = crate::command_mode::chat_body_has_tools(&chat_body_base);
             // 对齐 cc-switch / 官方 Gateway 要求：先保留 tools 走 Chat Completions 转换，
@@ -1925,8 +1995,13 @@ async fn proxy_responses_via_chat(
                 };
 
                 let mut builder = state.client.request(method.clone(), &target);
-                builder =
-                    copy_forward_headers(builder, &headers, &attempt.api_key, AuthMode::OpenAi)?;
+                builder = copy_forward_headers(
+                    builder,
+                    &headers,
+                    &attempt.api_key,
+                    AuthMode::OpenAi,
+                    &effects.headers,
+                )?;
 
                 info!(
                     provider = %attempt.name,
@@ -1977,7 +2052,7 @@ async fn proxy_responses_via_chat(
                                         text_tries,
                                         attempt_idx,
                                         attempt_idx + 1 < attempts.len(),
-                                        paid_text_total(attempt),
+                                        paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
                                             warn!(
@@ -2276,7 +2351,7 @@ async fn proxy_responses_via_chat(
                                 text_tries,
                                 attempt_idx,
                                 attempt_idx + 1 < attempts.len(),
-                                paid_text_total(attempt),
+                                paid_text_total(attempt, &effects),
                             ) {
                                 crate::upstream_resilience::TextOnlyStep::RetrySame => {
                                     warn!(
@@ -2772,7 +2847,70 @@ pub fn build_chat_url_for_provider(provider: &ProviderConfig) -> String {
     }
 }
 
-fn rewrite_model(body: Bytes, model_name: &str) -> Bytes {
+/// 规则不得覆盖的请求头：鉴权与 Anthropic 协议协商由网关自身决定。
+const RULE_PROTECTED_HEADERS: &[&str] =
+    &["authorization", "x-api-key", "anthropic-version", "anthropic-beta"];
+
+/// 计算本次请求生效的规则效果（R6），同时返回是否为 Codex 语境。
+///
+/// `is_responses_path` 为真时视作 Codex 语境（`/v1/responses` 只由 Codex 走）。
+async fn request_rule_effects(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    is_responses_path: bool,
+) -> (RuleEffects, bool) {
+    let rules = state.request_rules_snapshot().await;
+    let client_label = crate::gateway_stats::client_label_from_headers(headers);
+    let is_codex = is_responses_path || client_label.trim().eq_ignore_ascii_case("codex");
+    let effects = request_rules::collect_effects(
+        &rules,
+        &RuleContext {
+            client_label: &client_label,
+            is_codex,
+        },
+    );
+    (effects, is_codex)
+}
+
+/// 默认 max_tokens：规则关闭（仅 codex 语境）时返回 None，表示「不填」。
+fn rule_default_max_tokens(effects: &RuleEffects, is_codex: bool) -> Option<u64> {
+    if is_codex && effects.max_tokens_suppressed {
+        return None;
+    }
+    Some(
+        effects
+            .max_tokens
+            .map(u64::from)
+            .unwrap_or(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
+    )
+}
+
+/// 把规则的 body_fields 写进出站 JSON 对象；值先按 JSON 解析（数字/布尔/对象），
+/// 解析失败再按字符串写入。请求体不是 JSON 对象时跳过并告警。
+fn apply_rule_body_fields(body: Bytes, effects: &RuleEffects) -> Bytes {
+    if body.is_empty() || effects.body_fields.is_empty() {
+        return body;
+    }
+    let mut value: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = %err, "请求体不是合法 JSON，跳过规则 body_fields");
+            return body;
+        }
+    };
+    let Some(object) = value.as_object_mut() else {
+        warn!("请求体不是 JSON 对象，跳过规则 body_fields");
+        return body;
+    };
+    for (key, raw) in &effects.body_fields {
+        let parsed = serde_json::from_str::<Value>(raw)
+            .unwrap_or_else(|_| Value::String(raw.clone()));
+        object.insert(key.clone(), parsed);
+    }
+    Bytes::from(serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec()))
+}
+
+fn rewrite_model(body: Bytes, model_name: &str, default_max: Option<u64>) -> Bytes {
     if body.is_empty() {
         return body;
     }
@@ -2786,12 +2924,13 @@ fn rewrite_model(body: Bytes, model_name: &str) -> Bytes {
                     .or_else(|| object.get("max_completion_tokens"))
                     .is_some_and(|value| !value.is_null());
                 if !has_max {
-                    let default_max = crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS;
-                    object.insert("max_tokens".to_string(), json!(default_max));
-                    warn!(
-                        default_max,
-                        "Chat 请求未指定 max_tokens，网关填充默认值以防上游截断"
-                    );
+                    if let Some(default_max) = default_max {
+                        object.insert("max_tokens".to_string(), json!(default_max));
+                        warn!(
+                            default_max,
+                            "Chat 请求未指定 max_tokens，网关填充默认值以防上游截断"
+                        );
+                    }
                 }
             }
             Bytes::from(serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec()))
@@ -2810,7 +2949,10 @@ fn copy_forward_headers(
     headers: &HeaderMap,
     api_key: &str,
     auth_mode: AuthMode,
+    rule_headers: &[(String, String)],
 ) -> Result<reqwest::RequestBuilder> {
+    // 先合并成一张表：客户端转发头 → 规则头同名覆盖（追加同名会让上游收到两个值）。
+    let mut forwarded = HeaderMap::new();
     for (name, value) in headers {
         let key = name.as_str().to_ascii_lowercase();
         if matches!(
@@ -2825,7 +2967,32 @@ fn copy_forward_headers(
         ) {
             continue;
         }
-        builder = builder.header(name, value);
+        forwarded.append(name.clone(), value.clone());
+    }
+    for (key, value) in rule_headers {
+        let lower = key.to_ascii_lowercase();
+        if RULE_PROTECTED_HEADERS.contains(&lower.as_str()) {
+            warn!(header = %key, "请求改写规则试图覆盖鉴权/协议头，已忽略");
+            continue;
+        }
+        let name = match http::HeaderName::from_bytes(key.as_bytes()) {
+            Ok(name) => name,
+            Err(err) => {
+                warn!(header = %key, error = %err, "规则请求头名称非法，已忽略");
+                continue;
+            }
+        };
+        let parsed = match HeaderValue::from_str(value) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                warn!(header = %key, error = %err, "规则请求头值非法，已忽略");
+                continue;
+            }
+        };
+        forwarded.insert(name, parsed);
+    }
+    for (name, value) in &forwarded {
+        builder = builder.header(name.clone(), value.clone());
     }
 
     match auth_mode {
@@ -2986,12 +3153,17 @@ fn responses_stream_from_hold(
 }
 
 /// 收费模型的总次数（含第一次）。免费通道返回 None，走 3、2、1。
-fn paid_text_total(provider: &ProviderConfig) -> Option<u32> {
+///
+/// provider 级 `tool_text_retry_enabled` 仍是主开关（用户显式意图），规则只能调整次数。
+fn paid_text_total(provider: &ProviderConfig, effects: &RuleEffects) -> Option<u32> {
     if crate::experimental_free::is_experimental_free(provider) {
         return None;
     }
     if provider.tool_text_retry_enabled {
-        Some(provider.tool_text_retry_extra.clamp(1, 5).saturating_add(1))
+        let extra = effects
+            .tool_retry_extra
+            .unwrap_or(provider.tool_text_retry_extra);
+        Some(extra.clamp(1, 5).saturating_add(1))
     } else {
         Some(1)
     }
