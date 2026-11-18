@@ -543,3 +543,26 @@ pub enum RuleAction {
 | T6.3 | R6 | 规则 UI（规则 tab 区块） | 已完成 | 2b568c8 | 内置徽标；删除内置=禁用；中英双语 |
 | T7.1 | R7 | 日志滚动 + 清理任务 + 保留期配置 | 已完成 | a5d2018 / cd546e1 | daily 滚动；0-90 天；启动 + 每 24h |
 | T7.2 | R7 | clear_cache + 设置页 UI | 已完成 | a5d2018 / cd546e1 | 只清技能仓缓存与探测结果；ConfirmModal 二次确认 |
+
+---
+
+## 11. 1.2.0 修复与优化批次（B 系列，作者 2026-11-18 追加）
+
+版本目标 1.2.0；GitHub 已发布 v1.1.10 而本地停在 1.1.9，本轮先对齐版本号再收三笔技术债。
+
+| Task | 内容 | 状态 | commit | 备注 |
+| --- | --- | --- | --- | --- |
+| B0 | 版本号 1.1.9 → 1.2.0（7 个版本键）+ 发版说明 | 已完成 | 4842f73 | 一致性脚本 7/7；未合并 origin/master（与本地分叉 40+ 冲突，`upstream_resilience` 等本地实现更完整） |
+| B1 | 左侧 10 个主 tab 收敛为 5 组 + 组内横向子 tab | 已完成 | ee213ef | `NAV_GROUPS` 单一数据源；规则组拆「统一注入 / 改写规则」；组与叶子位置分别存 localStorage |
+| B2 | 规则拆两个子 tab（统一注入 = 工作区规则注入；改写规则 = 请求改写） | 已完成 | ee213ef | 与 B1 同一次提交：`rulesInject` / `rulesRewrite` |
+| B3 | API Key 池语义纠正为**入站密钥**（我们发给客户端的 key） | 已完成 | 572debc | 新增 `client_keys.rs`（10 条单测）+ 网关鉴权带池 key 校验（3 条单测）+ 四个命令 + 前端「接入密钥」页；上游轮换保留并改名「上游 Key 轮换」 |
+| B4 | 前端控件样式收债：控件原语层 + token + 守护脚本 | 已完成 | 3be1c5b | `.field-input/.field-select/.field-textarea` + `--control-radius/--control-pad-y/--control-pad-x`；清理 9 处写死圆角；`tests/css-guard.mjs` 接入 `npm test` |
+| B5 | 全量回归 + 版本一致性 + 发版收尾 | 进行中 | - | `npm test`（含 test:css）/ `npm run build` / `cargo test` / 一致性脚本 7/7 通过；剩余 push 与实机点检 |
+
+### B3 实现说明
+
+- 入站密钥文件 `config_dir/client-keys.json`（`{version:1, keys:[...]}`），字段 `id/name/key/enabled/usage{requestCount,lastUsedAt,lastError}`。
+- 网关鉴权：`gateway_client_api_key` 仍有效；池内 `enabled` 的 key 同样放行；停用即刻 401。用量按 key 累加，后台定期落盘。
+- 命令：`list_client_keys` / `create_client_key` / `update_client_key` / `delete_client_key`。
+- 上游多 key 轮换（`api_key_pool.rs`）不改语义，页面改名「上游 Key 轮换」避免与入站密钥混淆。
+- 已知历史报错 `error[E0599] set_key_pools` 属于 T5.2 中间态，工作区已改为 `persist_key_pools`，`cargo build --lib` 通过。
