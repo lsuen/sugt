@@ -3,8 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import {
-  Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, KeyRound,
-  ListFilter, Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, Workflow, X, XCircle, Settings2,
+  Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Play, Plus,
+  ScrollText, Settings2, ShieldCheck, Trash2, Users, X, XCircle,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { ModalPortal } from './ModalPortal';
@@ -34,8 +34,109 @@ import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
 
 bootstrapTheme();
 
-// 日志与关于已并入设置子页，主 Tab 从 9 个收敛为 7 个。
-type Tab = 'dashboard' | 'models' | 'modelList' | 'strategyBox' | 'keyPool' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
+// 左侧导航收敛为 5 组：组内用横向子 Tab 切换。组与叶子一一对应，
+// 当前组由当前叶子反推，避免「当前组」和「当前页」两套状态互相打架。
+type NavGroup = 'overview' | 'gateway' | 'rules' | 'access' | 'settings';
+type NavLeaf =
+  | 'dashboard' | 'me'
+  | 'models' | 'modelList' | 'strategyBox' | 'keyPool'
+  | 'rulesInject' | 'rulesRewrite'
+  | 'clients' | 'skills'
+  | 'settings';
+
+type NavLeafDef = { id: NavLeaf; labelKey: TKey };
+type NavGroupDef = { id: NavGroup; icon: typeof Activity; labelKey: TKey; leaves: NavLeafDef[] };
+
+const NAV_GROUPS: NavGroupDef[] = [
+  {
+    id: 'overview',
+    icon: Activity,
+    labelKey: 'nav.group.overview',
+    leaves: [
+      { id: 'dashboard', labelKey: 'nav.dashboard' },
+      { id: 'me', labelKey: 'nav.me' },
+    ],
+  },
+  {
+    id: 'gateway',
+    icon: Bot,
+    labelKey: 'nav.group.gateway',
+    leaves: [
+      { id: 'models', labelKey: 'nav.models' },
+      { id: 'modelList', labelKey: 'nav.modelList' },
+      { id: 'strategyBox', labelKey: 'nav.strategyBox' },
+      { id: 'keyPool', labelKey: 'nav.keyPool' },
+    ],
+  },
+  {
+    id: 'rules',
+    icon: ScrollText,
+    labelKey: 'nav.group.rules',
+    leaves: [
+      { id: 'rulesInject', labelKey: 'nav.rulesInject' },
+      { id: 'rulesRewrite', labelKey: 'nav.rulesRewrite' },
+    ],
+  },
+  {
+    id: 'access',
+    icon: Users,
+    labelKey: 'nav.group.access',
+    leaves: [
+      { id: 'clients', labelKey: 'nav.clients' },
+      { id: 'skills', labelKey: 'nav.skills' },
+    ],
+  },
+  {
+    id: 'settings',
+    icon: Settings2,
+    labelKey: 'nav.group.settings',
+    leaves: [
+      { id: 'settings', labelKey: 'nav.settings' },
+    ],
+  },
+];
+
+const NAV_GROUP_STORAGE_KEY = 'sugt_nav_group';
+const NAV_LEAF_STORAGE_PREFIX = 'sugt_nav_leaf_';
+
+const NAV_DEFAULT_LEAF: Record<NavGroup, NavLeaf> = {
+  overview: 'dashboard',
+  gateway: 'models',
+  rules: 'rulesInject',
+  access: 'clients',
+  settings: 'settings',
+};
+
+function navGroupOf(leaf: NavLeaf): NavGroup {
+  const found = NAV_GROUPS.find((group) => group.leaves.some((item) => item.id === leaf));
+  return found ? found.id : 'overview';
+}
+
+function isNavGroup(value: string | null): value is NavGroup {
+  return NAV_GROUPS.some((group) => group.id === value);
+}
+
+/** 读取某组上次停留的叶子；取值必须属于该组，非法一律回退默认叶子。 */
+function storedLeafFor(group: NavGroup): NavLeaf {
+  const def = NAV_GROUPS.find((item) => item.id === group);
+  try {
+    const raw = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}${group}`);
+    if (raw && def?.leaves.some((item) => item.id === raw)) return raw as NavLeaf;
+  } catch {
+    /* localStorage 不可用（隐私模式）时按默认叶子启动 */
+  }
+  return NAV_DEFAULT_LEAF[group];
+}
+
+function initialLeaf(): NavLeaf {
+  try {
+    const raw = localStorage.getItem(NAV_GROUP_STORAGE_KEY);
+    return storedLeafFor(isNavGroup(raw) ? raw : 'overview');
+  } catch {
+    return NAV_DEFAULT_LEAF.overview;
+  }
+}
+
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -281,7 +382,19 @@ function Modal({
 }
 
 function App() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+  const [tab, setTabState] = useState<NavLeaf>(initialLeaf);
+  // 当前组由当前叶子反推；切叶子时把组与组内位置都写回 localStorage，切组能回到上次那一页。
+  const group = navGroupOf(tab);
+  const setTab = useCallback((leaf: NavLeaf) => {
+    setTabState(leaf);
+    const nextGroup = navGroupOf(leaf);
+    try {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, nextGroup);
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}${nextGroup}`, leaf);
+    } catch {
+      /* 隐私模式下只丢「上次位置」记忆，不影响当前导航 */
+    }
+  }, []);
   // 设置子页状态提升到 App：状态栏「打开日志页」等外部入口可精确跳转，切主 Tab 不丢位置。
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('overview');
   /** SOUL `[[SUGT_ROUTE]]preview`：切到 Clients 后由 TakeoverProfilesSection 自动打开影响预览 */
@@ -381,7 +494,7 @@ function App() {
     return () => {
       un.then((fn) => fn()).catch(() => undefined);
     };
-  }, []);
+  }, [setTab]);
 
   // Toast 轻量动作：复用桌面精灵「打开设置子页」的既有事件，由上方 listen('sugt://navigate-settings')
   // 统一完成 setTab/setSettingsTab；此处只发事件、仅跳转，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
@@ -608,31 +721,35 @@ function App() {
     return status.running ? <span className="badge ok">{t('common.running')}</span> : <span className="badge stop">{t('common.stopped')}</span>;
   }, [status]);
 
-  const tabTitle = {
+  const tabTitle: Record<NavLeaf, string> = {
     dashboard: t('tab.dashboard.title'),
+    me: t('tab.me.title'),
     models: t('tab.models.title'),
     modelList: t('tab.modelList.title'),
     strategyBox: t('tab.strategyBox.title'),
     keyPool: t('tab.keyPool.title'),
+    rulesInject: t('tab.rulesInject.title'),
+    rulesRewrite: t('tab.rulesRewrite.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
-    me: t('tab.me.title'),
-    rules: t('tab.rules.title'),
     settings: t('tab.settings.title'),
-  }[tab];
+  };
 
-  const tabDesc = {
+  const tabDesc: Record<NavLeaf, string> = {
     dashboard: t('tab.dashboard.desc'),
+    me: t('tab.me.desc'),
     models: t('tab.models.desc'),
     modelList: t('tab.modelList.desc'),
     strategyBox: t('tab.strategyBox.desc'),
     keyPool: t('tab.keyPool.desc'),
+    rulesInject: t('tab.rulesInject.desc'),
+    rulesRewrite: t('tab.rulesRewrite.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
-    me: t('tab.me.desc'),
-    rules: t('tab.rules.desc'),
     settings: t('tab.settings.desc'),
-  }[tab];
+  };
+
+  const activeGroup = NAV_GROUPS.find((item) => item.id === group) ?? NAV_GROUPS[0];
 
   const devPreview = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
   const previewApi = useMemo(() => (devPreview ? createPreviewMeApi() : null), [devPreview]);
@@ -649,7 +766,7 @@ function App() {
                 <span>{t('brand.tagline')}</span>
               </div>
             </div>
-            <button className="nav active" type="button"><UserRound size={18} />{t('nav.me')}</button>
+            <button className="nav active" type="button"><Activity size={18} />{t('nav.group.overview')}</button>
           </aside>
           <section className="content">
             <header className="topbar">
@@ -686,19 +803,22 @@ function App() {
           </div>
         </div>
         <div className="nav-scroll">
-        {/* 门面层：控制台（默认首屏，给普通用户专业感）+ SOUL（所有人的未来入口，提权至第二顺位） */}
-        <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />{t('nav.dashboard')}</button>
-        <button className={tab === 'me' ? 'nav active nav--soul' : 'nav nav--soul'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
-        <div className="nav-divider" role="separator" aria-hidden="true" />
-        {/* 工具层：专业用户的可控能力，普通用户可暂不触碰 */}
-        <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
-        <button className={tab === 'modelList' ? 'nav active' : 'nav'} onClick={() => setTab('modelList')}><ListFilter size={18} />{t('nav.modelList')}</button>
-        <button className={tab === 'strategyBox' ? 'nav active' : 'nav'} onClick={() => setTab('strategyBox')}><Workflow size={18} />{t('nav.strategyBox')}</button>
-        <button className={tab === 'keyPool' ? 'nav active' : 'nav'} onClick={() => setTab('keyPool')}><KeyRound size={18} />{t('nav.keyPool')}</button>
-        <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
-        <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
-        <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
-        <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
+        {/* 5 组固定顺序：总览（门面层）｜网关 / 规则 / 接入（工具层）｜设置 */}
+        {NAV_GROUPS.map((item, index) => {
+          const Icon = item.icon;
+          const active = group === item.id;
+          return (
+            <React.Fragment key={item.id}>
+              {index === 1 ? <div className="nav-divider" role="separator" aria-hidden="true" /> : null}
+              <button
+                className={active ? 'nav active' : 'nav'}
+                onClick={() => setTab(storedLeafFor(item.id))}
+              >
+                <Icon size={18} />{t(item.labelKey)}
+              </button>
+            </React.Fragment>
+          );
+        })}
         </div>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
@@ -714,10 +834,28 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <h2>{tabTitle}</h2>
-            {tabDesc ? <p>{tabDesc}</p> : null}
+            <h2>{tabTitle[tab]}</h2>
+            {tabDesc[tab] ? <p>{tabDesc[tab]}</p> : null}
           </div>
         </header>
+
+        {/* 组内横向子 Tab：只有多叶子且非设置组（设置自带子 Tab 栏）时才出现 */}
+        {activeGroup.leaves.length > 1 && activeGroup.id !== 'settings' ? (
+          <div className="group-tabs" role="tablist" aria-label={t('nav.groupTabs')}>
+            {activeGroup.leaves.map((leaf) => (
+              <button
+                key={leaf.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === leaf.id}
+                className={tab === leaf.id ? 'ghost tiny-btn active' : 'ghost tiny-btn'}
+                onClick={() => setTab(leaf.id)}
+              >
+                {t(leaf.labelKey)}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {tab === 'dashboard' && (
           <div className="tab-body dashboard-body">
@@ -797,7 +935,7 @@ function App() {
           </div>
         )}
 
-        {tab === 'rules' && (
+        {tab === 'rulesInject' && (
           <div className="tab-body">
             <WorkspaceRulesPanel
               rules={config?.workspace_rules}
@@ -807,6 +945,11 @@ function App() {
                 setConfig((prev) => (prev ? { ...prev, workspace_rules: workspaceRules } : prev));
               }}
             />
+          </div>
+        )}
+
+        {tab === 'rulesRewrite' && (
+          <div className="tab-body">
             <RequestRulesSection pushToast={pushToast} run={run} />
           </div>
         )}
@@ -817,7 +960,7 @@ function App() {
             config={config}
             statusListenUrl={status?.listen_url ?? 'http://127.0.0.1:8787'}
             run={run}
-            onNavigate={setTab}
+            onNavigate={(next) => setTab(next === 'rules' ? 'rulesInject' : next)}
             pushToast={pushToast}
             formatInvokeError={formatInvokeError}
             themeId={themeId}
