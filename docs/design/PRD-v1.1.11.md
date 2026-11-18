@@ -406,6 +406,15 @@ pub enum RuleAction {
 - 旧配置（无规则）升级后行为与 v1.1.10 一致（向后兼容）。
 - 现有 `codex_gateway_e2e.rs` / `release_1_1_8_e2e.rs` 全部通过。
 
+**实现说明与偏差（2026-11-18）**
+- 合并顺序按「后写覆盖」：Default → Codex → Agent → Global，与本文第 399 行的优先级（Global > Agent > Codex > Default）等价。
+- **偏差：`ToolTextRetry` 只调整次数，provider 级 `tool_text_retry_enabled` 仍是主开关。** 未开启该开关的 provider 不会因为规则而开始重试，避免规则悄悄改变计费行为；开启后规则给出的 `extra` 覆盖 provider 的 `tool_text_retry_extra`。需要「完全由规则驱动」时再迁移开关本身。
+- 内置规则 2 条：`builtin-codex-max-tokens`（Codex 作用域，默认开，32768）、`builtin-codex-tool-retry`（Codex 作用域，默认关，extra 2）。删除内置规则写成 `enabled=false`，保留「显式关闭」语义。
+- `max_tokens_suppressed` 仅在「全部 codex 作用域 max_tokens 规则都被关闭」时为真；关掉一条自定义规则不会连带关掉仍启用的内置默认值。
+- 规则写盘后同步刷新网关内存副本；手改 `request-rules.json` 需重启网关或再保存一次规则才进内存（一期未做 mtime 轮询）。
+- `SetBodyField` 在 `rewrite_model` 之前应用：规则里写 `model` 会被网关的模型改写覆盖，属预期；需要改模型请用策略盒子。
+- 规则头并入 `copy_forward_headers`，`authorization` / `x-api-key` / `anthropic-version` / `anthropic-beta` 受保护，规则尝试覆盖时只告警不生效。
+
 ---
 
 ### R7 — 设置页：清理缓存 + 日志自动清理周期
@@ -521,8 +530,8 @@ pub enum RuleAction {
 | T5.1 | R5 | api_key_pool.rs 数据模型 + 持久化 | 待开发 | | |
 | T5.2 | R5 | key 轮换 + 网关埋点 + 用量监控 | 待开发 | | |
 | T5.3 | R5 | Key 池主 tab UI + 用量展示/告警 | 待开发 | | |
-| T6.1 | R6 | request_rules.rs 数据模型 + 持久化 | 待开发 | | |
-| T6.2 | R6 | 作用域匹配 + 动作应用 + 硬编码迁移 | 待开发 | | |
-| T6.3 | R6 | 规则 UI（规则 tab 区块） | 待开发 | | |
+| T6.1 | R6 | request_rules.rs 数据模型 + 持久化 | 已完成 | 54fe1b0 | 原子写；内置 2 条规则；12 条单测 |
+| T6.2 | R6 | 作用域匹配 + 动作应用 + 硬编码迁移 | 已完成 | 54fe1b0 | 三入口接入；6 条网关测试；偏差见下方 R6 实现说明 |
+| T6.3 | R6 | 规则 UI（规则 tab 区块） | 已完成 | 2b568c8 | 内置徽标；删除内置=禁用；中英双语 |
 | T7.1 | R7 | 日志滚动 + 清理任务 + 保留期配置 | 已完成 | a5d2018 / cd546e1 | daily 滚动；0-90 天；启动 + 每 24h |
 | T7.2 | R7 | clear_cache + 设置页 UI | 已完成 | a5d2018 / cd546e1 | 只清技能仓缓存与探测结果；ConfirmModal 二次确认 |
