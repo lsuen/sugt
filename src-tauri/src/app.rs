@@ -4,6 +4,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
     logging::init(&runtime.paths.log_file).expect("failed to initialize logging");
+    spawn_log_retention(&runtime);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -39,6 +40,9 @@ pub fn run() {
             commands::set_auto_takeover,
             commands::set_quit_behavior,
             commands::read_logs,
+            commands::clear_cache,
+            commands::get_maintenance_settings,
+            commands::set_maintenance_settings,
             commands::get_config,
             commands::get_overlay_config,
             commands::set_overlay_config,
@@ -197,4 +201,19 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running SUGT");
+}
+
+/// 日志保留期清理：启动立即执行一次，之后每 24 小时一次。
+/// 保留期每次从实时配置读取，设置页改完即时生效；失败只告警。
+fn spawn_log_retention(runtime: &AppRuntime) {
+    let runtime = runtime.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let retention_days = runtime.config.read().await.log_retention_days;
+            if let Err(err) = logging::prune_logs(&runtime.paths.log_file, retention_days) {
+                tracing::warn!(error = %err, "清理过期日志失败");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        }
+    });
 }

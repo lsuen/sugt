@@ -21,6 +21,7 @@ pub mod gateway_stats;
 pub mod gateway_watchdog;
 pub mod lan;
 pub mod logging;
+pub mod maintenance;
 pub mod me_agent;
 pub mod model;
 pub mod model_registry;

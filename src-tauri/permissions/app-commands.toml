@@ -124,6 +124,21 @@ description = "Enables the read_logs command"
 commands.allow = ["read_logs"]
 
 [[permission]]
+identifier = "allow-clear-cache"
+description = "Enables the clear_cache command"
+commands.allow = ["clear_cache"]
+
+[[permission]]
+identifier = "allow-get-maintenance-settings"
+description = "Enables the get_maintenance_settings command"
+commands.allow = ["get_maintenance_settings"]
+
+[[permission]]
+identifier = "allow-set-maintenance-settings"
+description = "Enables the set_maintenance_settings command"
+commands.allow = ["set_maintenance_settings"]
+
+[[permission]]
 identifier = "allow-get-config"
 description = "Enables the get_config command"
 commands.allow = ["get_config"]

@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the clear_cache command",
+          "type": "string",
+          "const": "allow-clear-cache",
+          "markdownDescription": "Enables the clear_cache command"
+        },
+        {
           "description": "Enables the delete_provider command",
           "type": "string",
           "const": "allow-delete-provider",
@@ -421,6 +427,12 @@
           "type": "string",
           "const": "allow-get-local-access-info",
           "markdownDescription": "Enables the get_local_access_info command"
+        },
+        {
+          "description": "Enables the get_maintenance_settings command",
+          "type": "string",
+          "const": "allow-get-maintenance-settings",
+          "markdownDescription": "Enables the get_maintenance_settings command"
         },
         {
           "description": "Enables the get_status command",
@@ -565,6 +577,12 @@
           "type": "string",
           "const": "allow-set-failover",
           "markdownDescription": "Enables the set_failover command"
+        },
+        {
+          "description": "Enables the set_maintenance_settings command",
+          "type": "string",
+          "const": "allow-set-maintenance-settings",
+          "markdownDescription": "Enables the set_maintenance_settings command"
         },
         {
           "description": "Enables the set_model_enabled command",

@@ -5,10 +5,11 @@ use crate::{
     error_hint,
     gateway::{self, GatewayState},
     gateway_daemon,
+    maintenance::CacheReport,
     model::{
         AnthropicAccessMode, AppConfig, OverlayConfig, OverlayConfigPatch, ProviderConfig,
         ProviderInput, ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior,
-        RuntimeStatus, WorkspaceRules, CLIENT_MODEL_ID,
+        RuntimeStatus, WorkspaceRules, CLIENT_MODEL_ID, MAX_LOG_RETENTION_DAYS,
     },
     model_registry::{self, ModelEntry, ModelProbe},
     probe,
@@ -1344,6 +1345,46 @@ pub async fn read_logs(
     lines: usize,
 ) -> Result<Vec<String>, String> {
     crate::logging::tail(&runtime.paths.log_file, lines.min(500)).map_err(|err| err.to_string())
+}
+
+/// 维护设置（PRD v1.1.11 R7）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceSettings {
+    pub log_retention_days: u32,
+}
+
+/// 入参沿用项目约定：字段 snake_case，由前端原样传。
+#[derive(Debug, Deserialize)]
+pub struct MaintenanceSettingsInput {
+    pub log_retention_days: u32,
+}
+
+#[tauri::command]
+pub async fn clear_cache(runtime: State<'_, AppRuntime>) -> Result<CacheReport, String> {
+    crate::maintenance::clear_cache(&runtime.paths.config_dir).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn get_maintenance_settings(
+    runtime: State<'_, AppRuntime>,
+) -> Result<MaintenanceSettings, String> {
+    let log_retention_days = runtime.config.read().await.log_retention_days;
+    Ok(MaintenanceSettings { log_retention_days })
+}
+
+#[tauri::command]
+pub async fn set_maintenance_settings(
+    runtime: State<'_, AppRuntime>,
+    input: MaintenanceSettingsInput,
+) -> Result<u32, String> {
+    let log_retention_days = input.log_retention_days.min(MAX_LOG_RETENTION_DAYS);
+    {
+        let mut config = runtime.config.write().await;
+        config.log_retention_days = log_retention_days;
+    }
+    runtime.persist().await.map_err(|err| err.to_string())?;
+    Ok(log_retention_days)
 }
 
 #[tauri::command]

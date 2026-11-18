@@ -174,6 +174,18 @@ pub struct AppConfig {
     /// 单次等待上限（毫秒）。空表示 60 秒。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_retry_single_ms: Option<u64>,
+    /// 日志自动清理保留天数；0 表示不自动清理。默认 7，上限 90。
+    #[serde(default = "default_log_retention_days")]
+    pub log_retention_days: u32,
+}
+
+/// 日志保留期默认值（天）。
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 7;
+/// 日志保留期上限（天）；设置页输入会被夹在这个范围内。
+pub const MAX_LOG_RETENTION_DAYS: u32 = 90;
+
+fn default_log_retention_days() -> u32 {
+    DEFAULT_LOG_RETENTION_DAYS
 }
 
 /// 走网关的 agent 共享纪律：规则文本注入模型上下文；webhook 仅留本地代发。
@@ -595,6 +607,7 @@ impl Default for AppConfig {
             workspace_rules: WorkspaceRules::default(),
             upstream_retry_budget_ms: None,
             upstream_retry_single_ms: None,
+            log_retention_days: default_log_retention_days(),
         }
     }
 }
