@@ -34,6 +34,7 @@ pub fn run() {
             commands::get_config,
             commands::get_overlay_config,
             commands::set_overlay_config,
+            commands::patch_overlay_config,
             commands::set_workspace_rules,
             commands::set_workspace_inject_template,
             commands::default_workspace_inject_template,

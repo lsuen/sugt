@@ -6,9 +6,9 @@ use crate::{
     gateway::{self, GatewayState},
     gateway_daemon,
     model::{
-        AnthropicAccessMode, AppConfig, OverlayConfig, ProviderConfig, ProviderInput,
-        ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior, RuntimeStatus,
-        WorkspaceRules,
+        AnthropicAccessMode, AppConfig, OverlayConfig, OverlayConfigPatch, ProviderConfig,
+        ProviderInput, ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior,
+        RuntimeStatus, WorkspaceRules,
     },
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     trial,
@@ -268,6 +268,7 @@ pub async fn save_provider(
     input: ProviderInput,
 ) -> Result<Vec<ProviderView>, String> {
     validate_provider_input(&input)?;
+    let (retry_on, retry_extra) = normalize_tool_text_retry(&input);
     let mut config = runtime.config.write().await;
     let id = input.id.clone().unwrap_or_default();
 
@@ -315,6 +316,8 @@ pub async fn save_provider(
         provider.protocol = input.protocol.clone();
         provider.enabled = input.enabled;
         provider.auto_adapt_base_url = input.auto_adapt_base_url;
+        provider.tool_text_retry_enabled = retry_on;
+        provider.tool_text_retry_extra = retry_extra;
     } else {
         let mut provider = ProviderConfig::new(
             input.name,
@@ -334,6 +337,8 @@ pub async fn save_provider(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         provider.auto_adapt_base_url = input.auto_adapt_base_url;
+        provider.tool_text_retry_enabled = retry_on;
+        provider.tool_text_retry_extra = retry_extra;
         if config.active_provider_id.is_none() {
             config.active_provider_id = Some(provider.id.clone());
         }
@@ -380,11 +385,8 @@ pub async fn restore_experimental_free(
 }
 
 #[tauri::command]
-pub fn list_experimental_free_candidates() -> Vec<String> {
-    crate::experimental_free::candidate_models()
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::FreeRouteChoice> {
+    crate::experimental_free::route_choices()
 }
 
 #[tauri::command]
@@ -409,17 +411,7 @@ pub async fn probe_experimental_free_models(
                     Some("免费实验通道暂无可用模型，请稍后重试".into());
                 provider.status = ProviderStatus::Unavailable;
             } else {
-                if !available
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
-                {
-                    if let Some(preferred) =
-                        crate::experimental_free::pick_preferred_model(&available)
-                    {
-                        provider.model_name = preferred.to_string();
-                    }
-                }
-                crate::experimental_free::apply_route(provider);
+                // 探测只记录可用性。改首选路由必须由用户在下拉里点选。
                 provider.last_error = None;
                 provider.status = ProviderStatus::Available;
             }
@@ -1448,31 +1440,57 @@ pub async fn test_workspace_notify(runtime: State<'_, AppRuntime>) -> Result<Str
     Ok("已发送测试消息".to_string())
 }
 
-/// 更新流量悬浮窗配置：持久化并即时应用（创建/更新/关闭窗口）。
-#[tauri::command]
-pub async fn set_overlay_config(
-    runtime: State<'_, AppRuntime>,
-    app: tauri::AppHandle,
-    mut cfg: OverlayConfig,
-) -> Result<(), String> {
+/// 校验精灵窗口配置；两个写入入口（全量 / 增量）共用同一套判据。
+fn validate_overlay_config(cfg: &OverlayConfig) -> Result<(), String> {
     if !(0.1..=1.0).contains(&cfg.opacity) {
-        return Err("悬浮窗不透明度需在 0.1~1.0 之间".to_string());
-    }
-    if !matches!(cfg.layout.as_str(), "column" | "row") {
-        return Err("悬浮窗布局方向需为 column 或 row".to_string());
+        return Err("立绘不透明度需在 0.1~1.0 之间".to_string());
     }
     // v1.4 三档 160×136 / 198×168 / 240×204；下限 120 保留给自定义小窗，上限留给自定义窗口
     if !(120.0..=800.0).contains(&cfg.width) || !(40.0..=420.0).contains(&cfg.height) {
         return Err("悬浮窗尺寸超出合理范围".to_string());
     }
-    crate::overlay::apply(&app, &mut cfg).await?;
+    Ok(())
+}
+
+/// 校验 → 应用窗口 → 写回运行时配置 → 广播 → 持久化。
+async fn persist_overlay_config(
+    runtime: &AppRuntime,
+    app: &AppHandle,
+    mut cfg: OverlayConfig,
+) -> Result<(), String> {
+    validate_overlay_config(&cfg)?;
+    crate::overlay::apply(app, &mut cfg).await?;
     {
         let mut config = runtime.config.write().await;
         config.overlay = cfg.clone();
     }
-    // 通知悬浮窗页面刷新编辑态/显示项（无需轮询 get_config）
+    // 通知精灵透明窗与右键菜单刷新（无需轮询 get_config）
     let _ = app.emit("sugt://overlay-config-changed", &cfg);
     runtime.persist().await.map_err(|err| err.to_string())
+}
+
+/// 更新桌面精灵配置（全量）：保留给旧调用方与干净升级路径。
+#[tauri::command]
+pub async fn set_overlay_config(
+    runtime: State<'_, AppRuntime>,
+    app: tauri::AppHandle,
+    cfg: OverlayConfig,
+) -> Result<(), String> {
+    persist_overlay_config(&runtime, &app, cfg).await
+}
+
+/// 更新桌面精灵配置（按域增量）：设置页 / 菜单 / 透明窗各自只发自己改的字段，
+/// 后端以当前配置为基准 merge，避免三个窗口的全量快照互相覆盖。
+#[tauri::command]
+pub async fn patch_overlay_config(
+    runtime: State<'_, AppRuntime>,
+    app: tauri::AppHandle,
+    patch: OverlayConfigPatch,
+) -> Result<(), String> {
+    let current = runtime.config.read().await.overlay.clone();
+    let mut cfg = current;
+    patch.apply_to(&mut cfg);
+    persist_overlay_config(&runtime, &app, cfg).await
 }
 
 #[tauri::command]
@@ -1571,7 +1589,20 @@ fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {
     if !input.base_url.starts_with("http://") && !input.base_url.starts_with("https://") {
         return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
     }
+    if input.tool_text_retry_enabled
+        && !(1..=5).contains(&input.tool_text_retry_extra)
+    {
+        return Err("重试次数请填 1 到 5".to_string());
+    }
     Ok(())
+}
+
+fn normalize_tool_text_retry(input: &crate::model::ProviderInput) -> (bool, u32) {
+    if input.tool_text_retry_enabled {
+        (true, input.tool_text_retry_extra)
+    } else {
+        (false, 0)
+    }
 }
 
 fn open_path(path: &std::path::Path) -> Result<()> {

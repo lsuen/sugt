@@ -197,7 +197,11 @@ pub fn normalize_config(config: &mut AppConfig) -> bool {
     }
 
     config.workspace_rules.normalize();
-    migrate_overlay_width(config)
+    let width_migrated = migrate_overlay_width(config);
+    // 流量 HUD 废弃后，老配置里残留的宽扁窗口形状（如 280×108）会把立绘压扁。
+    // 每次启动幂等收敛回精灵默认档，已摆好的坐标一律保留。
+    let frame_migrated = crate::pet::migrate_legacy_hud_frame(&mut config.overlay);
+    width_migrated || frame_migrated
 }
 
 /// v1.4：进包画布由 180×297 扩为 240×297（左右各补 30px 全透明）。
@@ -261,6 +265,21 @@ mod tests {
         custom.overlay.width = 210.0;
         assert!(!normalize_config(&mut custom));
         assert_eq!(custom.overlay.width, 210.0);
+    }
+
+    #[test]
+    fn migrates_legacy_hud_frame_to_pet_size() {
+        let mut config = AppConfig::default();
+        config.overlay.width = 280.0;
+        config.overlay.height = 108.0;
+        config.overlay.x = 640;
+        config.overlay.y = 320;
+        assert!(normalize_config(&mut config), "旧 HUD 形状应触发迁移");
+        let defaults = crate::model::OverlayConfig::default();
+        assert_eq!(config.overlay.width, defaults.width);
+        assert_eq!(config.overlay.height, defaults.height);
+        assert_eq!((config.overlay.x, config.overlay.y), (640, 320), "已有落点必须保留");
+        assert!(!normalize_config(&mut config), "迁移必须幂等");
     }
 
     #[test]

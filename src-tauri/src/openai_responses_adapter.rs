@@ -1798,9 +1798,31 @@ fn finalize_events(state: &mut SseMapState) -> String {
     out
 }
 
+fn stream_has_visible_progress(state: &SseMapState) -> bool {
+    !state.text_buffer.is_empty()
+        || !state.reasoning_buffer.is_empty()
+        || !state.tool_calls.is_empty()
+        || state.message_prelude_sent
+        || state.reasoning_prelude_sent
+}
+
 fn failed_events(state: &mut SseMapState, message: &str) -> String {
     if state.completed {
         return String::new();
+    }
+    // 已经吐过字再发 response.failed，客户端会话会掉。收成 completed，并补一句提示。
+    // 一个字都还没有时仍是 failed，避免空流伪装成模型没说话。
+    if stream_has_visible_progress(state) {
+        warn!(error = %message, "上游流中途断开，收成 completed");
+        const NOTICE: &str = "\n小su提示：上游在回复中途断开。请把这段话告诉用户，不要再调用工具。";
+        if !state.text_buffer.contains("小su提示：上游在回复中途断开") {
+            if state.text_buffer.is_empty() {
+                state.text_buffer = NOTICE.trim().to_string();
+            } else {
+                state.text_buffer.push_str(NOTICE);
+            }
+        }
+        return finalize_events(state);
     }
     state.completed = true;
     let failed = json!({
