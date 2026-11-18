@@ -566,3 +566,14 @@ pub enum RuleAction {
 - 命令：`list_client_keys` / `create_client_key` / `update_client_key` / `delete_client_key`。
 - 上游多 key 轮换（`api_key_pool.rs`）不改语义，页面改名「上游 Key 轮换」避免与入站密钥混淆。
 - 已知历史报错 `error[E0599] set_key_pools` 属于 T5.2 中间态，工作区已改为 `persist_key_pools`，`cargo build --lib` 通过。
+
+### B6 入站密钥可观测与主密钥（2026-11-19）
+
+| Task | 内容 | 状态 | commit |
+| --- | --- | --- | --- |
+| B6.1 | ACL 放行 Key 池 / 接入密钥 8 个命令 | 已完成 | b1b0a63 |
+| B6.2 | 每把入站 key 的客户端明细、累计 Token、配额（只告警不拦截） | 已完成 | 26c9587 |
+| B6.3 | `sugt-local-key` 升为主密钥：不可删除/停用，改 key 同步 config.toml 与接入信息卡 | 已完成 | 26c9587 |
+
+识别口径：客户端标签优先 `X-SUGT-Client`，其次 User-Agent 归类；IP 取连接对端，取不到退 `X-Forwarded-For` 首段。
+配额语义与上游 Key 池一致：超限只显示告警，不拦截请求。主密钥改动后前端广播 `sugt:access-info-changed`，接入信息卡自动重拉。
