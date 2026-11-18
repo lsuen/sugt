@@ -27,6 +27,11 @@ type FreeRouteChoice = { model: string; host: string }
 
 type ModelOption = { name: string; host?: string; available: boolean | null }
 
+/** 与 src-tauri/src/model_registry.rs 的 ModelEntry 对齐（这里只关心启用状态） */
+type ModelEntry = { modelName: string; enabled: boolean }
+
+const FREE_PROVIDER_ID = 'sugt-free'
+
 /** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐（这里只关心成败） */
 type ProviderTestOutcome = {
   status: 'Unknown' | 'Available' | 'Unavailable'
@@ -88,10 +93,30 @@ export function UpstreamSelector({
     onActiveProviderChange(id)
   }
 
+  /**
+   * 取注册表里被禁用的模型名。「禁用即隐藏」：这些模型不出现在控制台。
+   * 拉注册表失败时退化为 null（不过滤），只提示不报错。
+   */
+  const loadDisabledModels = async (providerId: string): Promise<Set<string> | null> => {
+    try {
+      const entries = await invoke<ModelEntry[]>('list_model_registry', {
+        input: { provider_id: providerId },
+      })
+      return new Set(entries.filter((entry) => !entry.enabled).map((entry) => entry.modelName))
+    } catch (e) {
+      pushToast(String(e), 'info')
+      return null
+    }
+  }
+
   const loadFreeRoutes = async () => {
+    const disabled = await loadDisabledModels(FREE_PROVIDER_ID)
     const choices = await invoke<FreeRouteChoice[]>('list_experimental_free_candidates')
+    const visible = disabled
+      ? choices.filter((choice) => !disabled.has(choice.model))
+      : choices
     setModels(
-      choices.map((choice) => ({
+      visible.map((choice) => ({
         name: choice.model,
         host: choice.host,
         available: null,
@@ -106,37 +131,38 @@ export function UpstreamSelector({
     setModelsBusy(true)
     try {
       if (provider.experimental) {
+        const disabled = await loadDisabledModels(FREE_PROVIDER_ID)
         const choices = await invoke<FreeRouteChoice[]>(
           'list_experimental_free_candidates',
         )
+        const visible = disabled
+          ? choices.filter((choice) => !disabled.has(choice.model))
+          : choices
         const probes = await invoke<FreeModelProbe[]>(
           'probe_experimental_free_models',
         )
         const availability = new Map(probes.map((probe) => [probe.name, probe.available]))
         setModels(
-          choices.map((choice) => ({
+          visible.map((choice) => ({
             name: choice.model,
             host: choice.host,
             available: availability.get(choice.model) ?? false,
           })),
         )
         setModelsLoaded(true)
-        if (!probes.some((probe) => probe.available)) {
+        if (!visible.some((choice) => availability.get(choice.model))) {
           pushToast(t('upstream.freeEmpty'), 'error')
         }
         onRefresh()
       } else {
-        const result = await invoke<string[]>('list_provider_models', {
-          input: {
-            base_url: provider.base_url,
-            api_key: provider.api_key,
-            protocol:
-              provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
-            vendor_id: null,
-            auto_adapt_base_url: true,
-          },
+        const entries = await invoke<ModelEntry[]>('list_model_registry', {
+          input: { provider_id: provider.id },
         })
-        setModels(result.map((name) => ({ name, available: null })))
+        setModels(
+          entries
+            .filter((entry) => entry.enabled)
+            .map((entry) => ({ name: entry.modelName, available: null })),
+        )
         setModelsLoaded(true)
       }
     } catch (e) {
@@ -198,6 +224,13 @@ export function UpstreamSelector({
     activeProvider?.model_name ??
     ''
 
+  // 当前模型被禁用后不再出现在 models 里；仍要留一项占位，否则下拉会显示成空白。
+  const currentModelName = activeProvider?.model_name ?? ''
+  const currentModelHidden =
+    modelsLoaded &&
+    currentModelName !== '' &&
+    !models.some((m) => m.name === currentModelName)
+
   return (
     <>
       <div className="access-mode-row">
@@ -234,11 +267,17 @@ export function UpstreamSelector({
               <select
                 className="app-select access-model-select"
                 value={selectValue}
-                disabled={modelsBusy || models.length === 0}
+                disabled={modelsBusy || (models.length === 0 && !currentModelHidden)}
                 onChange={(e) => void selectModel(e.target.value)}
               >
-                {models.length === 0 && (
-                  <option value="">{t('upstream.freeEmptyOption')}</option>
+                {models.length === 0 && !currentModelHidden && (
+                  <option value="">{t('upstream.noModels')}</option>
+                )}
+                {currentModelHidden && (
+                  <option value={currentModelName}>
+                    {currentModelName}
+                    {t('upstream.modelDisabled')}
+                  </option>
                 )}
                 {models.map((m) => (
                   <option key={m.name} value={m.name}>

@@ -3407,3 +3407,68 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   background: var(--surface-2, rgba(10, 16, 28, .6));
 }
 .me-route-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* 模型列表（v1.1.11 R2）：工具栏 + 表格 + 连通性色点 + 行内开关，全部走主题 token */
+.model-list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.model-list-toolbar .app-select { min-width: 200px; }
+.model-list-note { color: var(--muted); font-size: 12px; }
+.model-list-wrap {
+  overflow: auto;
+  max-height: 62vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.model-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.model-list-table th,
+.model-list-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+.model-list-table th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.model-list-table tbody tr:last-child td { border-bottom: none; }
+.model-list-table tbody tr.is-disabled td { opacity: .62; }
+.model-list-check { width: 36px; }
+.model-list-check input { width: 15px; height: 15px; accent-color: var(--accent); }
+.model-list-name { overflow-wrap: anywhere; }
+.model-list-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.model-list-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.model-list-dot.is-ok { background: var(--success); }
+.model-list-dot.is-fail { background: var(--danger); }
+.model-list-dot.is-unknown { background: var(--muted); opacity: .6; }
+.model-list-switch {
+  width: 40px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.model-list-empty {
+  padding: 18px 10px;
+  text-align: center;
+  color: var(--muted);
+}
