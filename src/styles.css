@@ -3473,6 +3473,85 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   color: var(--muted);
 }
 
+/* API Key 池（v1.1.11 T5.3）：池卡片 + key 表格 + 配额告警，全部走主题 token */
+.key-pool-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.key-pool-note { color: var(--muted); font-size: 12px; }
+.key-pool-empty-text { margin: 8px 0 0; }
+.key-pool-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.key-pool-head .field-label { flex: 1 1 170px; min-width: 0; }
+.key-pool-head .key-pool-name { flex: 1 1 220px; }
+.key-pool-actions { margin-left: auto; }
+.key-pool-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.key-pool-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.key-pool-table th,
+.key-pool-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+.key-pool-table th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.key-pool-table tbody tr:last-child td { border-bottom: none; }
+.key-pool-table tbody tr.is-disabled td { opacity: .62; }
+.key-pool-table tbody tr.is-over-quota { background: var(--danger-soft, rgba(255, 77, 109, .13)); }
+.key-pool-key { overflow-wrap: anywhere; }
+.key-pool-error-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.key-pool-quota {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.key-pool-quota input { width: 110px; }
+.key-pool-alert { display: block; margin-top: 4px; font-size: 11.5px; color: var(--danger, #ff95a7); }
+.key-pool-switch {
+  width: 40px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.key-pool-empty {
+  padding: 18px 10px;
+  text-align: center;
+  color: var(--muted);
+}
+.key-pool-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.key-pool-add input { flex: 1 1 240px; min-width: 0; }
+.key-pool-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.key-pool-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
+
 /* 模型列表顶部接入信息（v1.1.11 R4）：本机 models 地址 + 各入口 baseurl / modelid 复制，全部走主题 token */
 .access-info-card { margin-bottom: 14px; }
 .access-info-head {
