@@ -1,5 +1,7 @@
 // 桌面精灵（小酥）前端共享类型、默认值与工具函数。
-// SettingsPanel / overlay / PetStage 统一从这里取，避免与后端 model.rs 的 OverlayConfig 三处重复。
+// 流量 HUD 悬浮窗已废弃：本文件只描述精灵一个功能域，不再有模式切换与回退尺寸。
+// 物理标识（窗口 label / overlay.html / get|set_overlay_config）保持不动，
+// 让拖动、右键、视线、光标等既有 IPC 链路零改动。
 import type { TKey } from '../i18n';
 import { PET_IMAGE_SIZE } from './petManifest.generated';
 
@@ -7,17 +9,11 @@ export type OverlayConfigView = {
   enabled: boolean;
   opacity: number;
   edit: boolean;
-  show_tokens: boolean;
-  show_client: boolean;
-  show_channel: boolean;
-  show_requests: boolean;
   x: number;
   y: number;
-  layout: 'column' | 'row';
   width: number;
   height: number;
-  // 桌面精灵模式：与后端 OverlayConfig 对应
-  pet_enabled: boolean;
+  // 桌面精灵行为开关：与后端 model.rs::OverlayConfig 对应
   pet_interactive: boolean;
   pet_snap: boolean;
   pet_sleep_after_secs: number;
@@ -31,23 +27,17 @@ export type OverlayConfigView = {
   pet_click_through: boolean;
 };
 
-// -1 表示「未定位」，由后端 overlay::apply 创建时按模式落点（精灵右下角）
-// 产品默认：开悬浮窗 + 开小酥 + 全功能互动 + 不穿透
+// -1 表示「未定位」，由后端 overlay::apply 创建时落到主屏右下角
+// 产品默认：开小酥 + 全功能互动 + 不穿透
 export const DEFAULT_OVERLAY: OverlayConfigView = {
   enabled: true,
-  // 精灵默认不透明；关精灵回退 HUD 时仍可读此字段，HUD 可再调低
+  // 精灵默认不透明；该字段只作用于立绘，不再有 HUD 底板
   opacity: 1,
   edit: false,
-  show_tokens: true,
-  show_client: true,
-  show_channel: true,
-  show_requests: true,
   x: -1,
   y: -1,
-  layout: 'column',
   width: 198,
   height: 168,
-  pet_enabled: true,
   pet_interactive: true,
   pet_snap: true,
   pet_sleep_after_secs: 300,
@@ -108,9 +98,6 @@ export const readPetSize = (): (typeof PET_SIZES)[number] => {
 
 export type PetSizePreset = (typeof PET_SIZES)[number];
 
-/** 关掉精灵后回到的流量窗。不是立绘档位。 */
-export const HUD_OVERLAY_SIZE = { width: 280, height: 108 } as const;
-
 export function writePetSize(size: PetSizePreset): void {
   try {
     window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
@@ -126,36 +113,13 @@ export function petSizePatch(size: PetSizePreset): Pick<OverlayConfigView, 'widt
 }
 
 /**
- * 精灵模式和流量窗形状不同，切换时交回未定位，由后端按新尺寸重算落点。
- * 关掉时记住的立绘档位留在 localStorage，下次打开用 readPetSize()。
+ * 精灵启用开关只写 `{ enabled }`：窗口尺寸、落点、不透明度与行为开关
+ * 全部留给用户在各自设置项里独立维护，切换启用态不再连带改写。
+ * HUD 废弃前的模式补丁会连带强改这些字段，已随之删除。
  */
-export function petModePatch(
-  enabled: boolean,
-  overlay: Pick<OverlayConfigView, 'enabled'> | undefined,
-  petSize: PetSizePreset = readPetSize(),
-): Partial<OverlayConfigView> {
-  const size = enabled ? petSize : HUD_OVERLAY_SIZE;
-  return {
-    pet_enabled: enabled,
-    enabled: enabled ? true : (overlay?.enabled ?? false),
-    width: size.width,
-    height: size.height,
-    x: -1,
-    y: -1,
-    layout: 'column',
-    ...(enabled
-      ? {
-          pet_interactive: true,
-          pet_always_interactive: true,
-          pet_gaze: true,
-          pet_blink: true,
-          pet_snap: true,
-          pet_roam: true,
-          opacity: 1,
-        }
-      : { pet_interactive: false, pet_always_interactive: false }),
-  };
-}
+export const petEnabledPatch = (enabled: boolean): Pick<OverlayConfigView, 'enabled'> => ({
+  enabled,
+});
 
 export const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));

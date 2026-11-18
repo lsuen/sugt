@@ -33,7 +33,6 @@ pub(crate) fn migrate_legacy_hud_frame(overlay: &mut OverlayConfig) -> bool {
     let defaults = OverlayConfig::default();
     overlay.width = defaults.width;
     overlay.height = defaults.height;
-    overlay.layout = "column".to_string();
     if overlay.x < 0 || overlay.y < 0 {
         overlay.x = -1;
         overlay.y = -1;
@@ -229,7 +228,6 @@ pub async fn migrate_pet_full_defaults(runtime: &AppRuntime) -> Result<(), Strin
         let mut config = runtime.config.write().await;
         let o = &mut config.overlay;
         o.enabled = true;
-        o.pet_enabled = true;
         o.pet_interactive = true;
         o.pet_always_interactive = true;
         o.pet_gaze = true;
