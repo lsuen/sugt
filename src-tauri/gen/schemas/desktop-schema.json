@@ -453,10 +453,10 @@
           "markdownDescription": "Enables the open_config_dir command"
         },
         {
-          "description": "Enables traffic overlay commands",
+          "description": "Enables desktop companion (pet) window commands",
           "type": "string",
           "const": "allow-overlay-commands",
-          "markdownDescription": "Enables traffic overlay commands"
+          "markdownDescription": "Enables desktop companion (pet) window commands"
         },
         {
           "description": "Enables the probe_experimental_free_models command",
