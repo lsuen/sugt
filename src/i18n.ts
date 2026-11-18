@@ -159,6 +159,16 @@ const zh = {
   'modelList.toastProbeDone': '测试完成：{ok} 个可用，{fail} 个不可用',
   'modelList.toastToggled': '已更新 {count} 个模型的启用状态',
 
+  // 模型列表顶部接入信息（v1.1.11 R4）
+  'access.title': '本机接入',
+  'access.modelsUrlHint': '已请求 {url}',
+  'access.baseUrl': 'baseurl',
+  'access.modelId': 'modelid',
+  'access.copy': '复制',
+  'access.toastCopied': '已复制',
+  'access.loadFailed': '接入信息读取失败',
+  'access.retry': '重试',
+
   // 日志
   'logs.title': '运行日志',
   'logs.empty': '暂无日志，启动网关后这里会显示运行记录',
@@ -1158,6 +1168,15 @@ const en: Record<keyof typeof zh, string> = {
   'modelList.confirmTestAllBody': 'This will really call the upstream to test {count} models. It may take a while and consume quota. Continue?',
   'modelList.toastProbeDone': 'Tested: {ok} available, {fail} unavailable',
   'modelList.toastToggled': 'Updated {count} model(s)',
+
+  'access.title': 'Local Access',
+  'access.modelsUrlHint': 'Requested {url}',
+  'access.baseUrl': 'baseurl',
+  'access.modelId': 'modelid',
+  'access.copy': 'Copy',
+  'access.toastCopied': 'Copied',
+  'access.loadFailed': 'Failed to load access info',
+  'access.retry': 'Retry',
 
   'logs.title': 'Logs',
   'logs.empty': 'No logs yet; start the gateway to see runtime records',

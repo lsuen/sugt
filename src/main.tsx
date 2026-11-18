@@ -19,6 +19,7 @@ import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
 import { ModelListPanel } from './ModelListPanel';
+import { AccessInfoCard } from './AccessInfoCard';
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { t, type TKey } from './i18n';
@@ -904,6 +905,7 @@ function App() {
 
         {tab === 'modelList' && (
           <div className="tab-body">
+            <AccessInfoCard pushToast={pushToast} />
             <ModelListPanel
               providers={providers}
               pushToast={pushToast}
