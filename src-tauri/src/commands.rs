@@ -511,8 +511,8 @@ pub async fn set_provider_enabled(
 pub async fn test_provider(
     runtime: State<'_, AppRuntime>,
     id: String,
-) -> Result<ProviderStatus, String> {
-    let status = runtime
+) -> Result<gateway::ProviderTestOutcome, String> {
+    let outcome = runtime
         .gateway
         .test_provider(&id)
         .await
@@ -526,12 +526,12 @@ pub async fn test_provider(
             provider.last_error = source.last_error.clone();
         }
     } else if let Some(provider) = config.providers.iter_mut().find(|provider| provider.id == id) {
-        provider.status = status.clone();
+        provider.status = outcome.status.clone();
         provider.last_checked_at = Some(chrono::Utc::now());
     }
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
-    Ok(status)
+    Ok(outcome)
 }
 
 #[derive(Deserialize)]

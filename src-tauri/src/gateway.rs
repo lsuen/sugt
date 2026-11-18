@@ -19,6 +19,7 @@ use bytes::Bytes;
 use async_stream::stream;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -38,6 +39,14 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::{error, info, warn};
+
+/// 控制台「测试」的返回：既有状态枚举（前端仍按字符串比较），也有延迟/速度报告。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTestOutcome {
+    pub status: ProviderStatus,
+    pub report: crate::probe::ProbeReport,
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -442,7 +451,7 @@ impl GatewayState {
         select_provider(&config).cloned()
     }
 
-    pub async fn test_provider(&self, provider_id: &str) -> Result<ProviderStatus> {
+    pub async fn test_provider(&self, provider_id: &str) -> Result<ProviderTestOutcome> {
         let provider = {
             let inner = self.inner.read().await;
             inner
@@ -454,15 +463,18 @@ impl GatewayState {
         }
         .ok_or_else(|| anyhow!("模型配置不存在"))?;
 
-        let test_result = test_provider_connection(&self.client, &provider).await;
-        let status = match &test_result {
-            Ok(()) => ProviderStatus::Available,
-            Err(err) => {
-                warn!(provider = %provider.name, error = %err, "provider test failed");
-                ProviderStatus::Unavailable
-            }
+        let report = crate::probe::probe_llm_connectivity(&self.client, &provider).await;
+        let error_message = report.error.clone();
+        let status = if report.ok {
+            ProviderStatus::Available
+        } else {
+            warn!(
+                provider = %provider.name,
+                error = error_message.as_deref().unwrap_or_default(),
+                "provider test failed"
+            );
+            ProviderStatus::Unavailable
         };
-        let error_message = test_result.err().map(|err| err.to_string());
 
         let mut inner = self.inner.write().await;
         if let Some(item) = inner
@@ -476,7 +488,7 @@ impl GatewayState {
             item.last_error = error_message;
         }
 
-        Ok(status)
+        Ok(ProviderTestOutcome { status, report })
     }
 }
 
@@ -2800,8 +2812,8 @@ fn anthropic_error(status: StatusCode, message: &str) -> Response<Body> {
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
-/// 探测上游是否可用。真正的请求逻辑在 `probe::probe_llm_connectivity`，
-/// 这里只保留 `Result` 形态给状态探测（`GatewayState::test_provider`）使用。
+/// 探测上游是否可用，只保留 `Result` 形态（`GatewayState::test_provider` 现在直接用
+/// `probe::probe_llm_connectivity` 拿到完整报告，这里留给只需要成败的调用方）。
 pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
     let report = crate::probe::probe_llm_connectivity(client, provider).await;
     if report.ok {

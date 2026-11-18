@@ -231,8 +231,12 @@ async fn main() -> Result<()> {
             trial::ensure_allowed(&paths)?;
             let gateway = GatewayState::new(app_config.clone(), Some(paths.config_file.clone()))?;
             for provider in app_config.providers {
-                let status = gateway.test_provider(&provider.id).await?;
-                println!("{}: {:?}", provider.name, status);
+                let outcome = gateway.test_provider(&provider.id).await?;
+                // 保持 CLI 输出格式稳定，指标只作为附加信息
+                println!(
+                    "{}: {:?} ({}ms, {:.1} t/s)",
+                    provider.name, outcome.status, outcome.report.latency_ms, outcome.report.tokens_per_sec
+                );
             }
         }
         Command::Me { command } => {

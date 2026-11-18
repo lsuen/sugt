@@ -34,6 +34,23 @@ type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'set
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
+/** 与 src-tauri/src/probe.rs 的 ProbeReport 对齐（camelCase） */
+type ProbeReport = {
+  ok: boolean;
+  reply: string | null;
+  latencyMs: number;
+  tokensPerSec: number;
+  completionTokens: number;
+  estimated: boolean;
+  error: string | null;
+};
+
+/** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐 */
+type ProviderTestOutcome = {
+  status: ProviderStatus;
+  report: ProbeReport;
+};
+
 type RuntimeStatus = {
   running: boolean;
   listen_url: string;
@@ -502,18 +519,77 @@ function App() {
     await run(() => invoke('set_provider_enabled', { id: provider.id, enabled }), enabled ? t('models.toastEnabled') : t('models.toastDisabled'));
   };
 
+  /** 探测报告 → toast；文案复用模型配置弹窗的 pm.* key，保持两处口径一致。 */
+  const probeToast = (report: ProbeReport) => {
+    if (!report.ok) {
+      pushToast(t('pm.probeFail', { error: report.error ?? '—' }), 'error');
+      return;
+    }
+    const estimated = report.estimated ? t('pm.probeEstimated') : '';
+    pushToast(
+      report.tokensPerSec > 0
+        ? t('pm.probeOk', {
+          latency: report.latencyMs,
+          speed: report.tokensPerSec.toFixed(1),
+          estimated,
+        })
+        : t('pm.probeOkNoSpeed', { latency: report.latencyMs }),
+      'ok',
+    );
+  };
+
+  const testSingleProvider = async (provider: ProviderView) => {
+    setBusy(true);
+    try {
+      const outcome = await invoke<ProviderTestOutcome>('test_provider', { id: provider.id });
+      probeToast(outcome.report);
+      await refresh();
+    } catch (error) {
+      pushNotice({
+        text: formatInvokeError(error),
+        category: 'result',
+        severity: 'error',
+        action: { label: 'notice.action.viewLogs', kind: 'navigate', target: 'settings/logs' },
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const testAllProviders = async () => {
     setBusy(true);
     let available = 0;
     let unavailable = 0;
+    let latencySum = 0;
+    let speedSum = 0;
+    let okCount = 0;
+    // 探测是真实对话（单次最长 30s）：限 3 个一批并发，既不等串行长队，也不一次打满上游。
+    const batchSize = 3;
 
     try {
-      for (const provider of providers) {
-        const result = await invoke<ProviderStatus>('test_provider', { id: provider.id });
-        if (result === 'Available') available += 1;
-        if (result === 'Unavailable') unavailable += 1;
+      for (let index = 0; index < providers.length; index += batchSize) {
+        const batch = providers.slice(index, index + batchSize);
+        const outcomes = await Promise.all(
+          batch.map((provider) => invoke<ProviderTestOutcome>('test_provider', { id: provider.id })),
+        );
+        outcomes.forEach((outcome) => {
+          if (outcome.status === 'Available') available += 1;
+          if (outcome.status === 'Unavailable') unavailable += 1;
+          if (outcome.report.ok) {
+            latencySum += outcome.report.latencyMs;
+            speedSum += outcome.report.tokensPerSec;
+            okCount += 1;
+          }
+        });
       }
-      pushToast(t('models.toastTestAll', { a: available, b: unavailable }), unavailable > 0 ? 'info' : 'ok');
+      const summary = t('models.toastTestAll', { a: available, b: unavailable });
+      const metrics = okCount > 0
+        ? t('models.toastTestAllProbe', {
+          latency: Math.round(latencySum / okCount),
+          speed: (speedSum / okCount).toFixed(1),
+        })
+        : '';
+      pushToast(`${summary}${metrics}`, unavailable > 0 ? 'info' : 'ok');
       await refresh();
     } catch (error) {
       pushToast(String(error), 'error');
@@ -811,7 +887,7 @@ function App() {
                       {provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
                       <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
                       <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
-                      <button className="tiny" disabled={busy} onClick={() => run(() => invoke('test_provider', { id: provider.id }), t('models.toastTested'))}>{t('common.test')}</button>
+                      <button className="tiny" disabled={busy} onClick={() => void testSingleProvider(provider)}>{t('common.test')}</button>
                       <button className="tiny danger-link" disabled={busy} onClick={() => setDeleteTarget(provider)}><Trash2 size={14} /></button>
                     </div>
                   </div>

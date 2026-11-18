@@ -27,6 +27,12 @@ type FreeRouteChoice = { model: string; host: string }
 
 type ModelOption = { name: string; host?: string; available: boolean | null }
 
+/** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐（这里只关心成败） */
+type ProviderTestOutcome = {
+  status: 'Unknown' | 'Available' | 'Unavailable'
+  report: { ok: boolean; error: string | null }
+}
+
 type Props = {
   providers: ProviderOption[]
   activeProviderId: string
@@ -174,7 +180,15 @@ export function UpstreamSelector({
   const testCurrent = async () => {
     if (!upstreamProviderId) return
     await run(
-      () => invoke('test_provider', { id: upstreamProviderId }),
+      async () => {
+        const outcome = await invoke<ProviderTestOutcome>('test_provider', {
+          id: upstreamProviderId,
+        })
+        // 命令本身成功但探测失败时也要报错，不能静默显示「测试完成」
+        if (!outcome.report.ok) {
+          throw new Error(t('pm.probeFail', { error: outcome.report.error ?? '—' }))
+        }
+      },
       t('upstream.toastTested'),
     )
   }
