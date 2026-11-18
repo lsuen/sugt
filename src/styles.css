@@ -3554,3 +3554,101 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   line-height: 1.45;
   word-break: break-all;
 }
+
+/* 策略盒子（v1.1.11 R3）：列表 + 健康度 + 成员编辑，全部走主题 token */
+.strategy-note { color: var(--muted); font-size: 12px; }
+.strategy-wrap {
+  overflow: auto;
+  max-height: 62vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.strategy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.strategy-table th,
+.strategy-table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+.strategy-table th {
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.strategy-table tbody tr:last-child td { border-bottom: none; }
+.strategy-table tbody tr.is-disabled td { opacity: .62; }
+.strategy-public-id { overflow-wrap: anywhere; }
+.strategy-switch { width: 40px; height: 20px; accent-color: var(--accent); }
+.strategy-empty { padding: 18px 10px; text-align: center; color: var(--muted); }
+.strategy-row-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.strategy-row-actions .tiny-btn { padding: 4px 8px; font-size: 12px; }
+.strategy-health-row td { background: var(--surface); }
+.strategy-health {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.strategy-health-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.strategy-health-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.strategy-health-table th,
+.strategy-health-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.strategy-health-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.strategy-health-table tbody tr:last-child td { border-bottom: none; }
+.strategy-health-error {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+}
+.strategy-modal {
+  max-width: 780px;
+  width: min(780px, 94vw);
+  max-height: min(90vh, 840px);
+  overflow-y: auto;
+}
+.strategy-form { gap: 10px; }
+.strategy-enabled-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.strategy-enabled-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+.strategy-members { display: flex; flex-direction: column; gap: 8px; }
+.strategy-members > .tiny-btn { align-self: flex-start; }
+.strategy-member-head,
+.strategy-member-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(140px, 1.6fr) 76px 76px 36px;
+  gap: 6px;
+  align-items: center;
+}
+.strategy-member-head { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.strategy-member-row .app-select,
+.strategy-member-row input {
+  min-width: 0;
+  width: 100%;
+}

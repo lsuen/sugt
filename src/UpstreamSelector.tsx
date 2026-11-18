@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Play, RefreshCw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
@@ -25,7 +25,10 @@ type ProviderOption = {
 type FreeModelProbe = { name: string; available: boolean }
 type FreeRouteChoice = { model: string; host: string }
 
-type ModelOption = { name: string; host?: string; available: boolean | null }
+type ModelOption = { name: string; host?: string; available: boolean | null; boxName?: string }
+
+/** 与 src-tauri/src/strategy_box.rs 的 StrategyBox 对齐（这里只关心对外 model id） */
+type StrategyBoxOption = { id: string; name: string; publicModelId: string; enabled: boolean }
 
 /** 与 src-tauri/src/model_registry.rs 的 ModelEntry 对齐（这里只关心启用状态） */
 type ModelEntry = { modelName: string; enabled: boolean }
@@ -64,6 +67,24 @@ export function UpstreamSelector({
   const [models, setModels] = useState<ModelOption[]>([])
   const [modelsBusy, setModelsBusy] = useState(false)
   const [modelsLoaded, setModelsLoaded] = useState(false)
+  const [boxModels, setBoxModels] = useState<StrategyBoxOption[]>([])
+
+  // 策略盒子对外 model id 也是可选上游：挂载时拉一次，失败静默忽略，不打扰控制台。
+  useEffect(() => {
+    invoke<StrategyBoxOption[]>('list_strategy_boxes')
+      .then((list) => setBoxModels(list.filter((box) => box.enabled && box.publicModelId)))
+      .catch(() => undefined)
+  }, [])
+
+  // 模型下拉 = 当前服务商的启用模型 + 启用盒子的对外 model id（同名时以真实模型为准）。
+  const allModels = useMemo(() => {
+    const merged: ModelOption[] = [...models]
+    for (const box of boxModels) {
+      if (merged.some((model) => model.name === box.publicModelId)) continue
+      merged.push({ name: box.publicModelId, available: null, boxName: box.name })
+    }
+    return merged
+  }, [models, boxModels])
 
   const enabledProviders = providers.filter((p) => p.enabled)
   const activeProvider = providers.find((p) => p.id === upstreamProviderId)
@@ -220,7 +241,7 @@ export function UpstreamSelector({
   }
 
   const selectValue =
-    models.find((m) => m.name === activeProvider?.model_name)?.name ??
+    allModels.find((m) => m.name === activeProvider?.model_name)?.name ??
     activeProvider?.model_name ??
     ''
 
@@ -229,7 +250,7 @@ export function UpstreamSelector({
   const currentModelHidden =
     modelsLoaded &&
     currentModelName !== '' &&
-    !models.some((m) => m.name === currentModelName)
+    !allModels.some((m) => m.name === currentModelName)
 
   return (
     <>
@@ -267,10 +288,10 @@ export function UpstreamSelector({
               <select
                 className="app-select access-model-select"
                 value={selectValue}
-                disabled={modelsBusy || (models.length === 0 && !currentModelHidden)}
+                disabled={modelsBusy || (allModels.length === 0 && !currentModelHidden)}
                 onChange={(e) => void selectModel(e.target.value)}
               >
-                {models.length === 0 && !currentModelHidden && (
+                {allModels.length === 0 && !currentModelHidden && (
                   <option value="">{t('upstream.noModels')}</option>
                 )}
                 {currentModelHidden && (
@@ -279,10 +300,11 @@ export function UpstreamSelector({
                     {t('upstream.modelDisabled')}
                   </option>
                 )}
-                {models.map((m) => (
+                {allModels.map((m) => (
                   <option key={m.name} value={m.name}>
                     {m.available === true ? '● ' : m.available === false ? '○ ' : ''}
                     {m.name}
+                    {m.boxName ? t('upstream.strategyBoxTag') : ''}
                     {m.host ? ` · ${m.host}` : ''}
                   </option>
                 ))}

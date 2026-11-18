@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen,
-  ListFilter, Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
+  ListFilter, Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, Workflow, X, XCircle, Settings2,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { ModalPortal } from './ModalPortal';
@@ -19,6 +19,7 @@ import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
 import { ModelListPanel } from './ModelListPanel';
+import { StrategyBoxPanel } from './StrategyBoxPanel';
 import { AccessInfoCard } from './AccessInfoCard';
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
@@ -32,7 +33,7 @@ import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
 bootstrapTheme();
 
 // 日志与关于已并入设置子页，主 Tab 从 9 个收敛为 7 个。
-type Tab = 'dashboard' | 'models' | 'modelList' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
+type Tab = 'dashboard' | 'models' | 'modelList' | 'strategyBox' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
 
@@ -609,6 +610,7 @@ function App() {
     dashboard: t('tab.dashboard.title'),
     models: t('tab.models.title'),
     modelList: t('tab.modelList.title'),
+    strategyBox: t('tab.strategyBox.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
     me: t('tab.me.title'),
@@ -620,6 +622,7 @@ function App() {
     dashboard: t('tab.dashboard.desc'),
     models: t('tab.models.desc'),
     modelList: t('tab.modelList.desc'),
+    strategyBox: t('tab.strategyBox.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
     me: t('tab.me.desc'),
@@ -686,6 +689,7 @@ function App() {
         {/* 工具层：专业用户的可控能力，普通用户可暂不触碰 */}
         <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
         <button className={tab === 'modelList' ? 'nav active' : 'nav'} onClick={() => setTab('modelList')}><ListFilter size={18} />{t('nav.modelList')}</button>
+        <button className={tab === 'strategyBox' ? 'nav active' : 'nav'} onClick={() => setTab('strategyBox')}><Workflow size={18} />{t('nav.strategyBox')}</button>
         <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
         <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
         <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
@@ -907,6 +911,16 @@ function App() {
           <div className="tab-body">
             <AccessInfoCard pushToast={pushToast} />
             <ModelListPanel
+              providers={providers}
+              pushToast={pushToast}
+              run={run}
+            />
+          </div>
+        )}
+
+        {tab === 'strategyBox' && (
+          <div className="tab-body">
+            <StrategyBoxPanel
               providers={providers}
               pushToast={pushToast}
               run={run}
