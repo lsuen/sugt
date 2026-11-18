@@ -190,32 +190,77 @@ pub struct ModelProbe {
 - 每个成员可配：所属 provider、model、权重、优先级。
 - 控制台可选一个"策略盒子"作为上游（对外暴露一个统一 model id）。
 
-**技术设计（一期落地范围，需作者确认数据流后再细化）**
-- 新增 `src-tauri/src/strategy_box.rs`：
+**技术设计（一期落地范围）**
+
+数据模型：新增 `src-tauri/src/strategy_box.rs`，字段沿用上方 `StrategyBox` / `StrategyMember`，另加：
 
 ```rust
-pub struct StrategyBox {
-    pub id: String,
-    pub name: String,
-    pub public_model_id: String,     // 对外统一模型名
-    pub members: Vec<StrategyMember>,
-    pub mode: StrategyMode,          // priority / weighted / round_robin / speed_threshold
-    pub speed_threshold_ms: Option<u64>,
-    pub cooldown_ms: Option<u64>,
-    pub enabled: bool,
+pub struct StrategyRuntime {          // 进程内，不落盘
+    pub rotation: HashMap<String, u64>,        // box_id -> round_robin 游标
+    pub health: HashMap<String, MemberHealth>, // "{box_id}::{provider_id}::{model_name}"
 }
 
-pub struct StrategyMember {
-    pub provider_id: String,
-    pub model_name: String,
-    pub weight: u32,
-    pub priority: u32,
+pub struct MemberHealth {
+    pub last_latency_ms: Option<u64>,
+    pub consecutive_failures: u32,
+    pub cooldown_until: Option<Instant>,
+    pub last_error: Option<String>,
 }
 ```
 
-- 存储：`config_dir/strategy-boxes.json`。
-- 网关集成：在选路阶段（现有 `rewrite_model` / `upstream_attempts` 之前）插入一层"策略解析"——当请求模型名命中某策略盒子的 `public_model_id` 时，按策略从成员里选出本次实际 provider+model，再走现有转发链路。复用现有重试/换路由机制。
-- 命令：`save_strategy_box` / `list_strategy_boxes` / `delete_strategy_box` / `get_strategy_box_status`（各成员最近健康度）。
+**1) 触发键（先定这个，其余都靠它）**
+
+网关当前根本不看请求里的 model：`ordered_providers()`（gateway.rs L2320）只按 `active_provider_id` + failover 排队，`rewrite_model`（L2379）再把出站 model 改成 `provider.model_name`。所以策略盒子必须自己抢在前头。命中顺序：
+
+1. 客户端请求体里的 `model` 命中某个 `enabled` 盒子的 `public_model_id` → 用这个盒子；
+2. 否则看当前激活 provider 的 `model_name` 是否命中盒子 → 用这个盒子（这是控制台「选一个策略盒子」的落地方式：控制台只是把 `provider.model_name` 写成盒子 id）；
+3. 都不命中 → 完全走现有 `ordered_providers()`，R3 对既有行为零影响。
+
+**2) 存储与加载**
+
+- 落盘 `config_dir/strategy-boxes.json`（`{version:1, boxes:[...]}`），复用 R2 `model_registry.rs` 的原子写做法。
+- `GatewayState` 增加 `strategy: Arc<RwLock<StrategyRuntime>>` 与 `boxes: Arc<RwLock<Vec<StrategyBox>>>`；启动时从盘加载，`save_strategy_box` / `delete_strategy_box` 写盘后同步刷新内存副本（不做 mtime 轮询，避免热重载竞态）。
+- 保存校验：`public_model_id` 非空、全局唯一、且不得与任何 provider 的 `public_model_id()` 冲突；成员至少一个；`speed_threshold` 模式必须有阈值；`weighted` 模式总权重 > 0。
+
+**3) 选路：把成员展开成 attempt 链**
+
+新函数 `providers_for_request(config, boxes, client_model) -> Vec<ProviderConfig>`，返回一条**有序 attempt 链**，直接喂给现有 `upstream_attempts` 的调用点（gateway.rs L835 / L1373 / L1579 三处替换 `ordered_providers`）：
+
+- 成员 → `ProviderConfig` 克隆：按 `provider_id` 查 provider，跳过停用 provider；`model_name` 覆盖成成员自己的；成员模型若在 R2 注册表里被禁用则跳过（禁用即不参与编排，与「禁用即隐藏」同源）。
+- 排序按模式：
+  - `priority`：`priority` 升序（1 最高），整条链都保留作为降级后备。
+  - `round_robin`：`rotation[box_id] += 1` 后对健康成员轮转起点，再环形展开整条链。
+  - `weighted`：按权重做无放回加权抽样，得到一条覆盖全部成员的顺序；`weight=0` 视为不参与。
+  - `speed_threshold`：先看健康度——`now < cooldown_until` 或 `last_latency_ms > threshold` 的成员排到链尾；其余按延迟升序。没有健康成员时退化为 `priority` 顺序，不整条拒绝。
+- 链长度上限 8（盒子成员再多也只取前 8），避免一次请求打穿所有上游。
+- 实验免费通道成员：复用 `prepare_upstream_provider`，free 源的内部 failover 仍由 `upstream_attempts` 负责。
+
+**4) 健康度与冷却**
+
+- 只记内存，不落盘：每次 attempt 结束按「HTTP 2xx 且未命中错误体」判成功。成功 → `last_latency_ms = 本次耗时`、`consecutive_failures = 0`、清冷却；失败 → `consecutive_failures += 1`，若有 `cooldown_ms` 则 `cooldown_until = now + cooldown_ms`。
+- 与现有熔断器（`GatewayState::is_circuit_open` / `trip_circuit`，按 provider_id）**并存不替代**：熔断是 provider 级粗粒度，盒子健康度是成员级细粒度，两者任一命中都跳过该成员。
+- `speed_threshold` 的判据是**最近一次成功请求的耗时**（不是均值），避免历史值拖住恢复。
+
+**5) 与既有链路的关系**
+
+- `rewrite_model` / `rewrite_model_stream` 不动：客户端看到的仍然是它请求的盒子 id，上游拿到的仍是成员的 `model_name`，`client_model_of` 已经是这个口径。
+- `/v1/models`（L665）追加所有启用盒子的 `public_model_id`（`owned_by: "strategy"`），客户端才能发现这些 id。
+- 重试预算、`tool_text_retry_*`、会话提示、`response.failed`/completed notice 全部沿用现有逻辑；成员全挂时的退出方式不改。
+
+**6) 命令**
+
+- `list_strategy_boxes` / `save_strategy_box` / `delete_strategy_box`（读写 JSON + 刷新内存）。
+- `get_strategy_box_status`：返回每个成员的 `last_latency_ms / consecutive_failures / cooldown_until / last_error`，供 UI 展示健康度；只读，不再发探测请求（探测走 R2 的 `probe_models`）。
+
+**7) UI（已定：新主 tab「策略盒子」）**
+
+- sidebar 在「模型列表」之后新增主 tab「策略盒子」：列表 + 编辑弹窗（名称 / public id / 模式 / 阈值 / 冷却 / 成员增删），删除走 `ConfirmModal`。
+- 控制台 `UpstreamSelector` 在「模型」下拉里追加启用盒子的 public id，选中即写 `provider.model_name`（按触发键第 2 条生效）。
+
+**已对齐决策（2026-11-18 作者确认）**
+- 配置入口：**新主 tab「策略盒子」**。
+- 选中方式：**双入口**——客户端请求体 `model` 命中优先，其次激活 provider 的 `model_name` 命中（控制台写入）也生效。
+- `priority` 语义：**数字小优先**（1 最高），升序排序。
 
 **验收标准**
 - 能创建一个策略盒子，添加多个不同厂商的成员，保存后控制台可选它。
@@ -223,7 +268,7 @@ pub struct StrategyMember {
 - `speed_threshold`：人为把某成员延迟调高（或指向慢上游），观察请求自动切到其他成员，且冷却期内不来回抖动。
 - 成员全部失败时，走现有"预算用尽 → completed 助手提示"退出，不裸 502。
 
-> 注：这是本版本最重的一块，建议作为独立里程碑，先出数据流设计再编码。
+> 注：这是本版本最重的一块。以上数据流经作者确认后再拆 T3.1→T3.3 编码。
 
 ---
 
