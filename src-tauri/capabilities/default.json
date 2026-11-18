@@ -58,6 +58,7 @@
     "allow-workspace-rules-commands",
     "allow-takeover-commands",
     "allow-store-commands",
+    "allow-key-pool-commands",
     "allow-update-commands"
   ]
 }
