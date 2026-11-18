@@ -19,7 +19,8 @@
 | `build_pet_preview.py` | SCR-005 | 离线互动预览页 |
 | `check_pet_overlay.py` | SCR-006 | 84 项全链路契约门禁（沿革 v1.3 76/76 → v1.3.2 78/78 → v1.3.3 83/83 → **v1.4 84/84 实测通过**；v1.4 新增 C48 高度主导不变式） |
 | `pet_v14_pad_canvas.py` | SCR-022 | **v1.4 扩边**：`180×297 → 240×297` 逐帧纯 paste（左右各 +30px 全透明），`--sample` 量测、`--write` 落盘 |
-| `pet_v14_finalize_assets.py` | SCR-023 | **v1.4 落包桥接**：`assess` 挑版 / `build` 锁定 `h_ref=176.04` 归一化 + 同高量测 / `apply` 落包，取代单动作跑 `--phase frames` |
+| `pet_v14_finalize_assets.py` | SCR-023 | **v1.4 落包桥接**：`assess` 挑版 / `build` 锁定 `h_ref=176.04` 归一化 + 同高量测 / `apply` 落包，取代单动作跑 `--phase frames`；v1.5 起归一化参数全部可 CLI 覆盖 |
+| `pet_metrics.py` | SCR-024 | **v1.5 人物尺度量测**：只读逐帧量身高 / 头顶与头部下沿 / 头长 / 头身比 / 宽度 / 脚底线 / 中心 / 四边留白；`--plan` 推算裁切外扩与缩放平移传参；参数缺省读 `config/normalize-baseline.json`，CLI 可逐项覆盖，不写素材、不调 ComfyUI |
 
 逐条参数、示例、留痕文件名见上层《脚本说明手册.md》。
 
@@ -30,8 +31,8 @@
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py sync
   ```
 - 两个目录层级同为 `docs/<目录>/scripts/`，所以脚本内按 `__file__` 推导的**项目根、留痕目录、master 路径全部一致**，本目录副本可以**直接运行**，不用改代码。
-- `petctl.py doctor` 会逐项比对 `FINAL_SCRIPTS` 里 **12 个定版副本**与原件的 sha256，漂移即判红；也会检查本目录 `config/manifest.json`、`assets/su-cel-good-fixed.png` 是否与生产输入一致。
-- **只有这 12 个（外加统一入口 `petctl.py` 本身）是定版**。试片失败、v0.7 洋红底链路、Playwright 旧冒烟等 10 个脚本故意不收录，清单见《脚本说明手册》第四节。
+- `petctl.py doctor` 会逐项比对 `FINAL_SCRIPTS` 里 **13 个定版副本**与原件的 sha256，漂移即判红；也会检查本目录 `config/manifest.json`、`assets/su-cel-good-fixed.png` 是否与生产输入一致。
+- **只有这 13 个（外加统一入口 `petctl.py` 本身）是定版**。试片失败、v0.7 洋红底链路、Playwright 旧冒烟等 10 个脚本故意不收录，清单见《脚本说明手册》第四节。
 
 ## 三条最常用命令
 

@@ -62,9 +62,10 @@ SOURCE_CHECKS = [
     ("C11c", "互动说明覆盖转头/眨眼/轻碰", "src/i18n.ts",
      ["'set.petHint': '默认开启小酥全功能", "'set.petGazeHint': '开启后会转头看鼠标",
       "'set.petInteractiveHint': '开启后可拖动", "gaze follow, near listening, and poke replies"]),
-    ("C12", "悬浮窗 ACL 含全部精灵命令（含 v1.0 走动与元素穿透）",
+    ("C12", "精灵窗 ACL 含全部精灵命令（含 v1.0 走动、元素穿透与按域补丁）",
      "src-tauri/permissions/app-commands.toml",
-     ["get_overlay_config", "set_overlay_config", "overlay_start_drag", "focus_main_window",
+     ["get_overlay_config", "set_overlay_config", "patch_overlay_config",
+      "overlay_start_drag", "focus_main_window",
       "pet_finish_drag", "pet_global_cursor", "pet_roam_to", "pet_open_menu", "pet_close_menu", "pet_set_clickable", "open_settings_tab"]),
     ("C13", "悬浮窗能力含 core:default，菜单窗同权", "src-tauri/capabilities/overlay.json", ["core:default", "pet-menu"]),
     ("C20b", "后端走动夹边命令与跨平台单测", "src-tauri/src/overlay.rs",
@@ -163,7 +164,7 @@ SOURCE_CHECKS = [
     ("C36", "穿透字段保留给旧配置，默认 false 不再打开整窗", "src-tauri/src/model.rs",
      ["pub pet_click_through: bool", "pet_click_through: false", "#[serde(default)]"]),
     ("C36b", "新建精灵窗口透明区始终穿透", "src-tauri/src/overlay.rs",
-     ["let ignore = if cfg.pet_enabled { !cfg.edit } else { !hud_interactive };"]),
+     ["let ignore = !cfg.edit;"]),
     ("C36c", "只有身体、菜单和拖动可点击", "src/pet/hooks/usePetGaze.ts",
      ["const passthrough = interactive && !edit",
       "if (!passthrough) setClickable(edit)",
@@ -332,7 +333,7 @@ def read(root: Path, rel: str) -> str:
 
 
 def check_pet_mode_patches(root: Path) -> tuple[str, str, bool, str]:
-    """档位和开关精灵必须走同一套补丁，开场挥手不能再绑到点头上。"""
+    """档位与启用态各自只写自己的字段；开场挥手不能绑到点头上。"""
     config = read(root, "src/pet/config.ts")
     settings = read(root, "src/PetSettingsSection.tsx")
     menu = read(root, "src/menu.tsx")
@@ -342,20 +343,69 @@ def check_pet_mode_patches(root: Path) -> tuple[str, str, bool, str]:
     for needle in (
         "PET_SIZE_STORAGE_KEY", "readPetSize", "writePetSize",
         "localStorage.setItem", "export function petSizePatch",
-        "export function petModePatch", "HUD_OVERLAY_SIZE",
+        "export const petEnabledPatch",
     ):
         if needle not in config:
             missing.append(f"config:{needle}")
     for label, text in (("settings", settings), ("menu", menu)):
-        for needle in ("petSizePatch", "petModePatch"):
+        for needle in ("petSizePatch", "petEnabledPatch"):
             if needle not in text:
                 missing.append(f"{label}:{needle}")
     if "welcoming: greeting" in stage:
         missing.append("stage:welcoming 绑到 greeting")
     if "migrate_legacy_hud_frame" not in backend or "width >= 190" in backend:
         missing.append("backend:旧宽度一刀切还在")
-    return ("C09", "档位记忆与精灵开关走共享补丁，开场不绑点头",
+    return ("C09", "档位记忆与精灵启用走独立补丁，开场不绑点头",
             not missing, "、".join(missing) if missing else "全部命中")
+
+
+def check_hud_removed(root: Path) -> tuple[str, str, bool, str]:
+    """流量 HUD 已废弃：功能层、配置字段、设置开关、文案与样式均不得回归。
+
+    这是 1.2.0「两边独立」的防回归闸门：保留历史窗口 label / 文件名 /
+    命令名，但业务上只应存在精灵一个功能域，且所有写入点都走按域补丁。
+    """
+    files = {
+        "入口": "src/overlay.tsx",
+        "共享配置": "src/pet/config.ts",
+        "设置页": "src/SettingsPanel.tsx",
+        "精灵设置": "src/PetSettingsSection.tsx",
+        "菜单窗": "src/menu.tsx",
+        "样式": "src/overlay.css",
+        "文案": "src/i18n.ts",
+        "后端模型": "src-tauri/src/model.rs",
+        "后端窗口": "src-tauri/src/overlay.rs",
+    }
+    texts = {label: read(root, rel) for label, rel in files.items()}
+    forbidden = {
+        "入口": ("overlay-body", "pet_enabled", "get_status().traffic"),
+        "共享配置": ("export function petModePatch", "HUD_OVERLAY_SIZE", "show_requests"),
+        "设置页": ("set.overlayEnable", "switchOverlayLayout", "resetOverlay"),
+        "精灵设置": ("petModePatch", "set.overlayPos"),
+        "菜单窗": ("petModePatch", "set_overlay_config"),
+        "样式": (".overlay-box", ".overlay-body", ".overlay-line"),
+        "文案": ("'set.overlayEnable'", "'overlay.flow'", "'overlay.idle'"),
+        "后端模型": ("pub show_tokens", "pub pet_enabled", "pub layout: String"),
+        "后端窗口": ("hud_interactive", "top_right_physical", "pet_enabled"),
+    }
+    problems = []
+    for label, needles in forbidden.items():
+        for needle in needles:
+            if needle in texts[label]:
+                problems.append(f"{label}:{needle}")
+    required = {
+        "入口": ("patch_overlay_config", "PetStage"),
+        "共享配置": ("export const petEnabledPatch",),
+        "设置页": ("patch_overlay_config", "overlayDraft", "pendingWrites"),
+        "菜单窗": ("patch_overlay_config", "petEnabledPatch"),
+        "后端模型": ("pub struct OverlayConfigPatch", "pub fn apply_to"),
+    }
+    for label, needles in required.items():
+        for needle in needles:
+            if needle not in texts[label]:
+                problems.append(f"{label}:缺少 {needle}")
+    return ("C49", "流量 HUD 已删除且精灵配置单域化", not problems,
+            "、".join(problems) if problems else "无残留、按域补丁链路完整")
 
 
 def check_sources(root: Path) -> list[tuple[str, str, bool, str]]:
@@ -793,6 +843,7 @@ def main() -> int:
     try:
         rows = check_sources(root)
         rows.append(check_pet_mode_patches(root))
+        rows.append(check_hud_removed(root))
         rows.append(check_gateway_wrappers(root))
         rows.append(check_runtime_wiring(root))
         rows.append(check_no_shake(root))

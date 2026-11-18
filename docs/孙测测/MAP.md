@@ -148,8 +148,17 @@
 
 | 时间 | 检查 | 结论 | 证据 | 备注 |
 | --- | --- | --- | --- | --- |
+| 2026-11-12 02:23 | 人物身高量测 CLI 与归一化参数化复验 + 上线前回归 | **身高无问题、工具链全绿 / 放行仍拦截** | `reports/精灵v1.5身高量测CLI与参数化复验报告.md`（`SUN-SUGT-PET-V15-METRICS-01`）；`traces/精灵身高量测-20261112-022110.md`（8/8）、`/tmp/sugt-v15-metrics-gate-full.log`（G-00~G-12 退出 0） | 新增 SCR-024 与 `config/normalize-baseline.json`；25 动作身高 176~178 px / 极差 1.14%；补上单动作 5% 漂移漏检（3% 逐动作对照判据）；G-00 16/16、13 份定版副本；工作区 156 项未提交，阻断项 B-01~B-04 见报告 §9 |
+| 2026-11-12 01:45 | 技能能力验证 + 新增闲置动作 `yawn` 端到端回归 | **技能可用、代码层全绿 / 放行仍拦截** | `reports/精灵v1.5技能能力验证与新增动作回归报告.md`（`SUN-SUGT-PET-V15-SKILL-01`）；`/tmp/sugt-v15-generate.log`（ComfyUI 2 段）、`/tmp/sugt-v15-apply2.log`（51 张落包）、`traces/桌面精灵链路契约检查-20261112-014540.md`（84/84）、`traces/精灵落包逐帧验收-20261112-014159.md`（154/154） | 25 动作 / 1250 帧 / 51 张 / 5898798 B；技能 6 条缺陷已修 5 条、1 条宿主缓存留白；G-00 11/11；阻断项 B-01 ~ B-04 见报告 §9 |
+| 2026-11-12 00:26 | QD-01 ~ QD-06 修复后复验 + 上线前回归 | **代码层通过 / 放行仍拦截** | `reports/sugt1-2-0上线评估/sugt1-2-0测试报告02.md`；`traces/桌面精灵链路契约检查-20261112-002323.md`（84/84）、`traces/精灵落包逐帧验收-20261112-002329.md`（148/148）、`traces/精灵Manifest生成物校验-20261112-002549.md`（5/5）、`traces/版本一致性检查-20261112-002550.md`（7 键） | 817 项断言全通过、Rust 275/0/1、`cargo check` 0 warning；阻断项 B-01 未 commit / B-02 Windows 未构建 / B-03 升级路径未覆盖，见 02 报告 §7 |
+| 2026-11-11 23:32 | 菜单点完不消失：CloseRequested 只拦主窗口，菜单 destroy | **通过** | `cargo test --lib menu_sits_above` 1/1 | 实窗口未看 |
+| 2026-11-11 23:11 | 右键菜单改成独立小窗，不再拉大精灵透明窗 | **通过** | `traces/桌面精灵链路契约检查-20261111-231157.md`（84/84）、`npm run test:pet-state`、`tsc`、`npm run build`、`cargo test --lib menu_sits_above` 1/1 | 实窗口未看；穿透、租约、视线未改 |
+| 2026-11-11 21:16 | 闲置/漂移租约、右键菜单扩出窗口、透明区始终穿透 | **通过** | `traces/桌面精灵链路契约检查-20261111-211607.md`（84/84）、`npm run test:pet-state`、`tsc --noEmit`、`cargo test --lib pet::tests` 2/2 | 实窗口观感仍待人工看 |
+| 2026-11-11 19:26 | 精灵行为修正：开场/点头分触发、改档不挪位、隐藏回流量窗、迁移只收旧 HUD | **通过** | `traces/桌面精灵链路契约检查-20261111-192653.md`（84/84）、`npm run test:pet-state`、`npm run test:pet-manifest`、`cargo test --lib legacy_hud` 2/2 | C09 改为检查 `petSizePatch` / `petModePatch` 共享补丁 |
 | 2026-11-11 09:37 | 1.2.0 消息通知模型全量回归 | **通过** | `traces/桌面精灵链路契约检查-20261111-093717.md`、`traces/精灵落包逐帧验收-20261111-093528.md`、`traces/桌面精灵预览页生成-20261111-093108.md`、`traces/精灵Manifest生成物校验-20261111-093449.md`、`traces/精灵产物校验-20261111-093328.md` | 静态 84/84、逐帧 148/148、生成器 5/5、编码 2/2、D05 同源；`npm test`（含新增 27/27）、`tsc`、`build`、Rust 272、`doctor`、`git diff --check` 全绿 |
 
 - 新增前端冒烟脚本 `tests/notice-model-smoke.mjs`，入口 `npm run test:notice-model`，已并入 `npm test`。
 - `check_pet_overlay.py` D03 扩展为同时扫描 overlay 入口静态 import 的共享 chunk；两份镜像 sha256 一致（`petctl.py doctor` 校验）。
 - 1.2.0 首轮评估骨架与实测回填：`reports/sugt1-2-0上线评估/sugt1-2-0测试报告01.md`（附录 A 回填，只增不改）；执行契约 `docs/小精灵维护/v1.2.0执行契约.md` §9 同步回填。
+- 新增前端 Hook 冒烟脚本 `tests/notice-queue-smoke.mjs`（12 条，极简 hook 运行时），入口 `npm run test:notice-queue`，已并入 `npm test`；`tests/notice-model-smoke.mjs` 增至 30 条。
+- 修复后复验与上线前回归报告：`reports/sugt1-2-0上线评估/sugt1-2-0测试报告02.md`（`SUN-SUGT-120-REG-02`），引用 01 报告，登记 QD-01 ~ QD-06 复验结论与 B-01 ~ B-03 阻断项；执行契约 `docs/小精灵维护/v1.2.0执行契约.md` §11 同步回填现行门禁数字。

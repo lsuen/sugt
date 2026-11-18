@@ -29,6 +29,7 @@ Thumbs.db
 # Credentials and local notify payloads
 /.secrets/
 /.github-tokens*
+/0nogit-dev-source/
 scripts/.notify-*.json
 .env.dingtalk.local
 
