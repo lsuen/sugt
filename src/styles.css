@@ -3652,3 +3652,29 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   min-width: 0;
   width: 100%;
 }
+
+/* 设置 → 通用 → 维护（v1.1.11 R7）：缓存清理 + 日志保留期，只用主题 token */
+.maintenance-row { gap: 16px; }
+.maintenance-action { white-space: nowrap; }
+.maintenance-days {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.maintenance-days input {
+  width: 76px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.maintenance-days input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+.maintenance-days input:disabled { opacity: .5; cursor: not-allowed; }
+.settings-group > .maintenance-hint { margin: 0; }

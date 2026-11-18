@@ -13,6 +13,7 @@ import { LogsSection } from './LogsSection';
 import { AboutSection } from './AboutSection';
 import { SettingsOverview, type OverviewStatus } from './SettingsOverview';
 import { PetSettingsSection } from './PetSettingsSection';
+import { MaintenanceSection } from './MaintenanceSection';
 import { DEFAULT_OVERLAY, type OverlayConfigView } from './pet/config';
 export type { OverlayConfigView };
 
@@ -37,6 +38,7 @@ type AppConfigView = {
   port_fallback_enabled?: boolean;
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
+  log_retention_days?: number;
   overlay?: OverlayConfigView;
 };
 
@@ -363,6 +365,8 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+
+          <MaintenanceSection config={config} pushToast={toast} />
         </div>
       )}
 
