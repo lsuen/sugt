@@ -40,6 +40,7 @@
     "allow-uninstall-clients-env",
     "allow-update-gateway-settings",
     "allow-get-lan-share-info",
+    "allow-get-local-access-info",
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
     "allow-me-commands",

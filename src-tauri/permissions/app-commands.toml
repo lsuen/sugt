@@ -149,6 +149,11 @@ description = "Enables the get_lan_share_info command"
 commands.allow = ["get_lan_share_info"]
 
 [[permission]]
+identifier = "allow-get-local-access-info"
+description = "Enables the get_local_access_info command"
+commands.allow = ["get_local_access_info"]
+
+[[permission]]
 identifier = "allow-test-provider-draft"
 description = "Enables the test_provider_draft command"
 commands.allow = ["test_provider_draft"]

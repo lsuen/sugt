@@ -8,7 +8,7 @@ use crate::{
     model::{
         AnthropicAccessMode, AppConfig, OverlayConfig, OverlayConfigPatch, ProviderConfig,
         ProviderInput, ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior,
-        RuntimeStatus, WorkspaceRules,
+        RuntimeStatus, WorkspaceRules, CLIENT_MODEL_ID,
     },
     model_registry::{self, ModelEntry, ModelProbe},
     probe,
@@ -918,6 +918,82 @@ pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanSha
         anthropic_bases,
         copy_text,
     })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccessEntry {
+    /// 统一入口固定为 "sutai"，其余为 provider.name（中文文案由前端 i18n 补）
+    pub label: String,
+    pub base_url: String,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccessInfo {
+    /// 当前监听 host（可能是 0.0.0.0，仅供展示）
+    pub host: String,
+    pub port: u16,
+    /// 首个非 loopback IPv4；取不到回退 127.0.0.1
+    pub lan_host: String,
+    pub models_url: String,
+    pub entries: Vec<LocalAccessEntry>,
+}
+
+/// 对外的接入信息一律用 lan_host，避免把 0.0.0.0 直接给用户复制。
+fn build_local_access_info(
+    host: &str,
+    port: u16,
+    providers: &[ProviderConfig],
+    lan_hosts: &[String],
+) -> LocalAccessInfo {
+    let lan_host = lan_hosts
+        .iter()
+        .map(|candidate| candidate.trim())
+        .find(|candidate| !candidate.is_empty())
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let base_url = format!("http://{lan_host}:{port}/v1");
+    // 与 /v1/models 口径一致：启用中的 provider，按 public_model_id 去重
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(CLIENT_MODEL_ID.to_string());
+    let mut entries = vec![LocalAccessEntry {
+        label: CLIENT_MODEL_ID.to_string(),
+        base_url: base_url.clone(),
+        model_id: CLIENT_MODEL_ID.to_string(),
+    }];
+    for provider in providers.iter().filter(|provider| provider.enabled) {
+        let model_id = provider.public_model_id();
+        if !seen.insert(model_id.clone()) {
+            continue;
+        }
+        entries.push(LocalAccessEntry {
+            label: provider.name.clone(),
+            base_url: base_url.clone(),
+            model_id,
+        });
+    }
+    LocalAccessInfo {
+        host: host.to_string(),
+        port,
+        lan_host: lan_host.clone(),
+        models_url: format!("http://{lan_host}:{port}/v1/models"),
+        entries,
+    }
+}
+
+#[tauri::command]
+pub async fn get_local_access_info(
+    runtime: State<'_, AppRuntime>,
+) -> Result<LocalAccessInfo, String> {
+    let config = runtime.config.read().await;
+    Ok(build_local_access_info(
+        &config.host,
+        config.port,
+        &config.providers,
+        &crate::lan::lan_ipv4_addrs(),
+    ))
 }
 
 #[tauri::command]
@@ -1913,4 +1989,82 @@ pub fn load_runtime() -> Result<AppRuntime> {
         gateway,
         config: Arc::new(RwLock::new(config)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider(name: &str, alias: Option<&str>, enabled: bool) -> ProviderConfig {
+        let mut config = ProviderConfig::new(
+            name,
+            "openai",
+            "https://example.com/v1",
+            "sk-test",
+            "upstream-model",
+        );
+        config.enabled = enabled;
+        config.model_alias = alias.map(|alias| alias.to_string());
+        config
+    }
+
+    #[test]
+    fn local_access_falls_back_to_loopback_without_lan_address() {
+        let info = build_local_access_info("0.0.0.0", 8899, &[], &[]);
+        assert_eq!(info.lan_host, "127.0.0.1");
+        assert_eq!(info.host, "0.0.0.0");
+        assert_eq!(info.port, 8899);
+        assert!(info.models_url.ends_with("/v1/models"));
+        assert_eq!(info.models_url, "http://127.0.0.1:8899/v1/models");
+        assert_eq!(info.entries[0].base_url, "http://127.0.0.1:8899/v1");
+    }
+
+    #[test]
+    fn unified_entry_is_always_first() {
+        let providers = vec![provider("厂商 A", Some("vendor-a"), true)];
+        let lan_hosts = vec!["192.168.1.20".to_string()];
+        let info = build_local_access_info("0.0.0.0", 8899, &providers, &lan_hosts);
+        assert_eq!(info.lan_host, "192.168.1.20");
+        assert_eq!(info.models_url, "http://192.168.1.20:8899/v1/models");
+        assert_eq!(info.entries.len(), 2);
+        assert_eq!(info.entries[0].label, CLIENT_MODEL_ID);
+        assert_eq!(info.entries[0].model_id, CLIENT_MODEL_ID);
+        assert_eq!(info.entries[0].base_url, "http://192.168.1.20:8899/v1");
+        assert_eq!(info.entries[1].label, "厂商 A");
+        assert_eq!(info.entries[1].model_id, "vendor-a");
+    }
+
+    #[test]
+    fn duplicate_public_model_id_is_deduplicated() {
+        let providers = vec![
+            provider("厂商 A", Some("shared"), true),
+            provider("厂商 B", Some("shared"), true),
+        ];
+        let info = build_local_access_info("127.0.0.1", 8710, &providers, &[]);
+        assert_eq!(info.entries.len(), 2);
+        assert_eq!(info.entries[1].label, "厂商 A");
+        assert_eq!(info.entries[1].model_id, "shared");
+        assert!(info
+            .entries
+            .iter()
+            .all(|entry| entry.model_id != "厂商 B"));
+    }
+
+    #[test]
+    fn disabled_provider_is_skipped() {
+        let providers = vec![
+            provider("厂商 A", Some("vendor-a"), true),
+            provider("厂商 B", Some("vendor-b"), false),
+        ];
+        let info = build_local_access_info("127.0.0.1", 8710, &providers, &[]);
+        assert_eq!(info.entries.len(), 2);
+        assert!(info
+            .entries
+            .iter()
+            .any(|entry| entry.model_id == "vendor-a"));
+        assert!(!info
+            .entries
+            .iter()
+            .any(|entry| entry.model_id == "vendor-b"));
+    }
 }

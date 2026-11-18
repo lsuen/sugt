@@ -411,6 +411,12 @@
           "markdownDescription": "Enables the get_lan_share_info command"
         },
         {
+          "description": "Enables the get_local_access_info command",
+          "type": "string",
+          "const": "allow-get-local-access-info",
+          "markdownDescription": "Enables the get_local_access_info command"
+        },
+        {
           "description": "Enables the get_status command",
           "type": "string",
           "const": "allow-get-status",
