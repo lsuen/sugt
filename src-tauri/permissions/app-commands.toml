@@ -59,6 +59,21 @@ description = "Enables the list_provider_models command"
 commands.allow = ["list_provider_models"]
 
 [[permission]]
+identifier = "allow-list-model-registry"
+description = "Enables the list_model_registry command"
+commands.allow = ["list_model_registry"]
+
+[[permission]]
+identifier = "allow-set-model-enabled"
+description = "Enables the set_model_enabled command"
+commands.allow = ["set_model_enabled"]
+
+[[permission]]
+identifier = "allow-probe-models"
+description = "Enables the probe_models command"
+commands.allow = ["probe_models"]
+
+[[permission]]
 identifier = "allow-set-failover"
 description = "Enables the set_failover command"
 commands.allow = ["set_failover"]

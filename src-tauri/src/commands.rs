@@ -10,12 +10,14 @@ use crate::{
         ProviderInput, ProviderProtocol, ProviderStatus, ProviderView, QuitBehavior,
         RuntimeStatus, WorkspaceRules,
     },
+    model_registry::{self, ModelEntry, ModelProbe},
     probe,
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     trial,
     takeover_profiles::{self, TakeoverProfile, TakeoverProfileView},
 };
 use anyhow::Result;
+use futures_util::StreamExt;
 use serde::Deserialize;
 use std::time::Instant;
 use std::sync::Arc;
@@ -612,6 +614,172 @@ pub async fn list_provider_models(
         )
         .await
         .map_err(|err| err.to_string())
+}
+
+#[derive(Deserialize)]
+pub struct ListModelRegistryInput {
+    pub provider_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct SetModelEnabledInput {
+    pub provider_id: String,
+    pub model_name: String,
+    pub enabled: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ProbeModelsInput {
+    pub provider_id: String,
+    pub model_names: Vec<String>,
+}
+
+fn find_provider(config: &AppConfig, provider_id: &str) -> Result<ProviderConfig, String> {
+    config
+        .providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .cloned()
+        .ok_or_else(|| format!("未找到服务商: {provider_id}"))
+}
+
+/// 拉取上游模型列表并与注册表合并；普通服务商走网关现成的 models 接口，
+/// 实验免费通道直接用内置候选，不发网络请求。
+#[tauri::command]
+pub async fn list_model_registry(
+    runtime: State<'_, AppRuntime>,
+    input: ListModelRegistryInput,
+) -> Result<Vec<ModelEntry>, String> {
+    let config = runtime.config.read().await.clone();
+    let provider = find_provider(&config, &input.provider_id)?;
+    let upstream_models: Vec<String> = if crate::experimental_free::is_experimental_free(&provider) {
+        crate::experimental_free::candidate_models()
+            .into_iter()
+            .map(|model| model.to_string())
+            .collect()
+    } else {
+        let base_url = crate::model::resolve_provider_base_url(
+            provider.base_url.clone(),
+            &provider.protocol,
+            provider.auto_adapt_base_url,
+        );
+        runtime
+            .gateway
+            .list_provider_models(base_url.trim(), provider.api_key.trim(), None)
+            .await
+            .map_err(|err| err.to_string())?
+    };
+
+    let config_dir = runtime.paths.config_dir.clone();
+    let existing = model_registry::load(&config_dir);
+    let merged = model_registry::merge_entries(&existing, &provider.id, &upstream_models);
+    model_registry::save(&config_dir, &merged).map_err(|err| err.to_string())?;
+    Ok(model_registry::entries_for_provider(
+        &merged,
+        &provider.id,
+        &upstream_models,
+    ))
+}
+
+/// 启用/禁用单个模型（禁用后控制台不再展示；模型列表 tab 仍保留）。
+#[tauri::command]
+pub async fn set_model_enabled(
+    runtime: State<'_, AppRuntime>,
+    input: SetModelEnabledInput,
+) -> Result<(), String> {
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut registry = model_registry::load(&config_dir);
+    model_registry::set_enabled(
+        &mut registry,
+        &input.provider_id,
+        &input.model_name,
+        input.enabled,
+    );
+    model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())
+}
+
+/// 批量探测指定模型（限并发 3），结果一次性回写注册表并返回最新条目。
+#[tauri::command]
+pub async fn probe_models(
+    runtime: State<'_, AppRuntime>,
+    input: ProbeModelsInput,
+) -> Result<Vec<ModelEntry>, String> {
+    if input.model_names.is_empty() {
+        return Ok(vec![]);
+    }
+    let config = runtime.config.read().await.clone();
+    let provider = find_provider(&config, &input.provider_id)?;
+
+    let results: Vec<(String, ModelProbe)> =
+        if crate::experimental_free::is_experimental_free(&provider) {
+            // 与 probe_experimental_free_models 共用同一条探测路径（成功/失败、18s 超时）。
+            let probes =
+                crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
+            input
+                .model_names
+                .iter()
+                .map(|model_name| {
+                    let (ok, error) = match probes
+                        .iter()
+                        .find(|probe| probe.name.eq_ignore_ascii_case(model_name))
+                    {
+                        Some(probe) if probe.available => (true, None),
+                        Some(_) => (false, Some("模型不可用".to_string())),
+                        None => (false, Some("未匹配到该免费通道模型".to_string())),
+                    };
+                    (
+                        model_name.clone(),
+                        ModelProbe {
+                            ok,
+                            latency_ms: 0,
+                            tokens_per_sec: 0.0,
+                            completion_tokens: 0,
+                            estimated: false,
+                            probed_at: chrono::Utc::now(),
+                            error,
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            let client = runtime.gateway.http_client().clone();
+            let provider = provider.clone();
+            futures_util::stream::iter(input.model_names.iter().cloned().map(|model_name| {
+                let client = client.clone();
+                let mut target = provider.clone();
+                target.model_name = model_name.clone();
+                async move {
+                    let report = probe::probe_llm_connectivity(&client, &target).await;
+                    (
+                        model_name,
+                        ModelProbe {
+                            ok: report.ok,
+                            latency_ms: report.latency_ms,
+                            tokens_per_sec: report.tokens_per_sec,
+                            completion_tokens: report.completion_tokens,
+                            estimated: report.estimated,
+                            probed_at: chrono::Utc::now(),
+                            error: report.error,
+                        },
+                    )
+                }
+            }))
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await
+        };
+
+    let config_dir = runtime.paths.config_dir.clone();
+    let mut registry = model_registry::load(&config_dir);
+    for (model_name, probe) in results {
+        model_registry::apply_probe(&mut registry, &provider.id, &model_name, probe);
+    }
+    model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())?;
+    Ok(model_registry::entries_for_provider(
+        &registry,
+        &provider.id,
+        &input.model_names,
+    ))
 }
 
 #[tauri::command]

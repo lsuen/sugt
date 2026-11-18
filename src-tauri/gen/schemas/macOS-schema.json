@@ -429,6 +429,12 @@
           "markdownDescription": "Enables the list_experimental_free_candidates command"
         },
         {
+          "description": "Enables the list_model_registry command",
+          "type": "string",
+          "const": "allow-list-model-registry",
+          "markdownDescription": "Enables the list_model_registry command"
+        },
+        {
           "description": "Enables the list_provider_models command",
           "type": "string",
           "const": "allow-list-provider-models",
@@ -463,6 +469,12 @@
           "type": "string",
           "const": "allow-probe-experimental-free-models",
           "markdownDescription": "Enables the probe_experimental_free_models command"
+        },
+        {
+          "description": "Enables the probe_models command",
+          "type": "string",
+          "const": "allow-probe-models",
+          "markdownDescription": "Enables the probe_models command"
         },
         {
           "description": "Enables the quick_gateway_chat command",
@@ -523,6 +535,12 @@
           "type": "string",
           "const": "allow-set-failover",
           "markdownDescription": "Enables the set_failover command"
+        },
+        {
+          "description": "Enables the set_model_enabled command",
+          "type": "string",
+          "const": "allow-set-model-enabled",
+          "markdownDescription": "Enables the set_model_enabled command"
         },
         {
           "description": "Enables the set_provider_enabled command",
