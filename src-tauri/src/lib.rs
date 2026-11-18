@@ -6,6 +6,7 @@ pub mod agent_adapters;
 pub mod agent_discover;
 pub mod app;
 pub mod autostart;
+pub mod client_keys;
 pub mod clients;
 pub mod commands;
 pub mod common;

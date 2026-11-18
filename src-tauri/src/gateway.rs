@@ -75,6 +75,10 @@ pub struct GatewayState {
     key_pools_dirty: Arc<AtomicBool>,
     /// 池文件写盘串行锁：后台定时任务与命令保存不能交叉覆盖
     key_pools_io: Arc<Mutex<()>>,
+    /// 入站客户端密钥（等价于 `gateway_client_api_key` 的多 key 版本）
+    client_keys: Arc<RwLock<crate::client_keys::ClientKeysFile>>,
+    /// 入站密钥有用量增量未落盘
+    client_keys_dirty: Arc<AtomicBool>,
     /// 池文件所在目录；`None` 表示没有可持久化的配置目录（例如测试构造）
     config_dir: Option<PathBuf>,
 }
@@ -202,6 +206,14 @@ impl GatewayState {
         let key_pools_dirty = Arc::new(AtomicBool::new(false));
         let key_pools_io = Arc::new(Mutex::new(()));
 
+        // 入站客户端密钥：与池文件同一 config 目录；文件缺失/损坏时退化为空表。
+        let client_keys = config_dir
+            .as_deref()
+            .map(crate::client_keys::load)
+            .unwrap_or_default();
+        let client_keys = Arc::new(RwLock::new(client_keys));
+        let client_keys_dirty = Arc::new(AtomicBool::new(false));
+
         // 用量增量定期落盘：只在有配置目录且当前处于 tokio 运行时内时启动后台任务。
         // `GatewayState::new` 也会被同步 #[test] / Tauri 启动早期以 None 或无运行时调用，
         // 无条件 spawn 会 panic。
@@ -212,15 +224,24 @@ impl GatewayState {
             let pools = key_pools.clone();
             let dirty = key_pools_dirty.clone();
             let io = key_pools_io.clone();
+            let clients = client_keys.clone();
+            let clients_dirty = client_keys_dirty.clone();
             handle.spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(20)).await;
                     // 顺序固定：锁 → swap → 读快照 → save，避免旧快照覆盖命令刚写入的文件。
+                    // 池与入站密钥共用同一把写盘锁，两种情况都必须先看 dirty 再读快照。
                     let _guard = io.lock().await;
                     if dirty.swap(false, Ordering::Relaxed) {
                         let snapshot = pools.read().await.clone();
                         if let Err(err) = api_key_pool::save(&dir, &snapshot) {
                             warn!(error = %err, "保存 API Key 池用量失败");
+                        }
+                    }
+                    if clients_dirty.swap(false, Ordering::Relaxed) {
+                        let snapshot = clients.read().await.clone();
+                        if let Err(err) = crate::client_keys::save(&dir, &snapshot) {
+                            warn!(error = %err, "保存入站密钥用量失败");
                         }
                     }
                 }
@@ -251,6 +272,8 @@ impl GatewayState {
             key_runtime: Arc::new(Mutex::new(KeyPoolRuntime::default())),
             key_pools_dirty,
             key_pools_io,
+            client_keys,
+            client_keys_dirty,
             config_dir,
         })
     }
@@ -336,6 +359,50 @@ impl GatewayState {
         let snapshot = self.key_pools.read().await.clone();
         if let Err(err) = api_key_pool::save(dir, &snapshot) {
             warn!(error = %err, "保存 API Key 池用量失败");
+        }
+    }
+
+    /// 入站客户端密钥快照（内存为准，含最新累计用量）。
+    pub async fn client_keys_snapshot(&self) -> crate::client_keys::ClientKeysFile {
+        self.client_keys.read().await.clone()
+    }
+
+    /// 命令保存入站密钥：串行写盘后再替换内存副本，清掉 dirty。
+    ///
+    /// 与后台定时任务共用同一把写盘锁，避免后台用旧快照覆盖刚保存的配置。
+    pub async fn persist_client_keys(
+        &self,
+        file: crate::client_keys::ClientKeysFile,
+    ) -> Result<(), String> {
+        let _guard = self.key_pools_io.lock().await;
+        if let Some(dir) = self.config_dir.as_deref() {
+            crate::client_keys::save(dir, &file).map_err(|err| err.to_string())?;
+        }
+        *self.client_keys.write().await = file;
+        self.client_keys_dirty.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// 记一次入站请求：内存累加 + 置 dirty，不在这里写盘（由后台任务或 flush 落盘）。
+    pub async fn record_client_key_use(&self, key: &str) {
+        let mut file = self.client_keys.write().await;
+        if crate::client_keys::record_use(&mut file, key) {
+            self.client_keys_dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 入站密钥有未落盘增量时立即写盘；失败只告警。
+    pub async fn flush_client_keys(&self) {
+        let Some(dir) = self.config_dir.as_deref() else {
+            return;
+        };
+        let _guard = self.key_pools_io.lock().await;
+        if !self.client_keys_dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let snapshot = self.client_keys.read().await.clone();
+        if let Err(err) = crate::client_keys::save(dir, &snapshot) {
+            warn!(error = %err, "保存入站密钥用量失败");
         }
     }
 
@@ -765,6 +832,29 @@ async fn workspace_rules_preview(State(state): State<GatewayState>) -> impl Into
     }))
 }
 
+/// 入站校验通过后，把「用了池里的哪把 key」记到用量上。
+///
+/// 配置里的 `gateway_client_api_key` 与兼容占位符 `sugt-local-key` 不算池内 key，
+/// 只有真正启用中的入站密钥才累加计数。
+async fn note_client_key_use(
+    state: &GatewayState,
+    headers: &HeaderMap,
+    config: &AppConfig,
+    allowed: &[String],
+) {
+    let Some(presented) = crate::gateway_auth::extract_client_api_key(headers) else {
+        return;
+    };
+    if presented == config.gateway_client_api_key.trim()
+        || presented == crate::gateway_auth::DUMMY_LOCAL_KEY
+    {
+        return;
+    }
+    if allowed.iter().any(|key| key == &presented) {
+        state.record_client_key_use(&presented).await;
+    }
+}
+
 /// 本地代发 webhook：密钥只留配置里。无 Key 时与本地网关其它接口一致放行；错误 Key 拒绝。
 async fn notify_endpoint(
     State(state): State<GatewayState>,
@@ -772,8 +862,10 @@ async fn notify_endpoint(
     Json(body): Json<Value>,
 ) -> Response<Body> {
     let config = state.config().await;
+    let extra = state.client_keys_snapshot().await;
+    let allowed = crate::client_keys::enabled_key_strings(&extra);
     if crate::gateway_auth::extract_client_api_key(&headers).is_some()
-        && !crate::gateway_auth::validate_client_request(&headers, &config)
+        && !crate::gateway_auth::validate_client_request_with_keys(&headers, &config, &allowed)
     {
         return (
             StatusCode::UNAUTHORIZED,
@@ -781,6 +873,7 @@ async fn notify_endpoint(
         )
             .into_response();
     }
+    note_client_key_use(&state, &headers, &config, &allowed).await;
     let rules = &config.workspace_rules;
     if !rules.notify_enabled {
         return (
@@ -933,12 +1026,15 @@ async fn proxy_openai(
 ) -> Response<Body> {
     let config = state.config().await;
     let path = request.uri().path().trim_start_matches('/').to_string();
-    if !crate::gateway_auth::validate_client_request(&headers, &config) {
+    let extra = state.client_keys_snapshot().await;
+    let allowed = crate::client_keys::enabled_key_strings(&extra);
+    if !crate::gateway_auth::validate_client_request_with_keys(&headers, &config, &allowed) {
         state
             .record_inbound_denied(&headers, &path, "invalid gateway api key")
             .await;
         return json_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
+    note_client_key_use(&state, &headers, &config, &allowed).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = %path, "inbound openai-compatible request");
     let active_guard = state.begin_request();
@@ -966,12 +1062,15 @@ async fn proxy_anthropic_messages(
     request: Request<Body>,
 ) -> Response<Body> {
     let config = state.config().await;
-    if !crate::gateway_auth::validate_client_request(&headers, &config) {
+    let extra = state.client_keys_snapshot().await;
+    let allowed = crate::client_keys::enabled_key_strings(&extra);
+    if !crate::gateway_auth::validate_client_request_with_keys(&headers, &config, &allowed) {
         state
             .record_inbound_denied(&headers, "v1/messages", "invalid gateway api key")
             .await;
         return anthropic_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
     }
+    note_client_key_use(&state, &headers, &config, &allowed).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
     info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
     let active_guard = state.begin_request();

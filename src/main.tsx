@@ -22,6 +22,7 @@ import { RequestRulesSection } from './RequestRulesSection';
 import { ModelListPanel } from './ModelListPanel';
 import { StrategyBoxPanel } from './StrategyBoxPanel';
 import { ApiKeyPoolPanel } from './ApiKeyPoolPanel';
+import { ClientKeyPanel } from './ClientKeyPanel';
 import { AccessInfoCard } from './AccessInfoCard';
 import { createPreviewMeApi, MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
@@ -41,7 +42,7 @@ type NavLeaf =
   | 'dashboard' | 'me'
   | 'models' | 'modelList' | 'strategyBox' | 'keyPool'
   | 'rulesInject' | 'rulesRewrite'
-  | 'clients' | 'skills'
+  | 'clients' | 'skills' | 'clientKeys'
   | 'settings';
 
 type NavLeafDef = { id: NavLeaf; labelKey: TKey };
@@ -84,6 +85,7 @@ const NAV_GROUPS: NavGroupDef[] = [
     leaves: [
       { id: 'clients', labelKey: 'nav.clients' },
       { id: 'skills', labelKey: 'nav.skills' },
+      { id: 'clientKeys', labelKey: 'nav.clientKeys' },
     ],
   },
   {
@@ -732,6 +734,7 @@ function App() {
     rulesRewrite: t('tab.rulesRewrite.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
+    clientKeys: t('tab.clientKeys.title'),
     settings: t('tab.settings.title'),
   };
 
@@ -746,6 +749,7 @@ function App() {
     rulesRewrite: t('tab.rulesRewrite.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
+    clientKeys: t('tab.clientKeys.desc'),
     settings: t('tab.settings.desc'),
   };
 
@@ -1118,6 +1122,12 @@ function App() {
               agentFilter={skillsAgentFilter}
               onAgentFilterChange={setSkillsAgentFilter}
             />
+          </div>
+        )}
+
+        {tab === 'clientKeys' && (
+          <div className="tab-body">
+            <ClientKeyPanel pushToast={pushToast} />
           </div>
         )}
 
