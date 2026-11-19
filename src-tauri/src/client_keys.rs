@@ -206,22 +206,10 @@ pub fn enabled_key_strings(file: &ClientKeysFile) -> Vec<String> {
         .collect()
 }
 
-/// 累计一次请求：`request_count + 1`，`last_used_at` 写 RFC3339 UTC。
-pub fn record_use(file: &mut ClientKeysFile, key: &str) -> bool {
-    let target = key.trim();
-    match file.keys.iter_mut().find(|entry| entry.key.trim() == target) {
-        Some(entry) => {
-            entry.usage.request_count = entry.usage.request_count.saturating_add(1);
-            entry.usage.last_used_at = Some(now_rfc3339());
-            true
-        }
-        None => false,
-    }
-}
-
 /// 记一次入站请求，并更新对应客户端（`label + ip`）的计数。
 ///
-/// 与 [`record_use`] 的区别：这里同时维护 `usage.clients`，是「谁在用」的数据来源。
+/// `usage.clients` 是「谁在用」的数据来源：同一个密钥被 Codex / Claude / 浏览器
+/// 分别使用时各占一条记录。
 pub fn record_request(file: &mut ClientKeysFile, key: &str, label: &str, ip: &str) -> bool {
     let target = key.trim();
     let Some(entry) = file.keys.iter_mut().find(|entry| entry.key.trim() == target) else {
@@ -609,16 +597,17 @@ mod tests {
     }
 
     #[test]
-    fn record_use_and_error_hit_only_matching_key() {
+    fn record_request_and_error_hit_only_matching_key() {
         let mut file = ClientKeysFile {
             version: KEYS_VERSION,
             keys: vec![entry("k1", "一", "sk-1"), entry("k2", "二", "sk-2")],
         };
-        assert!(record_use(&mut file, " sk-1 "));
+        assert!(record_request(&mut file, " sk-1 ", "codex", "127.0.0.1"));
         assert_eq!(file.keys[0].usage.request_count, 1);
         assert!(file.keys[0].usage.last_used_at.is_some());
+        assert_eq!(file.keys[0].usage.clients.len(), 1);
         assert_eq!(file.keys[1].usage.request_count, 0);
-        assert!(!record_use(&mut file, "sk-unknown"));
+        assert!(!record_request(&mut file, "sk-unknown", "codex", "127.0.0.1"));
 
         let long = "错".repeat(1000);
         assert!(record_error(&mut file, "sk-2", &long));
