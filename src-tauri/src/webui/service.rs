@@ -1,8 +1,9 @@
 //! WebUI service 层：把 RPC cmd 映射到底层模块调用。
 //!
 //! 设计约定：
-//! - commands.rs 一行不改。这里复刻 command 体中「仅依赖 AppRuntime」的部分，
-//!   直接调用底层模块（config/store/client_keys/...）这些真相源，不经过 Tauri State。
+//! - provider / model 域复用 `crate::commands` 的 `*_core` 业务实现（单一真相源），
+//!   这里只做参数解析（`field` / `single`）与结果序列化，不复制命令体。
+//!   其余域仍直接调用底层模块（config/store/client_keys/...）这些真相源，不经过 Tauri State。
 //! - 只覆盖 P0+P1；窗口控制、overlay、宠物、系统文件打开等桌面专属能力不暴露。
 //! - 入参统一 `serde_json::Value`，helper 反序列化为命令原本的入参类型，
 //!   保证与 Tauri 通道的 JSON 语义一致（字段名、可选值、大小写）。
@@ -69,8 +70,9 @@ fn to_value<T: serde::Serialize>(v: T) -> Result<Value, String> {
 }
 
 // ============================================================================
-// 以下为 commands.rs 中「私有 helper」的等价实现（commands.rs 一行不改）。
-// 只复刻确实被 P0+P1 命令依赖的部分。能直接调用的 pub(crate) helper 不重复实现。
+// 以下为 commands.rs 中「私有 helper」的等价实现。
+// provider / model 域已改为复用 `crate::commands::*_core`，不再重复实现领域 helper；
+// 这里只保留确实被其它域命令依赖的部分。
 // ============================================================================
 
 async fn gateway_is_reachable(config: &AppConfig) -> bool {

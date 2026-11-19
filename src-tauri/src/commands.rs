@@ -151,11 +151,19 @@ pub fn new_webui_handle() -> WebUiHandle {
     Arc::new(Mutex::new(None))
 }
 
-fn webui_settings_view(enabled: bool, port: u16) -> WebUiSettingsView {
-    let lan_addresses = crate::lan::lan_ipv4_addrs()
-        .into_iter()
-        .map(|ip| format!("http://{ip}:{port}"))
-        .collect();
+fn webui_settings_view(enabled: bool, port: u16, allow_lan: bool) -> WebUiSettingsView {
+    // 未开启「局域网访问」时 WebUI 只绑回环，此时列出 LAN 地址等于展示不可达入口。
+    let mut lan_addresses = Vec::new();
+    if enabled {
+        lan_addresses.push(format!("http://127.0.0.1:{port}"));
+        if allow_lan {
+            lan_addresses.extend(
+                crate::lan::lan_ipv4_addrs()
+                    .into_iter()
+                    .map(|ip| format!("http://{ip}:{port}")),
+            );
+        }
+    }
     WebUiSettingsView {
         enabled,
         port,
@@ -1473,7 +1481,11 @@ pub async fn get_webui_settings(
     runtime: State<'_, AppRuntime>,
 ) -> Result<WebUiSettingsView, String> {
     let config = runtime.config.read().await;
-    Ok(webui_settings_view(config.webui_enabled, config.webui_port))
+    Ok(webui_settings_view(
+        config.webui_enabled,
+        config.webui_port,
+        config.allow_lan_access,
+    ))
 }
 
 /// GUI 设置页开关持久化入口：写 config 并即时 start/stop，不改 CLI `--webui` 的本次运行语义。
@@ -1536,11 +1548,12 @@ pub async fn set_webui_settings(
         config.webui_port = input.port;
     }
     runtime.persist().await.map_err(|err| err.to_string())?;
+    let allow_lan = runtime.config.read().await.allow_lan_access;
 
     if let Some(slot) = slot {
         *slot.lock().await = new_server;
     }
-    Ok(webui_settings_view(input.enabled, input.port))
+    Ok(webui_settings_view(input.enabled, input.port, allow_lan))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

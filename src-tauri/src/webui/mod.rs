@@ -1,10 +1,13 @@
 //! 局域网 WebUI 管理层。
 //!
-//! 架构约定（2026-11-19）：
+//! 架构约定（2026-11-20 订正）：
 //! - 独立 axum listener，不并入 gateway router——后者 State 是 `GatewayState`，
 //!   与管理面所需的 `AppRuntime` 不是同一类型，硬并会引入强绑定。
 //! - 统一 RPC 入口 `POST /api/invoke`：前端命令名保持不变，transport 层只换通道。
-//! - 业务逻辑复用底层模块（config/store/client_keys/...），commands.rs 一行不改。
+//! - 业务实现只有一份：`commands.rs` 的 `*_core` 是桌面端与 WebUI 的共用入口，
+//!   `service.rs` 只负责参数解析与结果序列化，不再复制命令体。
+//! - 监听地址跟随「局域网访问」：未开启 `allow_lan_access` 时只绑回环，
+//!   避免管理面在用户不知情时暴露到所有网卡（含公网 IP）。
 //! - `webui_enabled = false` 时根本不构建/不监听，零内存零端口占用。
 
 pub mod api;
@@ -53,7 +56,14 @@ pub async fn start_on_port(runtime: &AppRuntime, port: u16) -> anyhow::Result<We
 }
 
 async fn start_listener(runtime: &AppRuntime, port: u16) -> anyhow::Result<WebUiServer> {
-    let bind_addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // 管理面默认只对本机开放；要让同网段设备访问，必须先显式开启「局域网访问」
+    // （与网关的 opt-in 语义一致），否则等于把改配置的入口暴露给所有网卡。
+    let allow_lan = runtime.config.read().await.allow_lan_access;
+    let bind_addr = if allow_lan {
+        SocketAddr::from(([0, 0, 0, 0], port))
+    } else {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    };
     let listener = tokio::net::TcpListener::bind(bind_addr).await.map_err(|err| {
         anyhow::anyhow!(
             "WebUI 端口 {} 绑定失败：{}（可用 --webui-port 更换）",

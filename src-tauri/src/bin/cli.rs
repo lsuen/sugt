@@ -273,9 +273,12 @@ async fn main() -> Result<()> {
             };
             if let Some(server) = &webui_server {
                 let port = server.addr.port();
-                println!("SUGT WebUI listening on http://0.0.0.0:{}", port);
-                for ip in lan::lan_ipv4_addrs() {
-                    println!("  LAN: http://{}:{}", ip, port);
+                // 实际监听地址跟随「局域网访问」开关：未开 LAN 时只绑回环。
+                println!("SUGT WebUI listening on http://{}", server.addr);
+                if !server.addr.ip().is_loopback() {
+                    for ip in lan::lan_ipv4_addrs() {
+                        println!("  LAN: http://{}:{}", ip, port);
+                    }
                 }
                 println!("  本机: http://127.0.0.1:{}", port);
                 println!("  登录密码：gateway_client_api_key（见配置文件）");
@@ -314,8 +317,12 @@ async fn main() -> Result<()> {
                     println!("webui_port={}", cfg.webui_port);
                     if cfg.webui_enabled {
                         println!("访问地址（GUI 启动后可用，或 CLI 用 serve --webui）：");
-                        for ip in lan::lan_ipv4_addrs() {
-                            println!("  http://{}:{}", ip, cfg.webui_port);
+                        if cfg.allow_lan_access {
+                            for ip in lan::lan_ipv4_addrs() {
+                                println!("  http://{}:{}", ip, cfg.webui_port);
+                            }
+                        } else {
+                            println!("  局域网访问未开启：WebUI 只绑回环，仅本机可访问");
                         }
                         println!("  http://127.0.0.1:{}", cfg.webui_port);
                     }
