@@ -5,8 +5,7 @@
 // 靠近、menuOpen 本身都不能把整窗解开，否则侧栏空白和透明边会变成点击墙。
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, getCurrentWindow } from '../../transport';
 import { clamp, figureHitRect, FULL_HITBOX, pointInsideFigure } from '../config';
 import {
   PET_AUTO_ACTIONS,

@@ -53,6 +53,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build WebUI assets (embedded into CLI)
+        run: npm run build:web
+
       - name: Build NSIS installer and CLI
         shell: pwsh
         run: |
@@ -165,6 +168,17 @@ jobs:
             pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build WebUI assets (embedded into CLI)
+        run: npm run build:web
 
       - name: Build sugt-cli (headless gateway)
         run: cargo build --release --bin sugt-cli --manifest-path src-tauri/Cargo.toml

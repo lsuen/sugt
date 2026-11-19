@@ -5,7 +5,7 @@
  * 命令为 list_api_key_pools / save_api_key_pool / delete_api_key_pool / reset_key_usage。
  * 删除池会连同该池全部 key 与用量记录一起移除，统一走 ConfirmModal。 */
 import { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 import { t, type TKey } from './i18n'

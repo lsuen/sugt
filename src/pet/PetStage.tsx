@@ -2,8 +2,7 @@
 // 纯状态机在 ./petState.ts，光标/拖动/行为分别在 ./hooks，配置类型在 ./config。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { invoke, listen } from '../transport';
 import { t, type TKey } from '../i18n';
 import {
   canEmitStateNotice,

@@ -50,5 +50,6 @@ pub mod trial;
 pub mod upstream_resilience;
 pub mod workspace_rules;
 pub mod window_state;
+pub mod webui;
 
 pub use app::run;

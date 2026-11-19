@@ -1,5 +1,5 @@
 use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, pet, store, tray, update};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
@@ -9,6 +9,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(runtime)
+        .manage(commands::new_webui_handle())
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::start_gateway,
@@ -45,6 +46,8 @@ pub fn run() {
             commands::reset_client_key_usage,
             commands::set_failover,
             commands::update_gateway_settings,
+            commands::get_webui_settings,
+            commands::set_webui_settings,
             commands::get_lan_share_info,
             commands::get_local_access_info,
             commands::set_autostart,
@@ -146,6 +149,25 @@ pub fn run() {
                     let watchdog_runtime = runtime.inner().clone();
                     gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
                     commands::maybe_autostart_gateway(&runtime).await;
+                    // 按配置启动 WebUI（关闭时零占用）；句柄交给 state，进程退出时 stop。
+                    if let Some(slot) = handle
+                        .try_state::<commands::WebUiHandle>()
+                        .map(|state| state.inner().clone())
+                    {
+                        match crate::webui::start_if_enabled(runtime.inner()).await {
+                            Ok(Some(server)) => {
+                                tracing::info!(
+                                    addr = %server.addr,
+                                    "WebUI 已按配置启动，同网段可通过浏览器管理"
+                                );
+                                *slot.lock().await = Some(server);
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                tracing::warn!(error = %err, "按配置启动 WebUI 失败，GUI 主流程不受影响");
+                            }
+                        }
+                    }
                     // 启动后恢复流量悬浮窗（若上次开启过）
                     let mut overlay_cfg = runtime.config.read().await.overlay.clone();
                     if let Err(err) = crate::overlay::apply(&handle, &mut overlay_cfg).await {
@@ -211,8 +233,24 @@ pub fn run() {
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running SUGT");
+        .build(tauri::generate_context!())
+        .expect("error while building SUGT")
+        .run(|app_handle, event| {
+            // 主窗关到托盘不触发 Exit，WebUI 继续跑；仅真正退出进程时才停监听。
+            if let RunEvent::Exit = event {
+                if let Some(slot) = app_handle
+                    .try_state::<commands::WebUiHandle>()
+                    .map(|state| state.inner().clone())
+                {
+                    tauri::async_runtime::block_on(async move {
+                        if let Some(server) = slot.lock().await.take() {
+                            server.stop().await;
+                            tracing::info!("WebUI 已随进程退出停止");
+                        }
+                    });
+                }
+            }
+        });
 }
 
 /// 日志保留期清理：启动立即执行一次，之后每 24 小时一次。

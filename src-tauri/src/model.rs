@@ -177,6 +177,16 @@ pub struct AppConfig {
     /// 日志自动清理保留天数；0 表示不自动清理。默认 7，上限 90。
     #[serde(default = "default_log_retention_days")]
     pub log_retention_days: u32,
+    /// 是否启用局域网 WebUI 管理面板。默认关闭，关闭时不监听、不占内存。
+    #[serde(default)]
+    pub webui_enabled: bool,
+    /// WebUI 监听端口，默认 8788（与网关 8787 分离）。
+    #[serde(default = "default_webui_port")]
+    pub webui_port: u16,
+}
+
+fn default_webui_port() -> u16 {
+    8788
 }
 
 /// 日志保留期默认值（天）。
@@ -608,6 +618,8 @@ impl Default for AppConfig {
             upstream_retry_budget_ms: None,
             upstream_retry_single_ms: None,
             log_retention_days: default_log_retention_days(),
+            webui_enabled: false,
+            webui_port: default_webui_port(),
         }
     }
 }

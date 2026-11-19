@@ -4,9 +4,7 @@
 import { useEffect, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, listen, getCurrentWindow } from './transport';
 import './overlay.css';
 import { PetStage } from './pet/PetStage';
 import type { OverlayConfigView, OverlayStatus } from './pet/config';

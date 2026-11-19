@@ -194,6 +194,16 @@ description = "Enables the update_gateway_settings command"
 commands.allow = ["update_gateway_settings"]
 
 [[permission]]
+identifier = "allow-get-webui-settings"
+description = "Enables the get_webui_settings command"
+commands.allow = ["get_webui_settings"]
+
+[[permission]]
+identifier = "allow-set-webui-settings"
+description = "Enables the set_webui_settings command"
+commands.allow = ["set_webui_settings"]
+
+[[permission]]
 identifier = "allow-get-lan-share-info"
 description = "Enables the get_lan_share_info command"
 commands.allow = ["get_lan_share_info"]

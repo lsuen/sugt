@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
 async fn gateway_is_reachable(config: &AppConfig) -> bool {
@@ -141,6 +141,25 @@ impl AppRuntime {
             }
         }
         Ok(())
+    }
+}
+
+/// GUI 在 setup 时 manage 此句柄；command 借它即时 start/stop WebUI，进程退出时 stop。
+pub type WebUiHandle = Arc<Mutex<Option<crate::webui::WebUiServer>>>;
+
+pub fn new_webui_handle() -> WebUiHandle {
+    Arc::new(Mutex::new(None))
+}
+
+fn webui_settings_view(enabled: bool, port: u16) -> WebUiSettingsView {
+    let lan_addresses = crate::lan::lan_ipv4_addrs()
+        .into_iter()
+        .map(|ip| format!("http://{ip}:{port}"))
+        .collect();
+    WebUiSettingsView {
+        enabled,
+        port,
+        lan_addresses,
     }
 }
 
@@ -1368,6 +1387,96 @@ pub async fn update_gateway_settings(
     Ok(snapshot)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebUiSettingsInput {
+    pub enabled: bool,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebUiSettingsView {
+    pub enabled: bool,
+    pub port: u16,
+    /// 同网段可访问的 http://IP:port 地址列表。
+    pub lan_addresses: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_webui_settings(
+    runtime: State<'_, AppRuntime>,
+) -> Result<WebUiSettingsView, String> {
+    let config = runtime.config.read().await;
+    Ok(webui_settings_view(config.webui_enabled, config.webui_port))
+}
+
+/// GUI 设置页开关持久化入口：写 config 并即时 start/stop，不改 CLI `--webui` 的本次运行语义。
+#[tauri::command]
+pub async fn set_webui_settings(
+    app: AppHandle,
+    runtime: State<'_, AppRuntime>,
+    input: WebUiSettingsInput,
+) -> Result<WebUiSettingsView, String> {
+    let (gateway_port, old_enabled, old_port) = {
+        let config = runtime.config.read().await;
+        (config.port, config.webui_enabled, config.webui_port)
+    };
+    if input.port == 0 {
+        return Err("WebUI 端口不能为 0".to_string());
+    }
+    if input.port == gateway_port {
+        return Err(format!("WebUI 端口 {} 与网关端口冲突，请更换", input.port));
+    }
+
+    // 先停旧实例释放端口；启动失败则尽量恢复旧实例，且配置保持不变。
+    let slot = app
+        .try_state::<WebUiHandle>()
+        .map(|state| state.inner().clone());
+    if let Some(slot) = &slot {
+        if let Some(server) = slot.lock().await.take() {
+            server.stop().await;
+        }
+    }
+
+    let new_server = if input.enabled {
+        match crate::webui::start_on_port(runtime.inner(), input.port).await {
+            Ok(server) => {
+                tracing::info!(addr = %server.addr, "WebUI 已即时启用");
+                Some(server)
+            }
+            Err(err) => {
+                if old_enabled && old_port != 0 && old_port != input.port {
+                    match crate::webui::start_on_port(runtime.inner(), old_port).await {
+                        Ok(server) => {
+                            if let Some(slot) = &slot {
+                                *slot.lock().await = Some(server);
+                            }
+                        }
+                        Err(restore_err) => {
+                            warn!(error = %restore_err, "恢复旧 WebUI 实例失败");
+                        }
+                    }
+                }
+                return Err(format!("WebUI 启动失败：{err}"));
+            }
+        }
+    } else {
+        None
+    };
+
+    {
+        let mut config = runtime.config.write().await;
+        config.webui_enabled = input.enabled;
+        config.webui_port = input.port;
+    }
+    runtime.persist().await.map_err(|err| err.to_string())?;
+
+    if let Some(slot) = slot {
+        *slot.lock().await = new_server;
+    }
+    Ok(webui_settings_view(input.enabled, input.port))
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LanShareInfo {
     pub enabled: bool,
@@ -1384,11 +1493,16 @@ pub struct LanShareInfo {
 #[tauri::command]
 pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanShareInfo, String> {
     let config = runtime.config.read().await.clone();
+    Ok(lan_share_info_from_config(&config))
+}
+
+/// 纯逻辑：从配置生成局域网分享信息。WebUI service 复用此函数，避免与 Tauri 通道漂移。
+pub fn lan_share_info_from_config(config: &AppConfig) -> LanShareInfo {
     let port = config.port;
     let api_key = config.gateway_client_api_key.clone();
     let model_id = "sutai".to_string();
     if !config.allow_lan_access {
-        return Ok(LanShareInfo {
+        return LanShareInfo {
             enabled: false,
             port,
             api_key,
@@ -1397,7 +1511,7 @@ pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanSha
             openai_bases: Vec::new(),
             anthropic_bases: Vec::new(),
             copy_text: String::new(),
-        });
+        };
     }
     let hosts = crate::lan::lan_ipv4_addrs();
     let openai_bases: Vec<String> = hosts
@@ -1420,7 +1534,7 @@ pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanSha
         lines.push(format!("Model: {model_id}"));
         lines.join("\n")
     };
-    Ok(LanShareInfo {
+    LanShareInfo {
         enabled: true,
         port,
         api_key,
@@ -1429,7 +1543,7 @@ pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanSha
         openai_bases,
         anthropic_bases,
         copy_text,
-    })
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1500,12 +1614,17 @@ pub async fn get_local_access_info(
     runtime: State<'_, AppRuntime>,
 ) -> Result<LocalAccessInfo, String> {
     let config = runtime.config.read().await;
-    Ok(build_local_access_info(
+    Ok(local_access_info_from_config(&config))
+}
+
+/// 纯逻辑：从配置生成本地接入信息。WebUI service 复用此函数。
+pub fn local_access_info_from_config(config: &AppConfig) -> LocalAccessInfo {
+    build_local_access_info(
         &config.host,
         config.port,
         &config.providers,
         &crate::lan::lan_ipv4_addrs(),
-    ))
+    )
 }
 
 #[tauri::command]

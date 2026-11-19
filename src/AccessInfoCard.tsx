@@ -2,7 +2,7 @@
  * 作用：把本机网关的 `/v1/models` 地址和每条 baseurl / modelid 摊出来，一键复制去接客户端。
  * 数据来自后端 get_local_access_info（局域网 IP + 端口 + 各入口），失败只在本卡片内提示，不刷 toast。 */
 import React, { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Copy } from 'lucide-react'
 import { t } from './i18n'
 

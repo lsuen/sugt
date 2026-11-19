@@ -3,7 +3,7 @@
  * 逐条启用或禁用。数据来自 model_registry 的三条命令，registry 状态与 provider 配置解耦。
  * 批量探测按 3 条一批调用，批间 await，保证 UI 不卡死且进度逐批回填。 */
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Play, RefreshCw } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 import { t } from './i18n'

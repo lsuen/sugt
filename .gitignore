@@ -116,3 +116,8 @@ __pycache__/
 /docs/小精灵维护/**/*.jpg
 /docs/小精灵维护/**/*.jpeg
 /docs/小精灵维护/**/*.gif
+
+# WebUI 前端产物：CI/本地由 `npm run build:web` 生成；只保留占位 index.html 保证 cargo build 可用
+/src-tauri/webui-dist/assets/
+/src-tauri/webui-dist/.DS_Store
+

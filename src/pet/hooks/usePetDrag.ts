@@ -2,8 +2,7 @@
 // 拖动期间通过窗口 onMoved 累计速度样本，快速松手时先跑一段衰减滑动再吸附落位。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, RefObject, MouseEvent as ReactMouseEvent } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, getCurrentWindow } from '../../transport';
 import { clamp, easeInOut } from '../config';
 import { AUTO, poseHoldMs } from '../petState';
 

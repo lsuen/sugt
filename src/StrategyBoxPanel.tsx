@@ -5,7 +5,7 @@
  * 保存 / 删除 / 健康度走 list/save/delete/get_strategy_box_status 四条命令。
  * 删除会从网关撤掉对外模型 id，属于不可撤销动作，统一走 ConfirmModal。 */
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 import { ModalPortal } from './ModalPortal'

@@ -1,8 +1,7 @@
 // 右键菜单独立窗口。不挂在精灵透明窗里，也不改那扇窗的大小。
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { invoke, emit, listen } from './transport';
 import { PetContextMenu } from './pet/PetContextMenu';
 import {
   petEnabledPatch,

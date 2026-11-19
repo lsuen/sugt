@@ -2,7 +2,7 @@
  * 作用：清理技能仓下载缓存 / 模型探测结果，并配置日志自动清理周期。
  * 只调用维护命令，不改服务商、主题、桌宠等配置；删除类操作统一走 ConfirmModal。 */
 import React, { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { ConfirmModal } from './ConfirmModal';
 import { t } from './i18n';
 

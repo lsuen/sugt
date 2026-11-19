@@ -8,6 +8,7 @@
     "dev:app": "tauri dev",
     "dev:app:store": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SUGT_PRODUCT='store'; npm run tauri dev\"",
     "build": "tsc && vite build",
+    "build:web": "vite build --mode web",
     "tauri": "tauri",
     "tauri:build": "tauri build",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Play, RefreshCw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
 

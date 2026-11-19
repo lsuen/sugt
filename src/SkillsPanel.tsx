@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import {
   ArrowLeft, ChevronDown, Download, FolderOpen, MoreHorizontal, Plus, PlugZap, RefreshCw, Search, Settings2, Trash2, Unplug,
 } from 'lucide-react';

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { FileSearch, FolderOpen, Pencil, Plus, PlugZap, Search, Settings2, ShieldCheck, Trash2, Unplug, Wrench } from 'lucide-react';
 import { TakeoverProfileModal } from './TakeoverProfileModal';
 import { TakeoverPreviewModal } from './TakeoverPreviewModal';

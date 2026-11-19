@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../transport';
 import { StoreModal } from './StoreModal';
 import type { StoreClientTab } from './types';
 import { t } from '../i18n';

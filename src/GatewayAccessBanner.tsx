@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Code2, Copy, MessageSquare } from 'lucide-react'
 import { UpstreamSelector } from './UpstreamSelector'
 import { QuickChatModal } from './QuickChatModal'

@@ -4,8 +4,7 @@
 // v1.1：间隔/姿势池/时长全部来自 manifest.autoActions 的纯节奏器，语义层常量不进设置页。
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, currentMonitor, getCurrentWindow } from '../../transport';
 import type { TKey } from '../../i18n';
 import { clamp, easeInOut, type Bubble } from '../config';
 import {

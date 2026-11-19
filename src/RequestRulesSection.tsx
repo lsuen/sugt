@@ -5,7 +5,7 @@
  * 内置规则 id 以 builtin- 开头（toolTextRetry 那条默认关闭），列表加「内置」标记。
  * 删除会让规则立即失效，统一走 ConfirmModal。 */
 import { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from './transport';
 import { Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 import { ModalPortal } from './ModalPortal'

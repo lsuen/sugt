@@ -49,6 +49,8 @@
     "allow-repair-clients-env",
     "allow-uninstall-clients-env",
     "allow-update-gateway-settings",
+    "allow-get-webui-settings",
+    "allow-set-webui-settings",
     "allow-get-lan-share-info",
     "allow-get-local-access-info",
     "allow-test-provider-draft",

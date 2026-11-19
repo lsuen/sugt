@@ -2,7 +2,7 @@
 // 作用：设置面板。横向子 Tab（概览/通用/外观/高级/精灵/日志/关于），子页状态由上层受控，
 // 保证状态栏「打开日志页」等外部入口可以精确跳转，切换主 Tab 后也不丢子页位置。
 import React, { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isBrowserMode } from './transport';
 import { CircleAlert, Copy } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { GithubProxyModal } from './store/GithubProxyModal';
@@ -26,6 +26,12 @@ export type LanShareInfo = {
   openai_bases: string[];
   anthropic_bases: string[];
   copy_text: string;
+};
+
+type WebUiSettingsView = {
+  enabled: boolean;
+  port: number;
+  lan_addresses: string[];
 };
 
 type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
@@ -116,6 +122,8 @@ export function SettingsPanel({
   const [internalTab, setInternalTab] = useState<SettingsTab>('overview');
   const [lanOpen, setLanOpen] = useState(false);
   const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
+  const [webui, setWebui] = useState<WebUiSettingsView | null>(null);
+  const [webuiPortDraft, setWebuiPortDraft] = useState('8788');
 
   const tab = settingsTab ?? internalTab;
   const selectTab = (next: SettingsTab) => {
@@ -126,6 +134,39 @@ export function SettingsPanel({
   const toast = (message: string, type?: 'ok' | 'error' | 'info') =>
     (pushToast ?? (() => undefined))(message, type ?? 'ok');
   const formatError = formatInvokeError ?? ((error: unknown) => String(error));
+
+  // WebUI 设置只在桌面端可改：浏览器端走 WebUI 自带 RPC，未暴露这两个命令。
+  useEffect(() => {
+    if (tab !== 'general' || isBrowserMode()) return;
+    let cancelled = false;
+    void invoke<WebUiSettingsView>('get_webui_settings')
+      .then((view) => {
+        if (!cancelled) {
+          setWebui(view);
+          setWebuiPortDraft(String(view.port));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setWebui(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  const saveWebui = (enabled: boolean, port: number) => {
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      toast(t('set.webuiPortInvalid'), 'error');
+      return;
+    }
+    run(async () => {
+      const view = await invoke<WebUiSettingsView>('set_webui_settings', {
+        input: { enabled, port },
+      });
+      setWebui(view);
+      setWebuiPortDraft(String(view.port));
+    }, t('common.update'));
+  };
 
   useEffect(() => {
     if (!lanOpen) return;
@@ -365,6 +406,55 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+
+          {!isBrowserMode() && (
+            <div className="card settings-group switches">
+              <h4>{t('set.webui')}</h4>
+              <p className="hint compact">{t('set.webuiHint')}</p>
+              <label className="switch-line">
+                <span>{t('set.webuiEnable')}</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(webui?.enabled)}
+                  onChange={(e) =>
+                    saveWebui(
+                      e.target.checked,
+                      Number(webuiPortDraft) || webui?.port || 8788,
+                    )
+                  }
+                />
+              </label>
+              <div className="switch-line maintenance-row">
+                <span>{t('set.webuiPort')}</span>
+                <span className="maintenance-days">
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    value={webuiPortDraft}
+                    aria-label={t('set.webuiPort')}
+                    onChange={(e) => setWebuiPortDraft(e.target.value)}
+                    onBlur={() =>
+                      saveWebui(Boolean(webui?.enabled), Number(webuiPortDraft))
+                    }
+                  />
+                </span>
+              </div>
+              <div>
+                <span className="hint compact">{t('set.webuiLan')}</span>
+                {webui?.lan_addresses?.length ? (
+                  <ul className="lan-share-list">
+                    {webui.lan_addresses.map((addr) => (
+                      <li key={addr}><code>{addr}</code></li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="hint compact">{t('set.webuiLanEmpty')}</p>
+                )}
+              </div>
+            </div>
+          )}
 
           <MaintenanceSection config={config} pushToast={toast} />
         </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { Plus, Trash2, X } from 'lucide-react';
 import { t } from './i18n';
 import { ModalPortal } from './ModalPortal';

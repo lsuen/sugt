@@ -2,7 +2,7 @@
 // 作用：设置-概览子页（首个横向 Tab）。聚合服务状态、局域网接入信息、上游、端点与版本构建号。
 // 只读：所有数据来自已有 get_status / get_lan_share_info，不新增后端命令、不写配置。
 import React, { useCallback, useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { Copy, RefreshCw } from 'lucide-react';
 import type { LanShareInfo } from './SettingsPanel';
 import type { AboutStatusView } from './AboutSection';

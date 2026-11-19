@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import {
+  invoke, emit, listen,
+  isBrowserMode, getSessionToken, setSessionToken, requestLoginKey,
+  AUTH_EXPIRED_EVENT,
+} from './transport';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Play, Plus,
   ScrollText, Settings2, ShieldCheck, Trash2, Users, X, XCircle,
@@ -24,7 +27,7 @@ import { StrategyBoxPanel } from './StrategyBoxPanel';
 import { ApiKeyPoolPanel } from './ApiKeyPoolPanel';
 import { ClientKeyPanel } from './ClientKeyPanel';
 import { AccessInfoCard } from './AccessInfoCard';
-import { createPreviewMeApi, MePanel } from './MePanel';
+import { MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { t, type TKey } from './i18n';
 import { useNoticeQueue } from './notify/useNoticeQueue';
@@ -270,10 +273,6 @@ const emptyForm: ProviderForm = {
   tool_text_retry_extra: '',
 };
 
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
 function formatInvokeError(error: unknown): string {
   const text = String(error);
   const marker = 'gateway_not_running:';
@@ -383,7 +382,7 @@ function Modal({
   );
 }
 
-function App() {
+function AppMain() {
   const [tab, setTabState] = useState<NavLeaf>(initialLeaf);
   // 当前组由当前叶子反推；切叶子时把组与组内位置都写回 localStorage，切组能回到上次那一页。
   const group = navGroupOf(tab);
@@ -754,47 +753,6 @@ function App() {
   };
 
   const activeGroup = NAV_GROUPS.find((item) => item.id === group) ?? NAV_GROUPS[0];
-
-  const devPreview = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
-  const previewApi = useMemo(() => (devPreview ? createPreviewMeApi() : null), [devPreview]);
-
-  if (!isTauriRuntime()) {
-    if (devPreview && previewApi) {
-      return (
-        <main className="app-shell">
-          <aside className="sidebar">
-            <div className="brand">
-              <BrandMark size="md" />
-              <div className="brand-text">
-                <h1>SUTAI</h1>
-                <span>{t('brand.tagline')}</span>
-              </div>
-            </div>
-            <button className="nav active" type="button"><Activity size={18} />{t('nav.group.overview')}</button>
-          </aside>
-          <section className="content">
-            <header className="topbar">
-              <div>
-                <h2>{t('tab.me.title')}</h2>
-              </div>
-            </header>
-            <div className="tab-body me-tab">
-              <MePanel api={previewApi} onOpenClients={() => undefined} onOpenModels={() => undefined} onOpenSkills={() => undefined} />
-            </div>
-          </section>
-        </main>
-      );
-    }
-    return (
-      <main className="browser-only">
-        <h2>{t('browser.title')}</h2>
-        <p>{t('browser.desc')}</p>
-        <p>{t('browser.root')}</p>
-        <pre>npm run tauri dev</pre>
-        <p className="hint">{t('browser.hint')}</p>
-      </main>
-    );
-  }
 
   return (
     <main className="app-shell">
@@ -1204,6 +1162,73 @@ function App() {
       />
     </main>
   );
+}
+
+// 浏览器模式登录门控：桌面端直接渲染管理界面，浏览器端需先用 gateway_client_api_key 换 token。
+function App() {
+  const [ready, setReady] = useState(() => !isBrowserMode() || Boolean(getSessionToken()));
+  const [error, setError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const login = useCallback(async () => {
+    setLoggingIn(true);
+    setError(null);
+    try {
+      const key = await requestLoginKey();
+      if (!key) {
+        setError(t('webui.loginCancelled'));
+        return;
+      }
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { token?: string; error?: string };
+      if (!data.token) throw new Error(data.error || t('webui.loginFailed'));
+      setSessionToken(data.token);
+      setReady(true);
+    } catch (e) {
+      setError(`${t('webui.loginFailed')}：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoggingIn(false);
+    }
+  }, []);
+
+  // 浏览器模式首次进入且无 token 时自动弹一次登录框。
+  useEffect(() => {
+    if (ready) return;
+    void login();
+  }, [ready, login]);
+
+  // invoke 收到 401 会清 token 并抛此事件：回到登录态（仅浏览器模式）。
+  useEffect(() => {
+    if (!isBrowserMode()) return undefined;
+    const off = listen(AUTH_EXPIRED_EVENT, () => {
+      setError(t('webui.authExpired'));
+      setReady(false);
+    });
+    return () => {
+      void off.then((fn) => fn()).catch(() => undefined);
+    };
+  }, []);
+
+  if (!ready) {
+    return (
+      <main className="browser-only webui-login">
+        <h2>{t('webui.loginTitle')}</h2>
+        <p>{t('webui.loginDesc')}</p>
+        {error ? <p className="error">{error}</p> : null}
+        <button type="button" onClick={() => void login()} disabled={loggingIn}>
+          {loggingIn ? t('webui.loggingIn') : error ? t('webui.retryButton') : t('webui.loginButton')}
+        </button>
+        <p className="hint">{t('webui.tip')}</p>
+      </main>
+    );
+  }
+
+  return <AppMain />;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

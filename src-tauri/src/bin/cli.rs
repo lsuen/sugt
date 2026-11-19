@@ -34,6 +34,17 @@ enum Command {
         /// 绑定 0.0.0.0，允许局域网访问；非回环绑定时强制要求客户端 API Key
         #[arg(long)]
         lan: bool,
+        /// 启动局域网 WebUI（仅本次运行生效，不写入配置）
+        #[arg(long)]
+        webui: bool,
+        /// WebUI 监听端口（仅本次运行生效；默认取配置 webui_port，初始 8788）
+        #[arg(long)]
+        webui_port: Option<u16>,
+    },
+    /// 管理 WebUI 配置开关（持久化；GUI 启动按此自动监听）
+    Webui {
+        #[command(subcommand)]
+        command: WebuiCommand,
     },
     Test,
     /// 小su / SOUL：无界面发消息（自动检测本机 OS）
@@ -122,6 +133,20 @@ enum TeamCommand {
 }
 
 #[derive(Subcommand)]
+enum WebuiCommand {
+    /// 启用 WebUI（写入配置；GUI 下次启动自动监听）
+    On {
+        /// WebUI 监听端口（默认沿用配置）
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// 关闭 WebUI（写入配置）
+    Off,
+    /// 查看当前 WebUI 开关、端口与访问地址
+    Status,
+}
+
+#[derive(Subcommand)]
 enum EnvCommand {
     Status,
     Install {
@@ -190,41 +215,112 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::Serve { host, port, lan } => {
-            let (paths, mut app_config) = config::load_or_init_config()?;
-            trial::ensure_allowed(&paths)?;
-            if let Some(host) = host {
-                app_config.host = host;
-            }
-            if let Some(port) = port {
-                app_config.port = port;
-            }
-            if lan {
-                app_config.allow_lan_access = true;
-            }
-            if app_config.binds_non_loopback() {
-                match ensure_strong_client_key(&mut app_config, &paths)? {
-                    Some(new_key) => {
-                        eprintln!(
-                            "info: 局域网/服务器模式已启用（bind={}）；已自动生成强客户端密钥并写入配置，请妥善保管并分发给内网员工：",
-                            app_config.bind_host()
-                        );
-                        eprintln!("      gateway_client_api_key = {}", new_key);
-                        eprintln!("      内网客户端必须携带 Authorization: Bearer <该密钥> 或 x-api-key");
-                    }
-                    None => {
-                        eprintln!(
-                            "info: LAN/server 模式已启用（bind={}）；局域网客户端必须带 Authorization: Bearer <gateway_client_api_key> 或 x-api-key",
-                            app_config.bind_host()
-                        );
+        Command::Serve {
+            host,
+            port,
+            lan,
+            webui,
+            webui_port,
+        } => {
+            let runtime = AppRuntime::load_from_disk().map_err(|err| anyhow::anyhow!(err))?;
+            trial::ensure_allowed(&runtime.paths)?;
+            {
+                let mut cfg = runtime.config.write().await;
+                if let Some(host) = host {
+                    cfg.host = host;
+                }
+                if let Some(port) = port {
+                    cfg.port = port;
+                }
+                if lan {
+                    cfg.allow_lan_access = true;
+                }
+                // --webui / --webui-port 只影响本次运行，不写进 cfg：
+                // CLI 参数语义与 --port 一致，持久化交给 GUI 设置页或 `webui on/off`。
+                if cfg.binds_non_loopback() {
+                    match ensure_strong_client_key(&mut cfg, &runtime.paths)? {
+                        Some(new_key) => {
+                            eprintln!(
+                                "info: 局域网/服务器模式已启用（bind={}）；已自动生成强客户端密钥并写入配置，请妥善保管并分发给内网员工：",
+                                cfg.bind_host()
+                            );
+                            eprintln!("      gateway_client_api_key = {}", new_key);
+                            eprintln!("      内网客户端必须携带 Authorization: Bearer <该密钥> 或 x-api-key");
+                        }
+                        None => {
+                            eprintln!(
+                                "info: LAN/server 模式已启用（bind={}）；局域网客户端必须带 Authorization: Bearer <gateway_client_api_key> 或 x-api-key",
+                                cfg.bind_host()
+                            );
+                        }
                     }
                 }
             }
-            let gateway = GatewayState::new(app_config, Some(paths.config_file.clone()))?;
-            let url = gateway.start().await?;
+            // persist 统一写盘并把最新配置替换进网关，start 前完成。
+            runtime.persist().await?;
+            let url = runtime.gateway.start().await?;
             println!("SUGT gateway listening on {}", url);
+
+            // --webui 只影响本次运行：端口取 --webui-port，未指定则用配置里的默认值（只读）。
+            let webui_server = if webui {
+                let port = match webui_port {
+                    Some(p) => p,
+                    None => runtime.config.read().await.webui_port,
+                };
+                Some(sugt_lib::webui::start_on_port(&runtime, port).await?)
+            } else {
+                None
+            };
+            if let Some(server) = &webui_server {
+                let port = server.addr.port();
+                println!("SUGT WebUI listening on http://0.0.0.0:{}", port);
+                for ip in lan::lan_ipv4_addrs() {
+                    println!("  LAN: http://{}:{}", ip, port);
+                }
+                println!("  本机: http://127.0.0.1:{}", port);
+                println!("  登录密码：gateway_client_api_key（见配置文件）");
+            }
+
             signal::ctrl_c().await?;
-            gateway.stop().await?;
+            if let Some(server) = webui_server {
+                server.stop().await;
+            }
+            runtime.gateway.stop().await?;
+        }
+        Command::Webui { command } => {
+            let runtime = AppRuntime::load_from_disk().map_err(|err| anyhow::anyhow!(err))?;
+            match command {
+                WebuiCommand::On { port } => {
+                    {
+                        let mut cfg = runtime.config.write().await;
+                        cfg.webui_enabled = true;
+                        if let Some(port) = port {
+                            cfg.webui_port = port;
+                        }
+                    }
+                    runtime.persist().await?;
+                    let cfg = runtime.config.read().await;
+                    println!("WebUI 已启用（webui_enabled=true），端口 {}", cfg.webui_port);
+                    println!("GUI 下次启动将自动监听；CLI 可用 serve --webui 临时启动（不改此配置）");
+                }
+                WebuiCommand::Off => {
+                    runtime.config.write().await.webui_enabled = false;
+                    runtime.persist().await?;
+                    println!("WebUI 已关闭（webui_enabled=false）");
+                }
+                WebuiCommand::Status => {
+                    let cfg = runtime.config.read().await;
+                    println!("webui_enabled={}", cfg.webui_enabled);
+                    println!("webui_port={}", cfg.webui_port);
+                    if cfg.webui_enabled {
+                        println!("访问地址（GUI 启动后可用，或 CLI 用 serve --webui）：");
+                        for ip in lan::lan_ipv4_addrs() {
+                            println!("  http://{}:{}", ip, cfg.webui_port);
+                        }
+                        println!("  http://127.0.0.1:{}", cfg.webui_port);
+                    }
+                }
+            }
         }
         Command::Test => {
             let (paths, app_config) = config::load_or_init_config()?;
