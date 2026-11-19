@@ -281,15 +281,20 @@ pub async fn stop_gateway(runtime: State<'_, AppRuntime>) -> Result<(), String> 
     Ok(())
 }
 
-#[tauri::command]
-pub async fn list_providers(runtime: State<'_, AppRuntime>) -> Result<Vec<ProviderView>, String> {
+pub(crate) async fn list_providers_core(
+    runtime: &AppRuntime,
+) -> Result<Vec<ProviderView>, String> {
     let config = runtime.config.read().await;
     Ok(config.providers.iter().map(ProviderView::from).collect())
 }
 
 #[tauri::command]
-pub async fn save_provider(
-    runtime: State<'_, AppRuntime>,
+pub async fn list_providers(runtime: State<'_, AppRuntime>) -> Result<Vec<ProviderView>, String> {
+    list_providers_core(runtime.inner()).await
+}
+
+pub(crate) async fn save_provider_core(
+    runtime: &AppRuntime,
     input: ProviderInput,
 ) -> Result<Vec<ProviderView>, String> {
     validate_provider_input(&input)?;
@@ -315,7 +320,7 @@ pub async fn save_provider(
         crate::experimental_free::apply_route(provider);
         drop(config);
         runtime.persist().await.map_err(|err| err.to_string())?;
-        return list_providers(runtime).await;
+        return list_providers_core(runtime).await;
     }
 
     if let Some(provider) = config
@@ -372,12 +377,19 @@ pub async fn save_provider(
 
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
-    list_providers(runtime).await
+    list_providers_core(runtime).await
 }
 
 #[tauri::command]
-pub async fn delete_provider(
+pub async fn save_provider(
     runtime: State<'_, AppRuntime>,
+    input: ProviderInput,
+) -> Result<Vec<ProviderView>, String> {
+    save_provider_core(runtime.inner(), input).await
+}
+
+pub(crate) async fn delete_provider_core(
+    runtime: &AppRuntime,
     id: String,
 ) -> Result<Vec<ProviderView>, String> {
     let mut config = runtime.config.write().await;
@@ -394,29 +406,47 @@ pub async fn delete_provider(
     }
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
-    list_providers(runtime).await
+    list_providers_core(runtime).await
 }
 
 #[tauri::command]
-pub async fn restore_experimental_free(
+pub async fn delete_provider(
     runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<Vec<ProviderView>, String> {
+    delete_provider_core(runtime.inner(), id).await
+}
+
+pub(crate) async fn restore_experimental_free_core(
+    runtime: &AppRuntime,
 ) -> Result<Vec<ProviderView>, String> {
     {
         let mut config = runtime.config.write().await;
         crate::experimental_free::restore_experimental_free(&mut config);
     }
     runtime.persist().await.map_err(|err| err.to_string())?;
-    list_providers(runtime).await
+    list_providers_core(runtime).await
 }
 
 #[tauri::command]
-pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::FreeRouteChoice> {
+pub async fn restore_experimental_free(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<ProviderView>, String> {
+    restore_experimental_free_core(runtime.inner()).await
+}
+
+pub(crate) fn list_experimental_free_candidates_core(
+) -> Vec<crate::experimental_free::FreeRouteChoice> {
     crate::experimental_free::route_choices()
 }
 
 #[tauri::command]
-pub async fn probe_experimental_free_models(
-    runtime: State<'_, AppRuntime>,
+pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::FreeRouteChoice> {
+    list_experimental_free_candidates_core()
+}
+
+pub(crate) async fn probe_experimental_free_models_core(
+    runtime: &AppRuntime,
 ) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
     let probes = crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
     {
@@ -448,7 +478,16 @@ pub async fn probe_experimental_free_models(
 }
 
 #[tauri::command]
-pub async fn set_active_provider(runtime: State<'_, AppRuntime>, id: String) -> Result<(), String> {
+pub async fn probe_experimental_free_models(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
+    probe_experimental_free_models_core(runtime.inner()).await
+}
+
+pub(crate) async fn set_active_provider_core(
+    runtime: &AppRuntime,
+    id: String,
+) -> Result<(), String> {
     let mut config = runtime.config.write().await;
     if !config
         .providers
@@ -463,8 +502,12 @@ pub async fn set_active_provider(runtime: State<'_, AppRuntime>, id: String) -> 
 }
 
 #[tauri::command]
-pub async fn set_provider_enabled(
-    runtime: State<'_, AppRuntime>,
+pub async fn set_active_provider(runtime: State<'_, AppRuntime>, id: String) -> Result<(), String> {
+    set_active_provider_core(runtime.inner(), id).await
+}
+
+pub(crate) async fn set_provider_enabled_core(
+    runtime: &AppRuntime,
     id: String,
     enabled: bool,
 ) -> Result<Vec<ProviderView>, String> {
@@ -528,12 +571,20 @@ pub async fn set_provider_enabled(
     }
 
     runtime.persist().await.map_err(|err| err.to_string())?;
-    list_providers(runtime).await
+    list_providers_core(runtime).await
 }
 
 #[tauri::command]
-pub async fn test_provider(
+pub async fn set_provider_enabled(
     runtime: State<'_, AppRuntime>,
+    id: String,
+    enabled: bool,
+) -> Result<Vec<ProviderView>, String> {
+    set_provider_enabled_core(runtime.inner(), id, enabled).await
+}
+
+pub(crate) async fn test_provider_core(
+    runtime: &AppRuntime,
     id: String,
 ) -> Result<gateway::ProviderTestOutcome, String> {
     let outcome = runtime
@@ -558,6 +609,14 @@ pub async fn test_provider(
     Ok(outcome)
 }
 
+#[tauri::command]
+pub async fn test_provider(
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<gateway::ProviderTestOutcome, String> {
+    test_provider_core(runtime.inner(), id).await
+}
+
 #[derive(Deserialize)]
 pub struct ListModelsInput {
     pub base_url: String,
@@ -572,9 +631,8 @@ fn default_auto_adapt_base_url() -> bool {
     true
 }
 
-#[tauri::command]
-pub async fn test_provider_draft(
-    runtime: State<'_, AppRuntime>,
+pub(crate) async fn test_provider_draft_core(
+    runtime: &AppRuntime,
     input: ListModelsInput,
     model_name: String,
 ) -> Result<probe::ProbeReport, String> {
@@ -606,8 +664,16 @@ pub async fn test_provider_draft(
 }
 
 #[tauri::command]
-pub async fn list_provider_models(
+pub async fn test_provider_draft(
     runtime: State<'_, AppRuntime>,
+    input: ListModelsInput,
+    model_name: String,
+) -> Result<probe::ProbeReport, String> {
+    test_provider_draft_core(runtime.inner(), input, model_name).await
+}
+
+pub(crate) async fn list_provider_models_core(
+    runtime: &AppRuntime,
     input: ListModelsInput,
 ) -> Result<Vec<String>, String> {
     if input.api_key.trim().is_empty() {
@@ -636,6 +702,14 @@ pub async fn list_provider_models(
         )
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    runtime: State<'_, AppRuntime>,
+    input: ListModelsInput,
+) -> Result<Vec<String>, String> {
+    list_provider_models_core(runtime.inner(), input).await
 }
 
 #[derive(Deserialize)]
@@ -667,9 +741,8 @@ fn find_provider(config: &AppConfig, provider_id: &str) -> Result<ProviderConfig
 
 /// 拉取上游模型列表并与注册表合并；普通服务商走网关现成的 models 接口，
 /// 实验免费通道直接用内置候选，不发网络请求。
-#[tauri::command]
-pub async fn list_model_registry(
-    runtime: State<'_, AppRuntime>,
+pub(crate) async fn list_model_registry_core(
+    runtime: &AppRuntime,
     input: ListModelRegistryInput,
 ) -> Result<Vec<ModelEntry>, String> {
     let config = runtime.config.read().await.clone();
@@ -703,10 +776,17 @@ pub async fn list_model_registry(
     ))
 }
 
-/// 启用/禁用单个模型（禁用后控制台不再展示；模型列表 tab 仍保留）。
 #[tauri::command]
-pub async fn set_model_enabled(
+pub async fn list_model_registry(
     runtime: State<'_, AppRuntime>,
+    input: ListModelRegistryInput,
+) -> Result<Vec<ModelEntry>, String> {
+    list_model_registry_core(runtime.inner(), input).await
+}
+
+/// 启用/禁用单个模型（禁用后控制台不再展示；模型列表 tab 仍保留）。
+pub(crate) async fn set_model_enabled_core(
+    runtime: &AppRuntime,
     input: SetModelEnabledInput,
 ) -> Result<(), String> {
     let config_dir = runtime.paths.config_dir.clone();
@@ -726,10 +806,17 @@ pub async fn set_model_enabled(
     Ok(())
 }
 
-/// 批量探测指定模型（限并发 3），结果一次性回写注册表并返回最新条目。
 #[tauri::command]
-pub async fn probe_models(
+pub async fn set_model_enabled(
     runtime: State<'_, AppRuntime>,
+    input: SetModelEnabledInput,
+) -> Result<(), String> {
+    set_model_enabled_core(runtime.inner(), input).await
+}
+
+/// 批量探测指定模型（限并发 3），结果一次性回写注册表并返回最新条目。
+pub(crate) async fn probe_models_core(
+    runtime: &AppRuntime,
     input: ProbeModelsInput,
 ) -> Result<Vec<ModelEntry>, String> {
     if input.model_names.is_empty() {
@@ -738,64 +825,35 @@ pub async fn probe_models(
     let config = runtime.config.read().await.clone();
     let provider = find_provider(&config, &input.provider_id)?;
 
+    // 统一走 probe_llm_connectivity：免费通道在 probe_openai 内部经
+    // prepare_upstream_provider 绑定路由，同样得到真实延迟/速度；
+    // 旧的免费专用分支只回 available 且硬编码 0 值，已废弃。
+    let client = runtime.gateway.http_client().clone();
+    let provider = provider.clone();
     let results: Vec<(String, ModelProbe)> =
-        if crate::experimental_free::is_experimental_free(&provider) {
-            // 与 probe_experimental_free_models 共用同一条探测路径（成功/失败、18s 超时）。
-            let probes =
-                crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
-            input
-                .model_names
-                .iter()
-                .map(|model_name| {
-                    let (ok, error) = match probes
-                        .iter()
-                        .find(|probe| probe.name.eq_ignore_ascii_case(model_name))
-                    {
-                        Some(probe) if probe.available => (true, None),
-                        Some(_) => (false, Some("模型不可用".to_string())),
-                        None => (false, Some("未匹配到该免费通道模型".to_string())),
-                    };
-                    (
-                        model_name.clone(),
-                        ModelProbe {
-                            ok,
-                            latency_ms: 0,
-                            tokens_per_sec: 0.0,
-                            completion_tokens: 0,
-                            estimated: false,
-                            probed_at: chrono::Utc::now(),
-                            error,
-                        },
-                    )
-                })
-                .collect()
-        } else {
-            let client = runtime.gateway.http_client().clone();
-            let provider = provider.clone();
-            futures_util::stream::iter(input.model_names.iter().cloned().map(|model_name| {
-                let client = client.clone();
-                let mut target = provider.clone();
-                target.model_name = model_name.clone();
-                async move {
-                    let report = probe::probe_llm_connectivity(&client, &target).await;
-                    (
-                        model_name,
-                        ModelProbe {
-                            ok: report.ok,
-                            latency_ms: report.latency_ms,
-                            tokens_per_sec: report.tokens_per_sec,
-                            completion_tokens: report.completion_tokens,
-                            estimated: report.estimated,
-                            probed_at: chrono::Utc::now(),
-                            error: report.error,
-                        },
-                    )
-                }
-            }))
-            .buffer_unordered(3)
-            .collect::<Vec<_>>()
-            .await
-        };
+        futures_util::stream::iter(input.model_names.iter().cloned().map(|model_name| {
+            let client = client.clone();
+            let mut target = provider.clone();
+            target.model_name = model_name.clone();
+            async move {
+                let report = probe::probe_llm_connectivity(&client, &target).await;
+                (
+                    model_name,
+                    ModelProbe {
+                        ok: report.ok,
+                        latency_ms: report.latency_ms,
+                        tokens_per_sec: report.tokens_per_sec,
+                        completion_tokens: report.completion_tokens,
+                        estimated: report.estimated,
+                        probed_at: chrono::Utc::now(),
+                        error: report.error,
+                    },
+                )
+            }
+        }))
+        .buffer_unordered(3)
+        .collect::<Vec<_>>()
+        .await;
 
     let config_dir = runtime.paths.config_dir.clone();
     let mut registry = model_registry::load(&config_dir);
@@ -812,6 +870,14 @@ pub async fn probe_models(
         &provider.id,
         &input.model_names,
     ))
+}
+
+#[tauri::command]
+pub async fn probe_models(
+    runtime: State<'_, AppRuntime>,
+    input: ProbeModelsInput,
+) -> Result<Vec<ModelEntry>, String> {
+    probe_models_core(runtime.inner(), input).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1567,19 +1633,21 @@ pub struct LocalAccessInfo {
     pub entries: Vec<LocalAccessEntry>,
 }
 
-/// 对外的接入信息一律用 lan_host，避免把 0.0.0.0 直接给用户复制。
+/// 对外的接入信息一律用可达地址，避免把 0.0.0.0 直接给用户复制。
+/// 网关绑定回环（host=127.0.0.1 且未开 LAN）时，探测到的 LAN/VPN 隧道候选
+/// 一律不采用：此时网关只对本机可达，展示 LAN IP 是「显示可达实际不可达」的
+/// 双重误导（2026-11-20 utun7=28.0.0.1 排查结论）。
 fn build_local_access_info(
     host: &str,
     port: u16,
     providers: &[ProviderConfig],
     lan_hosts: &[String],
 ) -> LocalAccessInfo {
-    let lan_host = lan_hosts
-        .iter()
-        .map(|candidate| candidate.trim())
-        .find(|candidate| !candidate.is_empty())
-        .unwrap_or("127.0.0.1")
-        .to_string();
+    let lan_host = if crate::model::is_loopback_bind_host(host) {
+        "127.0.0.1".to_string()
+    } else {
+        crate::lan::preferred_lan_host(lan_hosts).unwrap_or_else(|| "127.0.0.1".to_string())
+    };
     let base_url = format!("http://{lan_host}:{port}/v1");
     // 与 /v1/models 口径一致：启用中的 provider，按 public_model_id 去重
     let mut seen = std::collections::HashSet::new();
@@ -1618,13 +1686,111 @@ pub async fn get_local_access_info(
 }
 
 /// 纯逻辑：从配置生成本地接入信息。WebUI service 复用此函数。
+/// 传 bind_host()（含 allow_lan_access 展开）而不是 host 原值，
+/// 保证展示地址与网关实际监听范围一致。
 pub fn local_access_info_from_config(config: &AppConfig) -> LocalAccessInfo {
     build_local_access_info(
-        &config.host,
+        &config.bind_host(),
         config.port,
         &config.providers,
         &crate::lan::lan_ipv4_addrs(),
     )
+}
+
+/// 真实请求本机网关 /v1/models 的报告；
+/// 前端按 ok / model_ids / error 组合出成功、空、失败、加载四态。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModelsFetchReport {
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub elapsed_ms: u64,
+    pub model_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// 真实 GET 本机网关 /v1/models。固定走 127.0.0.1：这是本机自测，
+/// 网关绑定回环或 0.0.0.0 时回环都可达，与卡片展示的 LAN 地址无关。
+pub async fn fetch_local_models_report(
+    client: &reqwest::Client,
+    config: &AppConfig,
+) -> LocalModelsFetchReport {
+    let url = format!("http://127.0.0.1:{}/v1/models", config.port);
+    let api_key = config.gateway_client_api_key.trim().to_string();
+    let started = std::time::Instant::now();
+
+    let mut req = client.get(&url).timeout(std::time::Duration::from_secs(10));
+    if !api_key.is_empty() {
+        req = req.bearer_auth(&api_key);
+    }
+    let response = match req.send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            return LocalModelsFetchReport {
+                ok: false,
+                status: None,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                model_ids: vec![],
+                error: Some(error_hint::classify_request_error(&err)),
+            };
+        }
+    };
+
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if !status.is_success() {
+        tracing::warn!(%url, %status, "fetch_local_models http error");
+        return LocalModelsFetchReport {
+            ok: false,
+            status: Some(status.as_u16()),
+            elapsed_ms,
+            model_ids: vec![],
+            error: Some(error_hint::classify_http_error(status, &text)),
+        };
+    }
+
+    let payload: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => {
+            return LocalModelsFetchReport {
+                ok: false,
+                status: Some(status.as_u16()),
+                elapsed_ms,
+                model_ids: vec![],
+                error: Some(format!("响应不是合法 JSON：{err}")),
+            };
+        }
+    };
+
+    let model_ids = payload
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
+                .map(|id| id.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    LocalModelsFetchReport {
+        ok: true,
+        status: Some(status.as_u16()),
+        elapsed_ms,
+        model_ids,
+        error: None,
+    }
+}
+
+/// 本机接入卡片的「请求」按钮：现场验证 /v1/models 可达并返回真实模型列表。
+#[tauri::command]
+pub async fn fetch_local_models(
+    runtime: State<'_, AppRuntime>,
+) -> Result<LocalModelsFetchReport, String> {
+    let config = runtime.config.read().await.clone();
+    Ok(fetch_local_models_report(runtime.gateway.http_client(), &config).await)
 }
 
 #[tauri::command]
@@ -2688,6 +2854,22 @@ mod tests {
         assert!(info.models_url.ends_with("/v1/models"));
         assert_eq!(info.models_url, "http://127.0.0.1:8899/v1/models");
         assert_eq!(info.entries[0].base_url, "http://127.0.0.1:8899/v1");
+    }
+
+    #[test]
+    fn loopback_bind_never_shows_lan_or_tunnel_candidates() {
+        // 回环绑定 + 未开 LAN 时，探测到的 VPN 隧道 IP 一律不给用户
+        let info = build_local_access_info("127.0.0.1", 18998, &[], &["28.0.0.1".to_string()]);
+        assert_eq!(info.lan_host, "127.0.0.1");
+        assert_eq!(info.models_url, "http://127.0.0.1:18998/v1/models");
+    }
+
+    #[test]
+    fn non_loopback_prefers_private_lan_over_tunnel_ip() {
+        let lan_hosts = vec!["28.0.0.1".to_string(), "192.168.31.134".to_string()];
+        let info = build_local_access_info("0.0.0.0", 8899, &[], &lan_hosts);
+        assert_eq!(info.lan_host, "192.168.31.134");
+        assert_eq!(info.models_url, "http://192.168.31.134:8899/v1/models");
     }
 
     #[test]

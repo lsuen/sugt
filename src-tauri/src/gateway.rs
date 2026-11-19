@@ -3946,6 +3946,11 @@ pub async fn list_openai_models(
     base_url: &str,
     api_key: &str,
 ) -> Result<Vec<String>> {
+    // 套餐型端点（/api/plan/v3 等）注定 404，提前给出明确引导而非发无效请求。
+    if let Some(reason) = provider_catalog::models_discovery_unsupported_reason(base_url) {
+        tracing::warn!(base_url = %base_url, "model discovery unsupported on plan endpoint");
+        bail!(reason);
+    }
     let models_url = provider_catalog::resolve_models_list_url(base_url);
     let response = match client
         .get(&models_url)
@@ -3955,12 +3960,17 @@ pub async fn list_openai_models(
         .await
     {
         Ok(resp) => resp,
-        Err(err) => bail!(error_hint::classify_request_error(&err)),
+        Err(err) => {
+            let hint = error_hint::classify_request_error(&err);
+            tracing::warn!(%models_url, error = %hint, "list_openai_models request failed");
+            bail!(hint);
+        }
     };
 
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
+        tracing::warn!(%models_url, %status, body = %text, "list_openai_models http error");
         bail!(error_hint::classify_http_error(status, &text));
     }
 
@@ -3982,6 +3992,7 @@ pub async fn list_openai_models(
         .unwrap_or_default();
 
     if models.is_empty() {
+        tracing::warn!(%models_url, "list_openai_models returned empty data");
         bail!("接口未返回可用模型，请手动填写 Model Name");
     }
 

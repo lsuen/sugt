@@ -50,6 +50,7 @@ pub fn run() {
             commands::set_webui_settings,
             commands::get_lan_share_info,
             commands::get_local_access_info,
+            commands::fetch_local_models,
             commands::set_autostart,
             commands::set_autostart_gateway,
             commands::set_auto_takeover,

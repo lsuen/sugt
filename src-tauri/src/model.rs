@@ -516,7 +516,7 @@ fn default_gateway_client_api_key() -> String {
     "sugt-local-key".to_string()
 }
 
-fn is_loopback_bind_host(host: &str) -> bool {
+pub(crate) fn is_loopback_bind_host(host: &str) -> bool {
     matches!(
         host.trim().to_ascii_lowercase().as_str(),
         "" | "127.0.0.1" | "::1" | "localhost"

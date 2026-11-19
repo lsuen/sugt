@@ -53,6 +53,7 @@
     "allow-set-webui-settings",
     "allow-get-lan-share-info",
     "allow-get-local-access-info",
+    "allow-fetch-local-models",
     "allow-test-provider-draft",
     "allow-quick-gateway-chat",
     "allow-me-commands",

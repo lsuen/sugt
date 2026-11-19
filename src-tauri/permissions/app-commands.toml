@@ -214,6 +214,11 @@ description = "Enables the get_local_access_info command"
 commands.allow = ["get_local_access_info"]
 
 [[permission]]
+identifier = "allow-fetch-local-models"
+description = "Enables the fetch_local_models command"
+commands.allow = ["fetch_local_models"]
+
+[[permission]]
 identifier = "allow-test-provider-draft"
 description = "Enables the test_provider_draft command"
 commands.allow = ["test_provider_draft"]

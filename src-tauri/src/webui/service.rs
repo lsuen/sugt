@@ -15,9 +15,8 @@ use crate::commands::{
     SetModelEnabledInput, StrategyBoxIdInput, StrategyMemberStatus, TakeoverProfileInput,
     UpdateClientKeyInput,
 };
-use crate::model::{AppConfig, ProviderConfig, ProviderInput, ProviderStatus, ProviderView};
+use crate::model::{AppConfig, ProviderInput};
 use crate::store::paths::StorePaths;
-use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Instant;
@@ -171,47 +170,6 @@ fn quota_from_input(input: Option<crate::commands::ClientQuotaInput>) -> crate::
     }
 }
 
-fn find_provider(config: &AppConfig, provider_id: &str) -> Result<ProviderConfig, String> {
-    config
-        .providers
-        .iter()
-        .find(|provider| provider.id == provider_id)
-        .cloned()
-        .ok_or_else(|| format!("未找到服务商: {provider_id}"))
-}
-
-fn provider_views(config: &AppConfig) -> Vec<ProviderView> {
-    config.providers.iter().map(ProviderView::from).collect()
-}
-
-fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {
-    if input.name.trim().is_empty()
-        || input.provider.trim().is_empty()
-        || input.base_url.trim().is_empty()
-        || input.model_name.trim().is_empty()
-    {
-        return Err("模型名称、服务商、Base URL 和 Model Name 不能为空".to_string());
-    }
-    if input.id.is_none() && input.api_key.trim().is_empty() {
-        return Err("新增模型配置必须填写 API Key".to_string());
-    }
-    if !input.base_url.starts_with("http://") && !input.base_url.starts_with("https://") {
-        return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
-    }
-    if input.tool_text_retry_enabled && !(1..=5).contains(&input.tool_text_retry_extra) {
-        return Err("重试次数请填 1 到 5".to_string());
-    }
-    Ok(())
-}
-
-fn normalize_tool_text_retry(input: &ProviderInput) -> (bool, u32) {
-    if input.tool_text_retry_enabled {
-        (true, input.tool_text_retry_extra)
-    } else {
-        (false, 0)
-    }
-}
-
 fn store_paths(runtime: &AppRuntime) -> StorePaths {
     StorePaths::from_app(&runtime.paths)
 }
@@ -249,429 +207,57 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         "get_config" => to_value(runtime.config.read().await.clone()),
 
         // ===== P0 Provider =====
-        "list_providers" => to_value(provider_views(&*runtime.config.read().await)),
-        "list_experimental_free_candidates" => to_value(crate::experimental_free::route_choices()),
+        "list_providers" => to_value(crate::commands::list_providers_core(runtime).await?),
+        "list_experimental_free_candidates" => {
+            to_value(crate::commands::list_experimental_free_candidates_core())
+        }
         "list_model_registry" => {
             let input: ListModelRegistryInput = field(args, &["input"])?;
-            let config = runtime.config.read().await.clone();
-            let provider = find_provider(&config, &input.provider_id)?;
-            let upstream_models: Vec<String> =
-                if crate::experimental_free::is_experimental_free(&provider) {
-                    crate::experimental_free::candidate_models()
-                        .into_iter()
-                        .map(|model| model.to_string())
-                        .collect()
-                } else {
-                    let base_url = crate::model::resolve_provider_base_url(
-                        provider.base_url.clone(),
-                        &provider.protocol,
-                        provider.auto_adapt_base_url,
-                    );
-                    runtime
-                        .gateway
-                        .list_provider_models(base_url.trim(), provider.api_key.trim(), None)
-                        .await
-                        .map_err(|err| err.to_string())?
-                };
-
-            let config_dir = runtime.paths.config_dir.clone();
-            let existing = crate::model_registry::load(&config_dir);
-            let merged =
-                crate::model_registry::merge_entries(&existing, &provider.id, &upstream_models);
-            crate::model_registry::save(&config_dir, &merged).map_err(|err| err.to_string())?;
-            to_value(crate::model_registry::entries_for_provider(
-                &merged,
-                &provider.id,
-                &upstream_models,
-            ))
+            to_value(crate::commands::list_model_registry_core(runtime, input).await?)
         }
         "save_provider" => {
             let input: ProviderInput = field(args, &["input"])?;
-            validate_provider_input(&input)?;
-            let (retry_on, retry_extra) = normalize_tool_text_retry(&input);
-            let mut config = runtime.config.write().await;
-            let id = input.id.clone().unwrap_or_default();
-
-            if crate::experimental_free::is_experimental_free_id(&id) {
-                let provider = config
-                    .providers
-                    .iter_mut()
-                    .find(|provider| provider.id == id)
-                    .ok_or_else(|| "实验免费通道不存在".to_string())?;
-                if input.model_name.trim().is_empty() {
-                    return Err("请选择模型".to_string());
-                }
-                if crate::experimental_free::route_for_model(&input.model_name).is_none() {
-                    return Err("该模型不在免费实验通道候选列表中".to_string());
-                }
-                provider.model_name = input.model_name.trim().to_string();
-                provider.enabled = input.enabled;
-                crate::experimental_free::apply_route(provider);
-                drop(config);
-                runtime.persist().await.map_err(|err| err.to_string())?;
-                return to_value(provider_views(&*runtime.config.read().await));
-            }
-
-            if let Some(provider) = config.providers.iter_mut().find(|p| p.id == id) {
-                provider.name = input.name;
-                provider.provider = input.provider;
-                provider.base_url = crate::model::resolve_provider_base_url(
-                    input.base_url.clone(),
-                    &input.protocol,
-                    input.auto_adapt_base_url,
-                );
-                if !input.api_key.trim().is_empty() && !input.api_key.contains("****") {
-                    provider.api_key = input.api_key;
-                }
-                provider.model_name = input.model_name;
-                provider.model_alias = input
-                    .model_alias
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                provider.protocol = input.protocol.clone();
-                provider.enabled = input.enabled;
-                provider.auto_adapt_base_url = input.auto_adapt_base_url;
-                provider.tool_text_retry_enabled = retry_on;
-                provider.tool_text_retry_extra = retry_extra;
-            } else {
-                let mut provider = ProviderConfig::new(
-                    input.name,
-                    input.provider,
-                    input.base_url.clone(),
-                    input.api_key,
-                    input.model_name,
-                );
-                provider.protocol = input.protocol.clone();
-                provider.base_url = crate::model::resolve_provider_base_url(
-                    input.base_url,
-                    &input.protocol,
-                    input.auto_adapt_base_url,
-                );
-                provider.model_alias = input
-                    .model_alias
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                provider.auto_adapt_base_url = input.auto_adapt_base_url;
-                provider.tool_text_retry_enabled = retry_on;
-                provider.tool_text_retry_extra = retry_extra;
-                if config.active_provider_id.is_none() {
-                    config.active_provider_id = Some(provider.id.clone());
-                }
-                config.providers.push(provider);
-            }
-
-            drop(config);
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(provider_views(&*runtime.config.read().await))
+            to_value(crate::commands::save_provider_core(runtime, input).await?)
         }
         "delete_provider" => {
             let id: String = single(args)?;
-            let mut config = runtime.config.write().await;
-            if crate::experimental_free::is_experimental_free_id(&id) {
-                config.experimental_zen_dismissed = true;
-            }
-            config.providers.retain(|provider| provider.id != id);
-            if config.active_provider_id.as_deref() == Some(&id) {
-                config.active_provider_id = config
-                    .providers
-                    .iter()
-                    .find(|provider| provider.enabled)
-                    .map(|provider| provider.id.clone());
-            }
-            drop(config);
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(provider_views(&*runtime.config.read().await))
+            to_value(crate::commands::delete_provider_core(runtime, id).await?)
         }
         "restore_experimental_free" => {
-            {
-                let mut config = runtime.config.write().await;
-                crate::experimental_free::restore_experimental_free(&mut config);
-            }
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(provider_views(&*runtime.config.read().await))
+            to_value(crate::commands::restore_experimental_free_core(runtime).await?)
         }
         "probe_experimental_free_models" => {
-            let probes = crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
-            {
-                let mut config = runtime.config.write().await;
-                if let Some(provider) = config
-                    .providers
-                    .iter_mut()
-                    .find(|p| crate::experimental_free::is_experimental_free(p))
-                {
-                    let available: Vec<&str> = probes
-                        .iter()
-                        .filter(|p| p.available)
-                        .map(|p| p.name.as_str())
-                        .collect();
-                    if available.is_empty() {
-                        provider.last_error =
-                            Some("免费实验通道暂无可用模型，请稍后重试".into());
-                        provider.status = ProviderStatus::Unavailable;
-                    } else {
-                        provider.last_error = None;
-                        provider.status = ProviderStatus::Available;
-                    }
-                    provider.last_checked_at = Some(chrono::Utc::now());
-                }
-            }
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(probes)
+            to_value(crate::commands::probe_experimental_free_models_core(runtime).await?)
         }
         "set_active_provider" => {
             let id: String = single(args)?;
-            let mut config = runtime.config.write().await;
-            if !config
-                .providers
-                .iter()
-                .any(|provider| provider.enabled && provider.id == id)
-            {
-                return Err("模型配置不存在或未启用".to_string());
-            }
-            config.active_provider_id = Some(id);
-            drop(config);
-            to_value(runtime.persist().await.map_err(|err| err.to_string())?)
+            to_value(crate::commands::set_active_provider_core(runtime, id).await?)
         }
         "set_provider_enabled" => {
             let id: String = field(args, &["id"])?;
             let enabled: bool = field(args, &["enabled"])?;
-            let is_free = crate::experimental_free::is_experimental_free_id(&id);
-            {
-                let mut config = runtime.config.write().await;
-                let provider = config
-                    .providers
-                    .iter_mut()
-                    .find(|provider| provider.id == id)
-                    .ok_or_else(|| "模型配置不存在".to_string())?;
-                provider.enabled = enabled;
-
-                if !enabled && config.active_provider_id.as_deref() == Some(&id) {
-                    config.active_provider_id = config
-                        .providers
-                        .iter()
-                        .find(|provider| provider.enabled)
-                        .map(|provider| provider.id.clone());
-                } else if enabled && config.active_provider_id.is_none() {
-                    config.active_provider_id = Some(id.clone());
-                }
-            }
-
-            if enabled && is_free {
-                let probes =
-                    crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
-                let mut config = runtime.config.write().await;
-                if let Some(provider) = config
-                    .providers
-                    .iter_mut()
-                    .find(|p| crate::experimental_free::is_experimental_free_id(&p.id))
-                {
-                    let available: Vec<&str> = probes
-                        .iter()
-                        .filter(|p| p.available)
-                        .map(|p| p.name.as_str())
-                        .collect();
-                    if available.is_empty() {
-                        provider.last_error =
-                            Some("免费实验通道暂无可用模型，请稍后重试".into());
-                        provider.status = ProviderStatus::Unavailable;
-                    } else {
-                        if !available
-                            .iter()
-                            .any(|m| m.eq_ignore_ascii_case(provider.model_name.trim()))
-                        {
-                            if let Some(preferred) =
-                                crate::experimental_free::pick_preferred_model(&available)
-                            {
-                                provider.model_name = preferred.to_string();
-                            }
-                        }
-                        crate::experimental_free::apply_route(provider);
-                        provider.last_error = None;
-                        provider.status = ProviderStatus::Available;
-                    }
-                    provider.last_checked_at = Some(chrono::Utc::now());
-                }
-            }
-
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(provider_views(&*runtime.config.read().await))
+            to_value(crate::commands::set_provider_enabled_core(runtime, id, enabled).await?)
         }
         "test_provider" => {
             let id: String = single(args)?;
-            let outcome = runtime
-                .gateway
-                .test_provider(&id)
-                .await
-                .map_err(|err| err.to_string())?;
-            let gateway_config = runtime.gateway.config().await;
-            let mut config = runtime.config.write().await;
-            if let Some(source) = gateway_config.providers.iter().find(|p| p.id == id) {
-                if let Some(provider) = config.providers.iter_mut().find(|p| p.id == id) {
-                    provider.status = source.status.clone();
-                    provider.last_checked_at = source.last_checked_at;
-                    provider.last_error = source.last_error.clone();
-                }
-            } else if let Some(provider) = config.providers.iter_mut().find(|p| p.id == id) {
-                provider.status = outcome.status.clone();
-                provider.last_checked_at = Some(chrono::Utc::now());
-            }
-            drop(config);
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            to_value(outcome)
+            to_value(crate::commands::test_provider_core(runtime, id).await?)
         }
         "test_provider_draft" => {
             let input: ListModelsInput = field(args, &["input"])?;
             let model_name: String = field(args, &["modelName", "model_name"])?;
-            if input.api_key.trim().is_empty() {
-                return Err("请先填写 API Key".to_string());
-            }
-            if input.base_url.trim().is_empty() {
-                return Err("请先填写 Base URL".to_string());
-            }
-            if model_name.trim().is_empty() {
-                return Err("请先填写 Model Name".to_string());
-            }
-            let base_url = crate::model::resolve_provider_base_url(
-                input.base_url.clone(),
-                &input.protocol,
-                input.auto_adapt_base_url,
-            );
-            let mut provider = ProviderConfig::new(
-                "draft".to_string(),
-                input.vendor_id.clone().unwrap_or_else(|| "custom".to_string()),
-                base_url,
-                input.api_key.trim().to_string(),
-                model_name.trim().to_string(),
-            );
-            provider.protocol = input.protocol;
-            provider.auto_adapt_base_url = input.auto_adapt_base_url;
-            to_value(
-                crate::probe::probe_llm_connectivity(runtime.gateway.http_client(), &provider).await,
-            )
+            to_value(crate::commands::test_provider_draft_core(runtime, input, model_name).await?)
         }
         "list_provider_models" => {
             let input: ListModelsInput = field(args, &["input"])?;
-            if input.api_key.trim().is_empty() {
-                return Err("请先填写 API Key".to_string());
-            }
-            if input.base_url.trim().is_empty() {
-                return Err("请先填写 Base URL".to_string());
-            }
-            let base_url = crate::model::resolve_provider_base_url(
-                input.base_url.clone(),
-                &input.protocol,
-                input.auto_adapt_base_url,
-            );
-            to_value(
-                runtime
-                    .gateway
-                    .list_provider_models(
-                        base_url.trim(),
-                        input.api_key.trim(),
-                        input.vendor_id.as_deref(),
-                    )
-                    .await
-                    .map_err(|err| err.to_string())?,
-            )
+            to_value(crate::commands::list_provider_models_core(runtime, input).await?)
         }
         "set_model_enabled" => {
             let input: SetModelEnabledInput = field(args, &["input"])?;
-            let config_dir = runtime.paths.config_dir.clone();
-            let mut registry = crate::model_registry::load(&config_dir);
-            crate::model_registry::set_enabled(
-                &mut registry,
-                &input.provider_id,
-                &input.model_name,
-                input.enabled,
-            );
-            crate::model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())?;
-            runtime
-                .gateway
-                .set_model_registry_snapshot(registry.entries.clone())
-                .await;
-            to_value(())
+            to_value(crate::commands::set_model_enabled_core(runtime, input).await?)
         }
         "probe_models" => {
             let input: ProbeModelsInput = field(args, &["input"])?;
-            if input.model_names.is_empty() {
-                return to_value(Vec::<crate::model_registry::ModelEntry>::new());
-            }
-            let config = runtime.config.read().await.clone();
-            let provider = find_provider(&config, &input.provider_id)?;
-
-            let results: Vec<(String, crate::model_registry::ModelProbe)> =
-                if crate::experimental_free::is_experimental_free(&provider) {
-                    let probes =
-                        crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
-                    input
-                        .model_names
-                        .iter()
-                        .map(|model_name| {
-                            let (ok, error) = match probes
-                                .iter()
-                                .find(|probe| probe.name.eq_ignore_ascii_case(model_name))
-                            {
-                                Some(probe) if probe.available => (true, None),
-                                Some(_) => (false, Some("模型不可用".to_string())),
-                                None => (false, Some("未匹配到该免费通道模型".to_string())),
-                            };
-                            (
-                                model_name.clone(),
-                                crate::model_registry::ModelProbe {
-                                    ok,
-                                    latency_ms: 0,
-                                    tokens_per_sec: 0.0,
-                                    completion_tokens: 0,
-                                    estimated: false,
-                                    probed_at: chrono::Utc::now(),
-                                    error,
-                                },
-                            )
-                        })
-                        .collect()
-                } else {
-                    let client = runtime.gateway.http_client().clone();
-                    let provider = provider.clone();
-                    futures_util::stream::iter(input.model_names.iter().cloned().map(|model_name| {
-                        let client = client.clone();
-                        let mut target = provider.clone();
-                        target.model_name = model_name.clone();
-                        async move {
-                            let report = crate::probe::probe_llm_connectivity(&client, &target).await;
-                            (
-                                model_name,
-                                crate::model_registry::ModelProbe {
-                                    ok: report.ok,
-                                    latency_ms: report.latency_ms,
-                                    tokens_per_sec: report.tokens_per_sec,
-                                    completion_tokens: report.completion_tokens,
-                                    estimated: report.estimated,
-                                    probed_at: chrono::Utc::now(),
-                                    error: report.error,
-                                },
-                            )
-                        }
-                    }))
-                    .buffer_unordered(3)
-                    .collect::<Vec<_>>()
-                    .await
-                };
-
-            let config_dir = runtime.paths.config_dir.clone();
-            let mut registry = crate::model_registry::load(&config_dir);
-            for (model_name, probe) in results {
-                crate::model_registry::apply_probe(&mut registry, &provider.id, &model_name, probe);
-            }
-            crate::model_registry::save(&config_dir, &registry).map_err(|err| err.to_string())?;
-            runtime
-                .gateway
-                .set_model_registry_snapshot(registry.entries.clone())
-                .await;
-            to_value(crate::model_registry::entries_for_provider(
-                &registry,
-                &provider.id,
-                &input.model_names,
-            ))
+            to_value(crate::commands::probe_models_core(runtime, input).await?)
         }
 
         // ===== P0 网关设置 =====
@@ -682,6 +268,13 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         "get_local_access_info" => {
             let config = runtime.config.read().await.clone();
             to_value(crate::commands::local_access_info_from_config(&config))
+        }
+        "fetch_local_models" => {
+            let config = runtime.config.read().await.clone();
+            to_value(
+                crate::commands::fetch_local_models_report(runtime.gateway.http_client(), &config)
+                    .await,
+            )
         }
         "update_gateway_settings" => {
             let input: GatewaySettingsInput = field(args, &["input"])?;

@@ -411,6 +411,12 @@
           "markdownDescription": "Enables the delete_strategy_box command"
         },
         {
+          "description": "Enables the fetch_local_models command",
+          "type": "string",
+          "const": "allow-fetch-local-models",
+          "markdownDescription": "Enables the fetch_local_models command"
+        },
+        {
           "description": "Enables the get_clients_env_status command",
           "type": "string",
           "const": "allow-get-clients-env-status",

@@ -375,9 +375,15 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
                       {statusLabel}
                     </span>
                   </td>
-                  <td>{probeResult ? `${probeResult.latencyMs} ms` : '—'}</td>
                   <td>
-                    {probeResult ? `${probeResult.tokensPerSec.toFixed(1)} t/s` : '—'}
+                    {probeResult?.ok && probeResult.latencyMs > 0
+                      ? `${probeResult.latencyMs} ms`
+                      : '—'}
+                  </td>
+                  <td>
+                    {probeResult?.ok && probeResult.tokensPerSec > 0
+                      ? `${probeResult.tokensPerSec.toFixed(1)} t/s`
+                      : '—'}
                   </td>
                   <td>
                     {probeResult ? formatProbeTime(probeResult.probedAt) : '—'}
