@@ -74,6 +74,12 @@ Seven main tabs: Dashboard, Models, Clients, Skills, SOUL, Rules, Settings. Logs
 - Install, uninstall, mount, and unmount Skills — your library is always preserved
 - Mount the same Skill across multiple agents; Markdown-rendered skill panels
 
+### LAN WebUI
+
+- With one machine running the gateway, any device on the same LAN can manage it from a browser — no Internet relay, no accounts, no cloud.
+- Covers providers, skills, client access, key pools, logs, rules and takeover profiles — the same management surface as the desktop GUI.
+- CLI: `sugt-cli serve --lan --webui` (temporary, does not write config). GUI: a persistent on/off switch in Settings. See [LAN WebUI guide](docs/局域网WebUI管理.md).
+
 ### Traffic Overlay
 
 - Always-on-top, semi-transparent, mouse-through overlay showing today's token activity in real time
@@ -208,9 +214,14 @@ Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
 sugt-cli serve --lan --port 8787          # LAN/server: bind 0.0.0.0, require client key
+sugt-cli serve --lan --webui              # + browser-based admin UI on port 8788 (this run only)
+sugt-cli webui on --port 8788             # persist the WebUI setting for GUI startup
+sugt-cli webui off | status               # disable / inspect the persisted setting
 sugt-cli env        # takeover management
 sugt-cli test       # connectivity test
 ```
+
+`--webui` / `--webui-port` affect only the current run (like `--port`); use the `webui` subcommand or the GUI Settings switch for persistence. Open `http://<LAN-IP>:8788` and log in with `gateway_client_api_key`. See [LAN WebUI guide](docs/局域网WebUI管理.md).
 
 > On macOS the CLI ships inside the app bundle at `SUTAI.app/Contents/MacOS/sugt-cli`. Linux releases ship the CLI only.
 
@@ -247,7 +258,8 @@ cd src-tauri && cargo test
 | Frontend | React 18 + TypeScript 5.7 + Vite 6 |
 | Backend | Rust (edition 2021) + Axum 0.7 |
 | Gateway | Embedded Axum HTTP server, OpenAI / Anthropic protocol bridging |
-| CLI | `sugt-cli` (standalone binary: `serve` / `status` / `test` / `env` / `init`) |
+| CLI | `sugt-cli` (standalone binary: `serve` / `status` / `test` / `env` / `init` / `webui`) |
+| LAN WebUI | Independent Axum listener + embedded SPA; RPC over `/api/invoke`, HMAC session from gateway key |
 
 ## Feedback & Contributions
 

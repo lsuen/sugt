@@ -74,6 +74,13 @@ SUGT 刻意保持小巧：一个兼容的本地网关、常用 Agent 一键接�
 - 安装、卸载、挂载、取消挂载——技能库永远保留
 - 同一技能可挂载到多个 Agent；Markdown 渲染的技能面板
 
+### 局域网 WebUI 管理
+
+- 一台机器开着网关，同局域网内任意设备用浏览器即可管理——纯局域网、本地优先，不做互联网中转、不开账号系统
+- 覆盖 Provider、技能、客户端接入、Key 池、日志、策略规则、接管配置，与桌面 GUI 同一套管理面
+- CLI：`sugt-cli serve --lan --webui`（仅本次运行生效，不写配置）；GUI：设置页开关（持久化）
+- 详见 [局域网 WebUI 管理文档](docs/局域网WebUI管理.md)
+
 ### 流量悬浮窗
 
 - 置顶 + 半透明 + 鼠标穿透，实时显示今日 Token 交互
@@ -208,9 +215,14 @@ tar -xzf SUTAI-linux-x64.tar.gz
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
 sugt-cli serve --lan --port 8787          # 局域网 / 服务器：绑定 0.0.0.0，强制客户端 Key
+sugt-cli serve --lan --webui              # 同时开 WebUI（端口 8788，仅本次运行生效）
+sugt-cli webui on --port 8788             # 持久化配置，GUI 启动时自动监听
+sugt-cli webui off | status               # 关闭 / 查看持久配置
 sugt-cli env        # 接管管理
 sugt-cli test       # 连通性测试
 ```
+
+`--webui` / `--webui-port` 和 `--port` 一样只影响本次运行，不写配置；要持久化请用 `webui` 子命令或 GUI 设置页开关。开启后浏览器访问 `http://<局域网IP>:8788`，用 `gateway_client_api_key` 登录。详见 [局域网 WebUI 管理文档](docs/局域网WebUI管理.md)。
 
 > macOS 上 CLI 内置于应用包：`SUTAI.app/Contents/MacOS/sugt-cli`。Linux Release 包只含 CLI。
 
@@ -247,7 +259,8 @@ cd src-tauri && cargo test
 | 前端 | React 18 + TypeScript 5.7 + Vite 6 |
 | 后端 | Rust (edition 2021) + Axum 0.7 |
 | 网关 | 内嵌 Axum HTTP 服务器，OpenAI / Anthropic 协议互转 |
-| CLI | `sugt-cli`（独立二进制，支持 `serve` / `status` / `test` / `env` / `init`） |
+| CLI | `sugt-cli`（独立二进制，支持 `serve` / `status` / `test` / `env` / `init` / `webui`） |
+| 局域网 WebUI | 独立 Axum listener + 内嵌 SPA；`/api/invoke` RPC，网关 Key 换 HMAC 会话 |
 
 ## 反馈与参与
 
