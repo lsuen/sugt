@@ -240,9 +240,12 @@ npm run dev:app      # 启动 Tauri 桌面应用（开发模式）
 
 ```bash
 npm run build        # 前端生产构建
+npm run build:web    # 把局域网 WebUI 嵌入 sugt-cli；不需要 WebUI 时可跳过
 npx tauri build      # 完整桌面应用打包
 cd src-tauri && cargo build --release --bin sugt-cli   # 独立 CLI
 ```
+
+构建 `sugt-cli` 前必须先执行 `npm run build:web`；否则 CLI 内嵌的是占位页。
 
 发布前的完整验证（前端 + Rust 单元与集成测试）：
 

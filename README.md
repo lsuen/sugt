@@ -239,9 +239,12 @@ Production build:
 
 ```bash
 npm run build        # frontend production build
+npm run build:web    # embed LAN WebUI into sugt-cli; skip only if WebUI is not needed
 npx tauri build      # full desktop bundle
 cd src-tauri && cargo build --release --bin sugt-cli   # standalone CLI
 ```
+
+Run `npm run build:web` before building `sugt-cli`. Otherwise the embedded WebUI is the placeholder page.
 
 Full verification (frontend plus Rust library and integration tests):
 

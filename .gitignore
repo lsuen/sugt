@@ -42,8 +42,11 @@ scripts/.notify-*.json
 
 # Local probe / debug leftovers (AGENTS.md Forbidden: never commit)
 /.omo/
+**/.omo/
 /_me_write_probe.md
 /debug.sh
+# 并行开发的 git worktree 工作区，只在本机存在
+/.worktrees/
 
 # Dev-process documents (task breakdowns, local notes)
 /.task/
