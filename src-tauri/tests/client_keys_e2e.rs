@@ -58,7 +58,7 @@ fn write_keys(dir: &PathBuf) {
         &ClientKeysFile {
             version: 1,
             keys: vec![
-                entry("config", "本机默认密钥", "sk-config", true),
+                entry("config", "默认", "sk-config", true),
                 entry("team", "协作机", "sk-team", false),
             ],
         },

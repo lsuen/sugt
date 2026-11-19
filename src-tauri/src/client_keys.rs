@@ -312,8 +312,16 @@ pub fn record_error(file: &mut ClientKeysFile, key: &str, message: &str) -> bool
 /// - 池非空但没有 primary：提升第一条（并强制启用）；
 /// - 池为空：用配置里的 `gateway_client_api_key`（trim 后为空则 `sugt-local-key`）补种。
 pub fn ensure_primary(file: &mut ClientKeysFile, configured_key: &str) -> bool {
+    // 旧版补种名「本机默认密钥」→「默认」：只改展示名，不碰 key / id / 用量。
+    let mut renamed = false;
+    for key in file.keys.iter_mut() {
+        if key.primary && key.name == "本机默认密钥" {
+            key.name = "默认".to_string();
+            renamed = true;
+        }
+    }
     if file.keys.iter().any(|key| key.primary) {
-        return false;
+        return renamed;
     }
     if let Some(first) = file.keys.first_mut() {
         first.primary = true;
@@ -328,7 +336,7 @@ pub fn ensure_primary(file: &mut ClientKeysFile, configured_key: &str) -> bool {
     };
     file.keys.push(ClientKey {
         id: "local".to_string(),
-        name: "本机默认密钥".to_string(),
+        name: "默认".to_string(),
         key,
         enabled: true,
         primary: true,
@@ -640,10 +648,16 @@ mod tests {
         assert!(ensure_primary(&mut file, "  sk-config  "));
         assert_eq!(file.keys.len(), 1);
         assert_eq!(file.keys[0].id, "local");
-        assert_eq!(file.keys[0].name, "本机默认密钥");
+        assert_eq!(file.keys[0].name, "默认");
         assert_eq!(file.keys[0].key, "sk-config");
         assert!(file.keys[0].primary);
         assert!(file.keys[0].enabled);
+
+        // 旧展示名一次性迁移；再次调用应幂等。
+        file.keys[0].name = "本机默认密钥".to_string();
+        assert!(ensure_primary(&mut file, "sk-config"));
+        assert_eq!(file.keys[0].name, "默认");
+        assert!(!ensure_primary(&mut file, "sk-config"));
 
         // 幂等：再来一次不新增也不改动。
         assert!(!ensure_primary(&mut file, "sk-other"));

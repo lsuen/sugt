@@ -225,7 +225,32 @@ pub fn open_release_page(url: Option<&str>) -> Result<()> {
     open_url(target)
 }
 
+/// 只放行普通 http(s) 链接：Windows 的 `cmd /C start` 会再解析一遍 `& | < > ^ % "`，
+/// macOS 的 `open` 也会打开 `file:` / 本地路径，远端给的 URL 必须先过这道闸。
+fn validate_open_url(raw: &str) -> Result<&str> {
+    let url = raw.trim();
+    let scheme_ok = url
+        .get(..8)
+        .map(|p| p.eq_ignore_ascii_case("https://"))
+        .unwrap_or(false)
+        || url
+            .get(..7)
+            .map(|p| p.eq_ignore_ascii_case("http://"))
+            .unwrap_or(false);
+    let host_part = url.split_once("://").map(|(_, rest)| rest).unwrap_or("");
+    let bad_char = url.chars().any(|c| {
+        c.is_whitespace()
+            || c.is_control()
+            || matches!(c, '&' | '|' | '<' | '>' | '^' | '%' | '"' | '\'' | '`' | '\\' | '(' | ')' | ';')
+    });
+    if !scheme_ok || host_part.is_empty() || bad_char || url.len() > 2048 {
+        bail!("链接不合法，已拒绝打开：{:?}", raw);
+    }
+    Ok(url)
+}
+
 fn open_url(url: &str) -> Result<()> {
+    let url = validate_open_url(url)?;
     #[cfg(target_os = "macos")]
     {
         let status = Command::new("open").arg(url).status()?;
@@ -263,10 +288,13 @@ pub async fn download_and_apply(
         .asset_url
         .as_deref()
         .ok_or_else(|| anyhow!("当前平台暂无自动安装包，请打开发布页手动下载"))?;
-    let asset_name = info
-        .asset_name
-        .as_deref()
-        .unwrap_or("update.bin");
+    // 远端给的文件名与版本号都按不可信输入处理：只允许单一安全文件名。
+    let asset_name = sanitize_file_component(
+        info.asset_name.as_deref().unwrap_or("update.bin"),
+        "更新包文件名",
+    )?;
+    let version_dir = sanitize_file_component(&info.latest_version, "版本号")?;
+    let asset_name = asset_name.as_str();
 
     if platform_key() == "unsupported" {
         bail!("当前平台暂不支持应用内更新，请打开发布页手动下载");
@@ -323,10 +351,10 @@ pub async fn download_and_apply(
         }
     }
 
-    let staging = config_dir.join("updates").join(&info.latest_version);
+    let staging = config_dir.join("updates").join(&version_dir);
     std::fs::create_dir_all(&staging)
         .with_context(|| format!("无法创建 {}", staging.display()))?;
-    let package_path = staging.join(asset_name);
+    let package_path = safe_package_path(&staging, asset_name)?;
     std::fs::write(&package_path, &bytes)
         .with_context(|| format!("无法写入 {}", package_path.display()))?;
 
@@ -521,6 +549,48 @@ fn writable_install_target() -> Option<PathBuf> {
     None
 }
 
+/// 把远端提供的名字规约为「单一安全文件名」：非空、长度受限、仅允许
+/// ASCII 字母数字与 `. _ - +`，不含 `..`、分隔符、盘符冒号、引号等，不以 `.` 开头、不以 `.` 结尾。
+fn sanitize_file_component(raw: &str, what: &str) -> Result<String> {
+    let name = raw.trim();
+    let ok_chars = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    let single = Path::new(name)
+        .file_name()
+        .map(|f| f == std::ffi::OsStr::new(name))
+        .unwrap_or(false);
+    if name.is_empty()
+        || name.len() > 128
+        || !ok_chars
+        || !single
+        || name.contains("..")
+        || name.starts_with('.')
+        || name.ends_with('.')
+    {
+        bail!("{}不合法，已拒绝：{:?}", what, raw);
+    }
+    Ok(name.to_string())
+}
+
+/// 在 staging 目录内拼出安装包路径，并断言结果仍位于 staging 之内（防穿越 / 符号链接逃逸）。
+fn safe_package_path(staging: &Path, asset_name: &str) -> Result<PathBuf> {
+    let name = sanitize_file_component(asset_name, "更新包文件名")?;
+    let base = staging
+        .canonicalize()
+        .with_context(|| format!("无法解析 {}", staging.display()))?;
+    let path = base.join(&name);
+    if path.parent() != Some(base.as_path()) || !path.starts_with(&base) {
+        bail!("更新包路径越出暂存目录，已拒绝");
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            bail!("更新包目标是符号链接，已拒绝");
+        }
+    }
+    Ok(path)
+}
+
 fn unzip_file(zip_path: &Path, dest: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -537,17 +607,16 @@ fn unzip_file(zip_path: &Path, dest: &Path) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        // PowerShell Expand-Archive
+        // PowerShell Expand-Archive：路径经环境变量传入，命令文本是常量，不做字符串插值。
         let status = Command::new("powershell")
             .args([
                 "-NoProfile",
+                "-NonInteractive",
                 "-Command",
-                &format!(
-                    "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-                    zip_path.display(),
-                    dest.display()
-                ),
+                "Expand-Archive -LiteralPath $env:SUGT_UPDATE_ZIP -DestinationPath $env:SUGT_UPDATE_DEST -Force",
             ])
+            .env("SUGT_UPDATE_ZIP", zip_path)
+            .env("SUGT_UPDATE_DEST", dest)
             .status()
             .context("解压失败")?;
         if !status.success() {
@@ -565,6 +634,89 @@ fn unzip_file(zip_path: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_name_sanitizer_rejects_traversal_and_injection() {
+        for ok in ["SUTAI-windows-x64.zip", "SUTAI-macos-arm64.zip", "update.bin", "1.2.0-beta+1"] {
+            assert!(sanitize_file_component(ok, "x").is_ok(), "应放行：{ok}");
+        }
+        for bad in [
+            "", "..", ".", "../evil.zip", "..\\evil.zip", "a/b.zip", "a\\b.zip",
+            "/etc/passwd", "C:\\x.zip", "a'b.zip", "a;b.zip", "a b.zip", "a`b.zip",
+            "$(calc).zip", "x..y.zip", ".hidden", "name.", "a\0b",
+        ] {
+            assert!(sanitize_file_component(bad, "x").is_err(), "应拒绝：{bad:?}");
+        }
+    }
+
+    #[test]
+    fn safe_package_path_stays_inside_staging() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("sugt-update-{stamp}"));
+        let staging = root.join("updates").join("1.2.0");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let ok = safe_package_path(&staging, "SUTAI-macos-arm64.zip").unwrap();
+        assert_eq!(ok.file_name().unwrap(), "SUTAI-macos-arm64.zip");
+        assert!(ok.starts_with(staging.canonicalize().unwrap()));
+
+        for evil in ["../escape.zip", "..\\escape.zip", "sub/../../escape.zip", "/tmp/escape.zip"] {
+            assert!(safe_package_path(&staging, evil).is_err(), "应拒绝：{evil}");
+        }
+        assert!(!root.join("updates").join("escape.zip").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_package_path_rejects_symlink_target() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("sugt-update-link-{stamp}"));
+        let staging = root.join("s");
+        std::fs::create_dir_all(&staging).unwrap();
+        let victim = root.join("victim.txt");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, staging.join("pkg.zip")).unwrap();
+        assert!(safe_package_path(&staging, "pkg.zip").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_url_accepts_plain_http_and_rejects_shell_metachars() {
+        for ok in [
+            "https://github.com/lsuen/sugt/releases/latest",
+            "https://github.com/lsuen/sugt/releases/tag/v1.2.0",
+            "http://example.com/a?b=c",
+        ] {
+            assert!(validate_open_url(ok).is_ok(), "应放行：{ok}");
+        }
+        for bad in [
+            "",
+            "https://",
+            "file:///etc/passwd",
+            "/Applications/Calculator.app",
+            "javascript:alert(1)",
+            "ms-msdt:/id x",
+            "https://a.com/x&calc",
+            "https://a.com/x|calc",
+            "https://a.com/x^&calc",
+            "https://a.com/%PATH%",
+            "https://a.com/x\"y",
+            "https://a.com/x y",
+            "https://a.com/x\ny",
+            "https://a.com/$(calc)",
+            "https://a.com/`calc`",
+            "https://a.com/x;calc",
+        ] {
+            assert!(validate_open_url(bad).is_err(), "应拒绝：{bad:?}");
+        }
+    }
 
     #[test]
     fn version_cmp_basic() {

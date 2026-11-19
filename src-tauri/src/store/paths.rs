@@ -62,6 +62,37 @@ impl StorePaths {
     }
 }
 
+/// 校验 skill_id 必须是单一合法路径段：非空、不是 `.` / `..`、不含分隔符、盘符冒号、
+/// NUL 或控制字符，也不是绝对路径。越界一律 Err，避免 `skills_dir.join(id)` 逃出暂存区。
+pub fn validate_skill_id(skill_id: &str) -> anyhow::Result<&str> {
+    validate_single_segment(skill_id, "技能 ID")
+}
+
+/// 校验挂载目录名（`mounted.json` 的 folder 字段 / `relative_path` 末段）：规则与
+/// [`validate_skill_id`] 完全一致，是 `skills_dir.join(folder)` 之前的唯一闸门。
+/// 空串会让 `join` 退化成 skills 目录本身，`..` 会逃出 skills 目录，都必须拒绝。
+pub fn validate_folder_name(folder: &str) -> anyhow::Result<&str> {
+    validate_single_segment(folder, "挂载目录名")
+}
+
+pub fn validate_single_segment<'a>(raw: &'a str, what: &str) -> anyhow::Result<&'a str> {
+    let bad = raw.is_empty()
+        || raw.trim() != raw
+        // 全点号（`.` / `..` / `...`）：Windows 会把尾部点号当空，统一拒绝。
+        || raw.chars().all(|c| c == '.')
+        || raw
+            .chars()
+            .any(|c| matches!(c, '/' | '\\' | ':' | '\0') || c.is_control());
+    if bad {
+        return Err(anyhow::anyhow!("非法{what}：{raw:?}"));
+    }
+    let mut comps = Path::new(raw).components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(raw),
+        _ => Err(anyhow::anyhow!("非法{what}：{raw:?}")),
+    }
+}
+
 pub fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -128,6 +159,31 @@ pub fn replace_dir(source: &Path, dest: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_skill_id_accepts_legit_and_rejects_traversal() {
+        for ok in ["repo__a--b", "local__weekly", "imported__周报助手", "a..b", "x.y"] {
+            assert!(validate_skill_id(ok).is_ok(), "应放行：{ok}");
+        }
+        for bad in [
+            "", " ", ".", "..", "../x", "a/../b", "a/b", "a\\b", "..\\x", "/etc/passwd",
+            "C:\\Windows", "C:", "a\0b", "a\nb", " x", "...",
+        ] {
+            assert!(validate_skill_id(bad).is_err(), "应拒绝：{bad:?}");
+        }
+    }
+
+    #[test]
+    fn validate_folder_name_shares_single_segment_rules() {
+        for ok in ["demo", "my-skill", "周报助手", "a..b", "v1.2"] {
+            assert!(validate_folder_name(ok).is_ok(), "应放行：{ok}");
+        }
+        for bad in [
+            "", ".", "..", "...", "../x", "a/b", "a\\b", "/etc", "C:\\x", "C:", " x", "x ", "a\0b",
+        ] {
+            assert!(validate_folder_name(bad).is_err(), "应拒绝：{bad:?}");
+        }
+    }
 
     #[test]
     fn replace_dir_swaps_content_without_leaving_temp_dirs() {

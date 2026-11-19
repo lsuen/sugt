@@ -2,8 +2,10 @@ use crate::store::catalog::{
     load_mounted_meta, load_staged_meta, parse_skill_meta, save_mounted_meta, save_staged_meta,
     MountedSkillRecord, StagedSkillRecord,
 };
-use crate::store::install::{folder_name_from_record, mount_to_dir, now_secs, MountTarget};
-use crate::store::paths::{remove_dir_if_exists, StorePaths};
+use crate::store::install::{
+    mount_folder_name, mount_to_dir, now_secs, remove_mounted_folder, MountTarget,
+};
+use crate::store::paths::{validate_folder_name, validate_skill_id, StorePaths};
 use crate::takeover_profiles::{self, TakeoverProfile};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
@@ -236,6 +238,7 @@ fn mount_one(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<()> {
+    validate_skill_id(skill_id)?;
     let staged = load_staged_meta(store_paths)?;
     let record = staged
         .skills
@@ -246,7 +249,7 @@ fn mount_one(
         return Err(anyhow!("本地技能目录不存在，请重新安装：{}", skill_id));
     }
     let skills_dir = resolve_agent_skills_dir_by_id(config_dir, agent_id)?;
-    let folder_name = folder_name_from_record(record);
+    let folder_name = mount_folder_name(skill_id, record)?;
     mount_to_dir(&source, &skills_dir, &folder_name)?;
 
     let mut mounted = load_mounted_meta(store_paths)?;
@@ -261,6 +264,7 @@ fn mount_one(
 }
 
 fn mount_to_custom_path(store_paths: &StorePaths, skill_id: &str, raw_path: &str) -> Result<()> {
+    validate_skill_id(skill_id)?;
     let staged = load_staged_meta(store_paths)?;
     let record = staged
         .skills
@@ -271,7 +275,7 @@ fn mount_to_custom_path(store_paths: &StorePaths, skill_id: &str, raw_path: &str
         return Err(anyhow!("本地技能目录不存在，请重新安装：{}", skill_id));
     }
     let skills_dir = resolve_custom_skills_dir(raw_path)?;
-    let folder_name = folder_name_from_record(record);
+    let folder_name = mount_folder_name(skill_id, record)?;
     mount_to_dir(&source, &skills_dir, &folder_name)?;
     let key = path_key(&skills_dir);
 
@@ -292,6 +296,7 @@ fn unmount_one(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<bool> {
+    validate_skill_id(skill_id)?;
     let mut mounted = load_mounted_meta(store_paths)?;
     let Some(record) = mounted.skills.get_mut(skill_id) else {
         return Ok(false);
@@ -313,8 +318,10 @@ fn unmount_one(
     let Some(folder) = folder else {
         return Ok(false);
     };
+    // mounted.json 的 folder 来自磁盘，删除前必须是单一路径段。
+    validate_folder_name(&folder)?;
     if let Ok(skills_dir) = resolve_agent_skills_dir_by_id(config_dir, agent_id) {
-        remove_dir_if_exists(&skills_dir.join(&folder))?;
+        remove_mounted_folder(&skills_dir, &folder)?;
     }
     record.clear_agent_mount(agent_id);
     let empty = record.is_empty_mount();
@@ -326,6 +333,7 @@ fn unmount_one(
 }
 
 fn unmount_from_custom_path(store_paths: &StorePaths, skill_id: &str, raw_path: &str) -> Result<bool> {
+    validate_skill_id(skill_id)?;
     let skills_dir = resolve_custom_skills_dir(raw_path)?;
     let key = path_key(&skills_dir);
     let mut mounted = load_mounted_meta(store_paths)?;
@@ -342,7 +350,7 @@ fn unmount_from_custom_path(store_paths: &StorePaths, skill_id: &str, raw_path: 
     }) else {
         return Ok(false);
     };
-    remove_dir_if_exists(&skills_dir.join(&folder))?;
+    remove_mounted_folder(&skills_dir, &folder)?;
     record.clear_path_mount(&key);
     // 顺带清未规范化的 key
     record
@@ -456,5 +464,100 @@ mod tests {
         assert_eq!(slugify("My Skill"), "my-skill");
         let zh = slugify("代码审查");
         assert!(zh.starts_with("skill-") || !zh.is_empty());
+    }
+
+    fn temp_store(tag: &str) -> (PathBuf, StorePaths) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("sugt-hub-{tag}-{stamp}"));
+        let store = root.join("store");
+        let paths = StorePaths {
+            root: store.clone(),
+            skills_dir: store.join("skills"),
+            cache_dir: store.join("cache"),
+            repos_file: store.join("repos.toml"),
+            settings_file: store.join("settings.toml"),
+            staged_meta: store.join("staged.json"),
+            mounted_meta: store.join("mounted.json"),
+        };
+        paths.ensure_dirs().unwrap();
+        (root, paths)
+    }
+
+    #[test]
+    fn custom_path_mount_of_root_skill_does_not_replace_skills_dir() {
+        let (root, paths) = temp_store("rootskill");
+        // 仓库根目录即技能：relative_path 为空
+        let sid = "git__o-r__";
+        let src = paths.staged_skill_dir(sid);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), "root skill").unwrap();
+        std::fs::write(
+            &paths.staged_meta,
+            format!(
+                r#"{{"skills":{{"{sid}":{{"name":"r","repo_id":"git-import","relative_path":"","installed_at":"0"}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let project = root.join("project").join("skills");
+        let neighbour = project.join("neighbour");
+        std::fs::create_dir_all(&neighbour).unwrap();
+        std::fs::write(neighbour.join("SKILL.md"), "keep").unwrap();
+
+        mount_to_custom_path(&paths, sid, project.to_str().unwrap()).unwrap();
+        assert!(neighbour.join("SKILL.md").exists(), "已有技能不应被整目录替换");
+        assert!(project.join(sid).join("SKILL.md").exists(), "回退为 skill_id 目录");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unmount_rejects_tampered_folder_and_keeps_files() {
+        let (root, paths) = temp_store("tamper");
+        let project = root.join("project").join("skills");
+        let neighbour = project.join("neighbour");
+        std::fs::create_dir_all(&neighbour).unwrap();
+        std::fs::write(neighbour.join("SKILL.md"), "keep").unwrap();
+        let key = path_key(&project);
+
+        for evil in ["..", "", "../outside", "a/b"] {
+            let raw = serde_json::json!({
+                "skills": { "demo": {
+                    "custom_paths": { key.clone(): evil },
+                    "agents": { "claude-code": evil }
+                }}
+            });
+            std::fs::write(&paths.mounted_meta, raw.to_string()).unwrap();
+
+            let r = unmount_from_custom_path(&paths, "demo", project.to_str().unwrap());
+            assert!(r.is_err(), "custom_paths folder={evil:?} 应拒绝");
+            // 校验先于 resolve_agent_skills_dir_by_id 与任何删除
+            let r = unmount_one(&paths, root.as_path(), "demo", "claude-code");
+            assert!(r.is_err(), "agents folder={evil:?} 应拒绝");
+            assert!(neighbour.join("SKILL.md").exists(), "folder={evil:?} 不应删到邻居");
+            assert!(project.exists(), "folder={evil:?} 不应删掉 skills 目录本身");
+        }
+
+        // 合法 folder 仍能卸载，且只删自己
+        let own = project.join("demo-folder");
+        std::fs::create_dir_all(&own).unwrap();
+        let raw = serde_json::json!({
+            "skills": { "demo": { "custom_paths": { key.clone(): "demo-folder" } } }
+        });
+        std::fs::write(&paths.mounted_meta, raw.to_string()).unwrap();
+        assert!(unmount_from_custom_path(&paths, "demo", project.to_str().unwrap()).unwrap());
+        assert!(!own.exists());
+        assert!(neighbour.join("SKILL.md").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hub_mount_unmount_reject_bad_skill_ids() {
+        let (root, paths) = temp_store("ids");
+        assert!(mount_to_custom_path(&paths, "../x", "/tmp/skills").is_err());
+        assert!(unmount_from_custom_path(&paths, "..", "/tmp/skills").is_err());
+        assert!(unmount_one(&paths, root.as_path(), "a/b", "codex").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
