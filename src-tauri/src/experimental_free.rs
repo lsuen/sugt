@@ -371,7 +371,10 @@ mod tests {
         );
     }
 
+    /// 真实公网探测：免费通道是否在线取决于外部服务，不能作为默认套件的一部分，
+    /// 否则上游抖动会把 CI 弄红。需要时手动跑 `cargo test -- --ignored`。
     #[tokio::test]
+    #[ignore = "live network probe; run with cargo test -- --ignored"]
     async fn live_probe_finds_at_least_one() {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(25))

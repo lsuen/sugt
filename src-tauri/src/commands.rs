@@ -1407,6 +1407,7 @@ pub struct GatewaySettingsInput {
 
 #[tauri::command]
 pub async fn update_gateway_settings(
+    app: AppHandle,
     runtime: State<'_, AppRuntime>,
     input: GatewaySettingsInput,
 ) -> Result<AppConfig, String> {
@@ -1458,7 +1459,35 @@ pub async fn update_gateway_settings(
     } else if lan_changed {
         runtime.gateway.replace_config(snapshot.clone()).await;
     }
+    // WebUI 的绑定地址同样跟随 allow_lan_access，必须一起重启，
+    // 否则开关已开但管理面仍只监听回环（设置页会显示不可达地址）。
+    if lan_changed {
+        restart_webui_after_lan_change(&app, runtime.inner(), &snapshot).await;
+    }
     Ok(snapshot)
+}
+
+async fn restart_webui_after_lan_change(
+    app: &AppHandle,
+    runtime: &AppRuntime,
+    config: &AppConfig,
+) {
+    let Some(slot) = app.try_state::<WebUiHandle>().map(|state| state.inner().clone()) else {
+        return;
+    };
+    if let Some(server) = slot.lock().await.take() {
+        server.stop().await;
+    }
+    if !config.webui_enabled {
+        return;
+    }
+    match crate::webui::start_on_port(runtime, config.webui_port).await {
+        Ok(server) => {
+            tracing::info!(addr = %server.addr, "WebUI 已按新的局域网设置重启");
+            *slot.lock().await = Some(server);
+        }
+        Err(err) => warn!(error = %err, "局域网开关切换后重启 WebUI 失败"),
+    }
 }
 
 #[derive(Debug, Deserialize)]

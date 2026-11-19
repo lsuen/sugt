@@ -388,7 +388,15 @@ export function SettingsPanel({
                   const enabled = e.target.checked;
                   if (!enabled) setLanOpen(false);
                   run(
-                    () => invoke('update_gateway_settings', { input: { allowLanAccess: enabled } }),
+                    () =>
+                      invoke('update_gateway_settings', {
+                        input: { allowLanAccess: enabled },
+                      }).then(() =>
+                        // WebUI 绑定地址跟随该开关重启，地址列表要同步刷新。
+                        invoke<WebUiSettingsView>('get_webui_settings')
+                          .then(setWebui)
+                          .catch(() => undefined),
+                      ),
                     t('common.update'),
                   );
                 }}
