@@ -242,7 +242,7 @@ export function SettingsPanel({
     <div className="settings-layout-wrap">
       {/* 冻结在滚动容器首行：子页再长也不会把 Tab 行顶出视野 */}
       <div className="settings-tabs" role="tablist" aria-label={t('set.tabsLabel')}>
-        {SETTINGS_TABS.map((item) => (
+        {SETTINGS_TABS.filter((item) => !(item.id === 'pet' && isBrowserMode())).map((item) => (
           <button
             key={item.id}
             type="button"
@@ -443,14 +443,16 @@ export function SettingsPanel({
               </div>
               <div>
                 <span className="hint compact">{t('set.webuiLan')}</span>
-                {webui?.lan_addresses?.length ? (
+                {webui?.enabled && webui.lan_addresses.length > 0 ? (
                   <ul className="lan-share-list">
                     {webui.lan_addresses.map((addr) => (
                       <li key={addr}><code>{addr}</code></li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="hint compact">{t('set.webuiLanEmpty')}</p>
+                  <p className="hint compact">
+                    {webui?.enabled ? t('set.webuiLanEmpty') : t('set.webuiLanDisabled')}
+                  </p>
                 )}
               </div>
             </div>
@@ -480,7 +482,7 @@ export function SettingsPanel({
         </div>
       )}
 
-      {tab === 'pet' && (
+      {tab === 'pet' && !isBrowserMode() && (
         <PetSettingsSection
           overlay={config?.overlay}
           defaults={DEFAULT_OVERLAY}

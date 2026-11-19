@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import {
   invoke, emit, listen,
-  isBrowserMode, getSessionToken, setSessionToken, requestLoginKey,
+  isBrowserMode, getSessionToken, setSessionToken,
   AUTH_EXPIRED_EVENT,
 } from './transport';
 import {
@@ -1169,25 +1169,28 @@ function App() {
   const [ready, setReady] = useState(() => !isBrowserMode() || Boolean(getSessionToken()));
   const [error, setError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
 
-  const login = useCallback(async () => {
+  const login = useCallback(async (key: string) => {
+    const trimmed = key.trim();
+    if (!trimmed) {
+      setError(t('webui.keyRequired'));
+      return;
+    }
     setLoggingIn(true);
     setError(null);
     try {
-      const key = await requestLoginKey();
-      if (!key) {
-        setError(t('webui.loginCancelled'));
-        return;
-      }
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key: trimmed }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { token?: string; error?: string };
       if (!data.token) throw new Error(data.error || t('webui.loginFailed'));
       setSessionToken(data.token);
+      // 令牌已换到 sessionStorage，输入框里的明文 key 立即清掉。
+      setKeyDraft('');
       setReady(true);
     } catch (e) {
       setError(`${t('webui.loginFailed')}：${e instanceof Error ? e.message : String(e)}`);
@@ -1195,12 +1198,6 @@ function App() {
       setLoggingIn(false);
     }
   }, []);
-
-  // 浏览器模式首次进入且无 token 时自动弹一次登录框。
-  useEffect(() => {
-    if (ready) return;
-    void login();
-  }, [ready, login]);
 
   // invoke 收到 401 会清 token 并抛此事件：回到登录态（仅浏览器模式）。
   useEffect(() => {
@@ -1219,10 +1216,28 @@ function App() {
       <main className="browser-only webui-login">
         <h2>{t('webui.loginTitle')}</h2>
         <p>{t('webui.loginDesc')}</p>
+        <form
+          className="webui-login-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void login(keyDraft);
+          }}
+        >
+          <input
+            type="password"
+            autoFocus
+            autoComplete="current-password"
+            aria-label={t('webui.keyPlaceholder')}
+            placeholder={t('webui.keyPlaceholder')}
+            value={keyDraft}
+            onChange={(event) => setKeyDraft(event.target.value)}
+            disabled={loggingIn}
+          />
+          <button type="submit" disabled={loggingIn}>
+            {loggingIn ? t('webui.loggingIn') : error ? t('webui.retryButton') : t('webui.loginButton')}
+          </button>
+        </form>
         {error ? <p className="error">{error}</p> : null}
-        <button type="button" onClick={() => void login()} disabled={loggingIn}>
-          {loggingIn ? t('webui.loggingIn') : error ? t('webui.retryButton') : t('webui.loginButton')}
-        </button>
         <p className="hint">{t('webui.tip')}</p>
       </main>
     );

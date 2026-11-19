@@ -43,13 +43,6 @@ export function clearSessionToken(): void {
   }
 }
 
-/** 弹窗让用户输入 gateway_client_api_key；取消或空输入返回 null。 */
-export async function requestLoginKey(): Promise<string | null> {
-  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return null;
-  const value = window.prompt('SUGT WebUI 登录：请输入 gateway_client_api_key');
-  return value && value.trim() ? value.trim() : null;
-}
-
 /** 与 Tauri invoke 同签名；浏览器端带 Bearer token 调 /api/invoke。 */
 export async function invoke<T>(
   cmd: string,
