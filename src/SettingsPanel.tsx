@@ -44,6 +44,8 @@ type AppConfigView = {
   port_fallback_enabled?: boolean;
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
+  free_models_fetch_and_test?: boolean;
+  custom_models_fetch_and_test?: boolean;
   log_retention_days?: number;
   overlay?: OverlayConfigView;
 };
@@ -519,6 +521,31 @@ export function SettingsPanel({
                 {t('set.goModels')}
               </button>
             </div>
+          </div>
+
+          <div className="card settings-group switches">
+            <h4>{t('set.advFetchMode')}</h4>
+            <p className="hint compact">{t('set.advFetchModeHint')}</p>
+            <label className="switch-line select-line">
+              <span>{t('set.freeChannel')}</span>
+              <select
+                value={String(Boolean(config?.free_models_fetch_and_test ?? true))}
+                onChange={(e) => run(() => invoke('update_gateway_settings', { input: { freeModelsFetchAndTest: e.target.value === 'true' } }), t('common.update'))}
+              >
+                <option value="false">{t('set.fetchOnly')}</option>
+                <option value="true">{t('set.fetchAndTest')}</option>
+              </select>
+            </label>
+            <label className="switch-line select-line">
+              <span>{t('set.customChannel')}</span>
+              <select
+                value={String(Boolean(config?.custom_models_fetch_and_test ?? false))}
+                onChange={(e) => run(() => invoke('update_gateway_settings', { input: { customModelsFetchAndTest: e.target.value === 'true' } }), t('common.update'))}
+              >
+                <option value="false">{t('set.fetchOnly')}</option>
+                <option value="true">{t('set.fetchAndTest')}</option>
+              </select>
+            </label>
           </div>
 
           <div className="card settings-group">
