@@ -173,6 +173,10 @@ fn webui_settings_view(enabled: bool, port: u16, allow_lan: bool) -> WebUiSettin
 
 #[tauri::command]
 pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus, String> {
+    get_status_core(runtime.inner()).await
+}
+
+pub(crate) async fn get_status_core(runtime: &AppRuntime) -> Result<RuntimeStatus, String> {
     let config = runtime.config.read().await.clone();
     let provider = runtime.gateway.active_provider().await;
     let local_hit = runtime.gateway.last_proxy_hit().await;
@@ -283,6 +287,10 @@ pub async fn start_gateway(runtime: State<'_, AppRuntime>) -> Result<String, Str
 
 #[tauri::command]
 pub async fn stop_gateway(runtime: State<'_, AppRuntime>) -> Result<(), String> {
+    stop_gateway_core(runtime.inner()).await
+}
+
+pub(crate) async fn stop_gateway_core(runtime: &AppRuntime) -> Result<(), String> {
     runtime.gateway.stop().await.map_err(|err| err.to_string())?;
     gateway_daemon::stop_detached(&runtime.paths.config_dir).map_err(|err| err.to_string())?;
     gateway_daemon::kill_sugt_cli_processes();
@@ -1147,6 +1155,12 @@ pub async fn reset_key_usage(
 pub async fn list_client_keys(
     runtime: State<'_, AppRuntime>,
 ) -> Result<Vec<crate::client_keys::ClientKeyView>, String> {
+    list_client_keys_core(runtime.inner()).await
+}
+
+pub(crate) async fn list_client_keys_core(
+    runtime: &AppRuntime,
+) -> Result<Vec<crate::client_keys::ClientKeyView>, String> {
     let file = runtime.gateway.client_keys_snapshot().await;
     Ok(file
         .keys
@@ -1159,6 +1173,13 @@ pub async fn list_client_keys(
 #[tauri::command]
 pub async fn create_client_key(
     runtime: State<'_, AppRuntime>,
+    input: CreateClientKeyInput,
+) -> Result<crate::client_keys::ClientKeyView, String> {
+    create_client_key_core(runtime.inner(), input).await
+}
+
+pub(crate) async fn create_client_key_core(
+    runtime: &AppRuntime,
     input: CreateClientKeyInput,
 ) -> Result<crate::client_keys::ClientKeyView, String> {
     crate::client_keys::validate_name(&input.name)?;
@@ -1185,7 +1206,7 @@ pub async fn create_client_key(
     };
     // 与既有 key（含 config 里的 gateway_client_api_key）重复会造成归属歧义。
     // 主密钥本身就要占用 config 里的 key，因此只在非主密钥时检查配置项。
-    if let Some(existing) = duplicate_key_source(&runtime, &file.keys, &key, !primary).await {
+    if let Some(existing) = duplicate_key_source(runtime, &file.keys, &key, !primary).await {
         return Err(format!("密钥已存在: {existing}"));
     }
     let created = crate::client_keys::upsert(
@@ -1208,6 +1229,13 @@ pub async fn create_client_key(
 #[tauri::command]
 pub async fn update_client_key(
     runtime: State<'_, AppRuntime>,
+    input: UpdateClientKeyInput,
+) -> Result<crate::client_keys::ClientKeyView, String> {
+    update_client_key_core(runtime.inner(), input).await
+}
+
+pub(crate) async fn update_client_key_core(
+    runtime: &AppRuntime,
     input: UpdateClientKeyInput,
 ) -> Result<crate::client_keys::ClientKeyView, String> {
     let mut file = runtime.gateway.client_keys_snapshot().await;
@@ -1247,7 +1275,7 @@ pub async fn update_client_key(
             .map(|(_, key)| key.clone())
             .collect();
         if let Some(existing) =
-            duplicate_key_source(&runtime, &others, &key, !is_primary).await
+            duplicate_key_source(runtime, &others, &key, !is_primary).await
         {
             return Err(format!("密钥已存在: {existing}"));
         }
@@ -1290,6 +1318,13 @@ pub async fn delete_client_key(
     runtime: State<'_, AppRuntime>,
     input: DeleteClientKeyInput,
 ) -> Result<(), String> {
+    delete_client_key_core(runtime.inner(), input).await
+}
+
+pub(crate) async fn delete_client_key_core(
+    runtime: &AppRuntime,
+    input: DeleteClientKeyInput,
+) -> Result<(), String> {
     let mut file = runtime.gateway.client_keys_snapshot().await;
     let existing = file
         .keys
@@ -1305,6 +1340,13 @@ pub async fn delete_client_key(
 #[tauri::command]
 pub async fn reset_client_key_usage(
     runtime: State<'_, AppRuntime>,
+    input: ResetClientKeyUsageInput,
+) -> Result<crate::client_keys::ClientKeyView, String> {
+    reset_client_key_usage_core(runtime.inner(), input).await
+}
+
+pub(crate) async fn reset_client_key_usage_core(
+    runtime: &AppRuntime,
     input: ResetClientKeyUsageInput,
 ) -> Result<crate::client_keys::ClientKeyView, String> {
     let mut file = runtime.gateway.client_keys_snapshot().await;
@@ -1323,7 +1365,7 @@ pub async fn reset_client_key_usage(
 /// `check_configured=false` 时只看池内其它 key（主密钥改 key 时用）。
 /// 返回脱敏后的重复值，便于直接拼进错误信息。
 async fn duplicate_key_source(
-    runtime: &State<'_, AppRuntime>,
+    runtime: &AppRuntime,
     others: &[crate::client_keys::ClientKey],
     key: &str,
     check_configured: bool,
@@ -1411,6 +1453,14 @@ pub async fn update_gateway_settings(
     runtime: State<'_, AppRuntime>,
     input: GatewaySettingsInput,
 ) -> Result<AppConfig, String> {
+    update_gateway_settings_core(runtime.inner(), input, Some(&app)).await
+}
+
+pub(crate) async fn update_gateway_settings_core(
+    runtime: &AppRuntime,
+    input: GatewaySettingsInput,
+    app: Option<&AppHandle>,
+) -> Result<AppConfig, String> {
     let mut lan_changed = false;
     let mut config = runtime.config.write().await;
     if let Some(enabled) = input.port_fallback_enabled {
@@ -1462,7 +1512,9 @@ pub async fn update_gateway_settings(
     // WebUI 的绑定地址同样跟随 allow_lan_access，必须一起重启，
     // 否则开关已开但管理面仍只监听回环（设置页会显示不可达地址）。
     if lan_changed {
-        restart_webui_after_lan_change(&app, runtime.inner(), &snapshot).await;
+        if let Some(app) = app {
+            restart_webui_after_lan_change(app, runtime, &snapshot).await;
+        }
     }
     Ok(snapshot)
 }

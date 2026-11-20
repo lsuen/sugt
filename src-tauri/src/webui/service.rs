@@ -140,38 +140,6 @@ async fn ensure_gateway_for_takeover(runtime: &AppRuntime, auto_start: bool) -> 
     ensure_gateway_listening(runtime, auto_start).await
 }
 
-async fn duplicate_key_source(
-    runtime: &AppRuntime,
-    others: &[crate::client_keys::ClientKey],
-    key: &str,
-    check_configured: bool,
-) -> Option<String> {
-    if check_configured {
-        let configured = runtime
-            .gateway
-            .config()
-            .await
-            .gateway_client_api_key
-            .trim()
-            .to_string();
-        if !configured.is_empty() && configured == key {
-            return Some(crate::model::mask_secret(key));
-        }
-    }
-    others
-        .iter()
-        .find(|other| other.key.trim() == key)
-        .map(|_| crate::model::mask_secret(key))
-}
-
-fn quota_from_input(input: Option<crate::commands::ClientQuotaInput>) -> crate::client_keys::ClientQuota {
-    let input = input.unwrap_or_default();
-    crate::client_keys::ClientQuota {
-        request_limit: input.request_limit.flatten(),
-        token_limit: input.token_limit.flatten(),
-    }
-}
-
 fn store_paths(runtime: &AppRuntime) -> StorePaths {
     StorePaths::from_app(&runtime.paths)
 }
@@ -280,51 +248,8 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         }
         "update_gateway_settings" => {
             let input: GatewaySettingsInput = field(args, &["input"])?;
-            let mut lan_changed = false;
-            let mut config = runtime.config.write().await;
-            if let Some(enabled) = input.port_fallback_enabled {
-                config.port_fallback_enabled = enabled;
-            }
-            if let Some(enabled) = input.gateway_watchdog_enabled {
-                config.gateway_watchdog_enabled = enabled;
-            }
-            if let Some(enabled) = input.allow_lan_access {
-                if config.allow_lan_access != enabled {
-                    lan_changed = true;
-                }
-                config.allow_lan_access = enabled;
-            }
-            if let Some(port) = input.port {
-                if port == 0 {
-                    return Err("端口不能为 0".to_string());
-                }
-                config.port = port;
-            }
-            if let Some(key) = input.gateway_client_api_key {
-                let trimmed = key.trim();
-                if trimmed.is_empty() {
-                    return Err("网关 API Key 不能为空".to_string());
-                }
-                config.gateway_client_api_key = trimmed.to_string();
-            }
-            if let Some(mode) = input.anthropic_access_mode {
-                config.anthropic_access_mode = mode;
-            }
-            let snapshot = config.clone();
-            drop(config);
-            runtime.persist().await.map_err(|err| err.to_string())?;
-            if lan_changed && runtime.gateway.is_running().await {
-                let _ = runtime.gateway.stop().await;
-                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-                runtime.gateway.replace_config(snapshot.clone()).await;
-                if let Err(err) = runtime.gateway.start().await {
-                    tracing::warn!(error = %err, "restart gateway after LAN toggle failed");
-                    return Err(crate::error_hint::format_gateway_start_error(&err));
-                }
-            } else if lan_changed {
-                runtime.gateway.replace_config(snapshot.clone()).await;
-            }
-            to_value(snapshot)
+            // WebUI/CLI 进程没有 Tauri 状态，不重启管理面 listener（与之前行为一致）。
+            to_value(crate::commands::update_gateway_settings_core(runtime, input, None).await?)
         }
         "set_failover" => {
             let enabled: bool = single(args)?;
@@ -332,13 +257,7 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
             to_value(runtime.persist().await.map_err(|err| err.to_string())?)
         }
         "start_gateway" => to_value(crate::commands::ensure_gateway_running(runtime).await?),
-        "stop_gateway" => {
-            runtime.gateway.stop().await.map_err(|err| err.to_string())?;
-            crate::gateway_daemon::stop_detached(&runtime.paths.config_dir)
-                .map_err(|err| err.to_string())?;
-            crate::gateway_daemon::kill_sugt_cli_processes();
-            to_value(())
-        }
+        "stop_gateway" => to_value(crate::commands::stop_gateway_core(runtime).await?),
 
         // ===== P0 客户端接入 =====
         "get_clients_env_status" => {
@@ -436,16 +355,7 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         }
 
         // ===== P0 key 池 =====
-        "list_client_keys" => to_value(
-            runtime
-                .gateway
-                .client_keys_snapshot()
-                .await
-                .keys
-                .iter()
-                .map(crate::client_keys::ClientKeyView::from)
-                .collect::<Vec<_>>(),
-        ),
+        "list_client_keys" => to_value(crate::commands::list_client_keys_core(runtime).await?),
         "list_api_key_pools" => to_value(
             runtime
                 .gateway
@@ -458,140 +368,19 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         ),
         "create_client_key" => {
             let input: CreateClientKeyInput = field(args, &["input"])?;
-            crate::client_keys::validate_name(&input.name)?;
-            let name = input.name.trim().to_string();
-            let mut file = runtime.gateway.client_keys_snapshot().await;
-            if file.keys.iter().any(|key| key.name.trim() == name.as_str()) {
-                return Err(format!("密钥名称已存在: {name}"));
-            }
-            let primary = input.primary.unwrap_or(false);
-            if primary && file.keys.iter().any(|key| key.primary) {
-                return Err("已存在主密钥".to_string());
-            }
-            let key = match input
-                .key
-                .map(|key| key.trim().to_string())
-                .filter(|key| !key.is_empty())
-            {
-                Some(key) => key,
-                None => crate::client_keys::generate_key(),
-            };
-            if let Some(existing) =
-                duplicate_key_source(runtime, &file.keys, &key, !primary).await
-            {
-                return Err(format!("密钥已存在: {existing}"));
-            }
-            let created = crate::client_keys::upsert(
-                &mut file.keys,
-                crate::client_keys::ClientKey {
-                    id: String::new(),
-                    name,
-                    key,
-                    enabled: true,
-                    primary,
-                    quota: quota_from_input(input.quota),
-                    usage: crate::client_keys::ClientKeyUsage::default(),
-                },
-            );
-            runtime.gateway.persist_client_keys(file).await?;
-            to_value(crate::client_keys::ClientKeyView::from(&created))
+            to_value(crate::commands::create_client_key_core(runtime, input).await?)
         }
         "update_client_key" => {
             let input: UpdateClientKeyInput = field(args, &["input"])?;
-            let mut file = runtime.gateway.client_keys_snapshot().await;
-            let position = file
-                .keys
-                .iter()
-                .position(|key| key.id == input.id)
-                .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
-            let is_primary = file.keys[position].primary;
-            crate::client_keys::validate_update(&file.keys[position], input.enabled)?;
-
-            if let Some(name) = input.name.as_deref() {
-                crate::client_keys::validate_name(name)?;
-                let name = name.trim().to_string();
-                if file
-                    .keys
-                    .iter()
-                    .enumerate()
-                    .any(|(index, key)| index != position && key.name.trim() == name.as_str())
-                {
-                    return Err(format!("密钥名称已存在: {name}"));
-                }
-                file.keys[position].name = name;
-            }
-
-            let mut key_changed = false;
-            if let Some(key) = input.key.as_deref() {
-                let key = key.trim().to_string();
-                if key.is_empty() {
-                    return Err("密钥不能为空".to_string());
-                }
-                let others: Vec<crate::client_keys::ClientKey> = file
-                    .keys
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != position)
-                    .map(|(_, key)| key.clone())
-                    .collect();
-                if let Some(existing) = duplicate_key_source(runtime, &others, &key, !is_primary).await {
-                    return Err(format!("密钥已存在: {existing}"));
-                }
-                key_changed = file.keys[position].key != key;
-                file.keys[position].key = key;
-            }
-
-            if let Some(quota) = input.quota {
-                let target = &mut file.keys[position].quota;
-                if let Some(limit) = quota.request_limit {
-                    target.request_limit = limit;
-                }
-                if let Some(limit) = quota.token_limit {
-                    target.token_limit = limit;
-                }
-            }
-
-            if let Some(enabled) = input.enabled {
-                file.keys[position].enabled = enabled;
-            }
-
-            let updated = file.keys[position].clone();
-            runtime.gateway.persist_client_keys(file).await?;
-
-            if is_primary && key_changed {
-                {
-                    let mut config = runtime.config.write().await;
-                    config.gateway_client_api_key = updated.key.clone();
-                }
-                runtime.persist().await.map_err(|err| err.to_string())?;
-            }
-
-            to_value(crate::client_keys::ClientKeyView::from(&updated))
+            to_value(crate::commands::update_client_key_core(runtime, input).await?)
         }
         "delete_client_key" => {
             let input: DeleteClientKeyInput = field(args, &["input"])?;
-            let mut file = runtime.gateway.client_keys_snapshot().await;
-            let existing = file
-                .keys
-                .iter()
-                .find(|key| key.id == input.id)
-                .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
-            crate::client_keys::validate_delete(existing)?;
-            crate::client_keys::remove_key(&mut file.keys, &input.id);
-            to_value(runtime.gateway.persist_client_keys(file).await?)
+            to_value(crate::commands::delete_client_key_core(runtime, input).await?)
         }
         "reset_client_key_usage" => {
             let input: ResetClientKeyUsageInput = field(args, &["input"])?;
-            let mut file = runtime.gateway.client_keys_snapshot().await;
-            let entry = file
-                .keys
-                .iter_mut()
-                .find(|key| key.id == input.id)
-                .ok_or_else(|| format!("未找到入站密钥: {}", input.id))?;
-            crate::client_keys::reset_usage(entry);
-            let view = crate::client_keys::ClientKeyView::from(&*entry);
-            runtime.gateway.persist_client_keys(file).await?;
-            to_value(view)
+            to_value(crate::commands::reset_client_key_usage_core(runtime, input).await?)
         }
 
         // ===== P0 技能管理 =====
