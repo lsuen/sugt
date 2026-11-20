@@ -17,16 +17,51 @@ struct FreeRoute {
 }
 
 /// 候选路由（公开 keyless）。顺序即探测/默认/failover 优先级：
-/// openrouter/free → kilo-auto/free → 其余。
+/// Tier 1 主力 → Tier 2 备用 → Tier 3 降级。
 const ROUTES: &[FreeRoute] = &[
-    FreeRoute {
-        base_url: "https://api.kilo.ai/api/gateway",
-        model: "openrouter/free",
-    },
+    // === Tier 1: 主力 ===
+    // Kilo.ai — 国产免费模型最多
     FreeRoute {
         base_url: "https://api.kilo.ai/api/gateway",
         model: "kilo-auto/free",
     },
+    FreeRoute {
+        base_url: "https://api.kilo.ai/api/gateway",
+        model: "baidu/ernie-5.5-flash-preview:free",
+    },
+    FreeRoute {
+        base_url: "https://api.kilo.ai/api/gateway",
+        model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    },
+    FreeRoute {
+        base_url: "https://api.kilo.ai/api/gateway",
+        model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    },
+    // BlockRun — NVIDIA 免费模型（GPT-6 全家桶需付费 402，排除）
+    FreeRoute {
+        base_url: "https://blockrun.ai/api",
+        model: "nvidia/nemotron-3.5-bolt",
+    },
+    FreeRoute {
+        base_url: "https://blockrun.ai/api",
+        model: "nvidia/nemotron-3-ultra-550b",
+    },
+    FreeRoute {
+        base_url: "https://blockrun.ai/api",
+        model: "nvidia/muse-glimmer-30b",
+    },
+    // === Tier 2: 备用 ===
+    // LLM7.io — Claude 全系（需 Bearer unused）
+    FreeRoute {
+        base_url: "https://api.llm7.io",
+        model: "default",
+    },
+    // JarvisClaw — 自动路由兜底
+    FreeRoute {
+        base_url: "https://api.jarvisclaw.ai",
+        model: "auto/free",
+    },
+    // === Tier 3: 降级（rate limit 极严或已收 key）===
     FreeRoute {
         base_url: "https://text.pollinations.ai/openai",
         model: "openai-fast",
@@ -34,14 +69,6 @@ const ROUTES: &[FreeRoute] = &[
     FreeRoute {
         base_url: "https://text.pollinations.ai/openai",
         model: "openai",
-    },
-    FreeRoute {
-        base_url: "https://api.llm7.io/v1",
-        model: "fast",
-    },
-    FreeRoute {
-        base_url: "https://api.llm7.io/v1",
-        model: "default",
     },
 ];
 
@@ -110,7 +137,12 @@ pub fn apply_route(provider: &mut ProviderConfig) {
         .unwrap_or((ROUTES[0].base_url, ROUTES[0].model));
     provider.base_url = base_url.to_string();
     provider.model_name = model.to_string();
-    provider.api_key.clear();
+    // LLM7.io 需要公开匿名 key "unused"，其余通道免 key
+    provider.api_key = if base_url.contains("llm7.io") {
+        "unused".to_string()
+    } else {
+        String::new()
+    };
     provider.protocol = ProviderProtocol::OpenAi;
     provider.auto_adapt_base_url = false;
     provider.model_alias = Some(crate::model::CLIENT_MODEL_ID.to_string());
@@ -235,11 +267,13 @@ async fn probe_one(client: &reqwest::Client, base_url: &str, model: &str) -> boo
         "max_tokens": 8,
         "stream": false
     });
-    let req = client
+    let mut req = client
         .post(&url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(18));
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if base_url.contains("llm7.io") {
+        req = req.header(reqwest::header::AUTHORIZATION, "Bearer unused");
+    }
+    let req = req.json(&body).timeout(std::time::Duration::from_secs(18));
     match req.send().await {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
@@ -347,26 +381,37 @@ mod tests {
 
     #[test]
     fn candidates_nonempty() {
-        assert!(!candidate_models().is_empty());
-        assert!(route_for_model("openai-fast").is_some());
-        assert_eq!(candidate_models()[0], "openrouter/free");
-        assert_eq!(candidate_models()[1], "kilo-auto/free");
+        let models = candidate_models();
+        assert!(!models.is_empty());
+        assert_eq!(models.len(), 11);
+        // Tier 1 起始：Kilo.ai
+        assert_eq!(models[0], "kilo-auto/free");
+        assert_eq!(models[1], "baidu/ernie-5.5-flash-preview:free");
         assert_eq!(route_choices()[0].host, "api.kilo.ai");
-        assert_eq!(route_choices()[2].host, "text.pollinations.ai");
+        // Tier 1 中段：BlockRun（index 4-6）
+        assert_eq!(route_choices()[4].host, "blockrun.ai");
+        // Tier 2：LLM7（index 7）、JarvisClaw（index 8）
+        assert_eq!(route_choices()[7].host, "api.llm7.io");
+        // Tier 3：Pollinations 降级（index 9-10）
+        assert!(route_for_model("openai-fast").is_some());
+        assert_eq!(route_choices()[9].host, "text.pollinations.ai");
     }
 
     #[test]
     fn pick_preferred_respects_priority() {
+        // kilo-auto/free 是 ROUTES[0]，优先级最高
         assert_eq!(
-            pick_preferred_model(&["openai-fast", "kilo-auto/free", "openrouter/free"]),
-            Some("openrouter/free")
-        );
-        assert_eq!(
-            pick_preferred_model(&["openai", "kilo-auto/free"]),
+            pick_preferred_model(&["openai-fast", "kilo-auto/free"]),
             Some("kilo-auto/free")
         );
+        // openai 在 Tier 3，openai-fast 也在 Tier 3，优先靠前
         assert_eq!(
-            pick_preferred_model(&["fast", "openai-fast"]),
+            pick_preferred_model(&["openai", "nvidia/nemotron-3.5-bolt"]),
+            Some("nvidia/nemotron-3.5-bolt")
+        );
+        // openrouter/free 已移除，只留 openai-fast
+        assert_eq!(
+            pick_preferred_model(&["unknown", "openai-fast"]),
             Some("openai-fast")
         );
     }
