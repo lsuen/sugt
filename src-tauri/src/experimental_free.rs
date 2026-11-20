@@ -3,6 +3,7 @@
 
 use crate::model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus};
 use futures_util::future::join_all;
+use futures_util::StreamExt;
 use serde::Serialize;
 
 pub const EXPERIMENTAL_FREE_ID: &str = "sugt-free";
@@ -239,12 +240,16 @@ pub fn restore_experimental_free(config: &mut AppConfig) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FreeModelProbe {
     pub name: String,
     pub available: bool,
+    pub latency_ms: Option<u64>,
+    pub tokens_per_sec: Option<f64>,
 }
 
 /// 并发探测候选模型；4xx / 网络失败标为不可用。有可用即保留，不做无限重试。
+/// 这是廉价 ping 级探测（refresh_on_enable 内部使用），不携带延迟/速度指标。
 pub async fn probe_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> {
     let futs = ROUTES.iter().map(|route| {
         let client = client.clone();
@@ -253,10 +258,64 @@ pub async fn probe_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> 
         let model = route.model.to_string();
         async move {
             let available = probe_one(&client, &base, &model).await;
-            FreeModelProbe { name, available }
+            FreeModelProbe {
+                name,
+                available,
+                latency_ms: None,
+                tokens_per_sec: None,
+            }
         }
     });
     join_all(futs).await
+}
+
+/// 逐路由真实 LLM 测速：复用 probe_llm_connectivity 发一条真实消息，
+/// 返回可用性 + 延迟 + 生成速度。并发上限 4，避免瞬时打满公开免费上游。
+pub async fn test_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> {
+    // 先落成 owned 列表，避免闭包参数引用生命周期在 boxed future 里触发 HRTB 限制。
+    let routes: Vec<(String, String)> = ROUTES
+        .iter()
+        .map(|route| (route.base_url.to_string(), route.model.to_string()))
+        .collect();
+    futures_util::stream::iter(routes.into_iter().map(|(base_url, model)| {
+        let client = client.clone();
+        let name = model.clone();
+        // 临时 provider 只用于探测：不取 sugt-free id，避免 prepare_upstream_provider 再改绑路由。
+        let provider = ProviderConfig {
+            id: "free-route-probe".to_string(),
+            name: "免费路由探测".to_string(),
+            provider: "free-route-probe".to_string(),
+            base_url: base_url.clone(),
+            // LLM7.io 需要公开匿名 key "unused"，其余通道免 key（与 apply_route 一致）
+            api_key: if base_url.contains("llm7.io") {
+                "unused".to_string()
+            } else {
+                String::new()
+            },
+            model_name: model,
+            protocol: ProviderProtocol::OpenAi,
+            enabled: true,
+            status: ProviderStatus::Unknown,
+            last_checked_at: None,
+            last_error: None,
+            model_alias: None,
+            auto_adapt_base_url: false,
+            tool_text_retry_enabled: false,
+            tool_text_retry_extra: 0,
+        };
+        async move {
+            let report = crate::probe::probe_llm_connectivity(&client, &provider).await;
+            FreeModelProbe {
+                name,
+                available: report.ok,
+                latency_ms: Some(report.latency_ms),
+                tokens_per_sec: report.ok.then_some(report.tokens_per_sec),
+            }
+        }
+    }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await
 }
 
 async fn probe_one(client: &reqwest::Client, base_url: &str, model: &str) -> bool {
@@ -414,6 +473,50 @@ mod tests {
             pick_preferred_model(&["unknown", "openai-fast"]),
             Some("openai-fast")
         );
+    }
+
+    #[test]
+    fn free_model_probe_serializes_as_camel_case() {
+        let value = serde_json::to_value(FreeModelProbe {
+            name: "kilo-auto/free".into(),
+            available: true,
+            latency_ms: Some(1234),
+            tokens_per_sec: Some(12.5),
+        })
+        .expect("to_value");
+        assert_eq!(value["name"], "kilo-auto/free");
+        assert_eq!(value["available"], true);
+        assert_eq!(value["latencyMs"], 1234);
+        assert_eq!(value["tokensPerSec"], 12.5);
+        assert!(value.get("latency_ms").is_none());
+        assert!(value.get("tokens_per_sec").is_none());
+
+        // 廉价探测路径：指标缺省序列化为 null，字段名仍是 camelCase
+        let value = serde_json::to_value(FreeModelProbe {
+            name: "openai-fast".into(),
+            available: false,
+            latency_ms: None,
+            tokens_per_sec: None,
+        })
+        .expect("to_value");
+        assert!(value["latencyMs"].is_null());
+        assert!(value["tokensPerSec"].is_null());
+    }
+
+    #[test]
+    fn model_test_result_serializes_as_camel_case() {
+        let value = serde_json::to_value(crate::commands::ModelTestResult {
+            model_name: "gpt-4o-mini".into(),
+            available: false,
+            latency_ms: Some(800),
+            tokens_per_sec: None,
+        })
+        .expect("to_value");
+        assert_eq!(value["modelName"], "gpt-4o-mini");
+        assert_eq!(value["available"], false);
+        assert_eq!(value["latencyMs"], 800);
+        assert!(value["tokensPerSec"].is_null());
+        assert!(value.get("model_name").is_none());
     }
 
     /// 真实公网探测：免费通道是否在线取决于外部服务，不能作为默认套件的一部分，

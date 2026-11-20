@@ -15,7 +15,7 @@ use crate::gateway::{build_target_url, prepare_upstream_provider};
 use crate::model::{ProviderConfig, ProviderProtocol};
 
 /// 探测提示词：要一句最短回复；内容不做校验，只看模型有没有真实生成。
-const PROBE_PROMPT: &str = "直接回复 我在";
+const PROBE_PROMPT: &str = "直接回复我在";
 /// 给足输出上限，避免旧的 8 token 把回复直接截成空。
 const PROBE_MAX_TOKENS: u32 = 64;
 /// 真实生成比 ping 慢，单请求超时放宽到 30 秒。

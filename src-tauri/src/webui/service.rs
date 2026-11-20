@@ -229,6 +229,10 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
             let input: ProbeModelsInput = field(args, &["input"])?;
             to_value(crate::commands::probe_models_core(runtime, input).await?)
         }
+        "test_provider_models" => {
+            let id: String = single(args)?;
+            to_value(crate::commands::test_provider_models_core(runtime, id).await?)
+        }
 
         // ===== P0 网关设置 =====
         "get_lan_share_info" => {

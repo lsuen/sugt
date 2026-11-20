@@ -464,7 +464,7 @@ pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::Free
 pub(crate) async fn probe_experimental_free_models_core(
     runtime: &AppRuntime,
 ) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
-    let probes = crate::experimental_free::probe_free_models(runtime.gateway.http_client()).await;
+    let probes = crate::experimental_free::test_free_models(runtime.gateway.http_client()).await;
     {
         let mut config = runtime.config.write().await;
         if let Some(provider) = config
@@ -894,6 +894,69 @@ pub async fn probe_models(
     input: ProbeModelsInput,
 ) -> Result<Vec<ModelEntry>, String> {
     probe_models_core(runtime.inner(), input).await
+}
+
+/// 自定义通道逐模型真实测试结果，前端按 camelCase 读取（latencyMs / tokensPerSec）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTestResult {
+    pub model_name: String,
+    pub available: bool,
+    pub latency_ms: Option<u64>,
+    pub tokens_per_sec: Option<f64>,
+}
+
+/// 逐模型真实 LLM 测试（自定义通道）：取模型注册表里启用的模型，
+/// 逐个 clone provider 覆盖 model_name 后走 probe_llm_connectivity，并发上限 4。
+pub(crate) async fn test_provider_models_core(
+    runtime: &AppRuntime,
+    id: String,
+) -> Result<Vec<ModelTestResult>, String> {
+    let config = runtime.config.read().await.clone();
+    let provider = config
+        .providers
+        .iter()
+        .find(|provider| provider.id == id)
+        .cloned()
+        .ok_or_else(|| "模型配置不存在".to_string())?;
+    if crate::experimental_free::is_experimental_free_id(&id) {
+        return Err("实验免费通道请使用 probe_experimental_free_models".to_string());
+    }
+    // 与 list_model_registry 同一数据源：model-registry.json，只测启用项。
+    let registry = model_registry::load(&runtime.paths.config_dir);
+    let model_names: Vec<String> = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.provider_id == provider.id && entry.enabled)
+        .map(|entry| entry.model_name.clone())
+        .collect();
+    let client = runtime.gateway.http_client().clone();
+    let results = futures_util::stream::iter(model_names.into_iter().map(|model_name| {
+        let client = client.clone();
+        let mut target = provider.clone();
+        target.model_name = model_name.clone();
+        async move {
+            let report = probe::probe_llm_connectivity(&client, &target).await;
+            ModelTestResult {
+                model_name,
+                available: report.ok,
+                latency_ms: Some(report.latency_ms),
+                tokens_per_sec: report.ok.then_some(report.tokens_per_sec),
+            }
+        }
+    }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await;
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn test_provider_models(
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<Vec<ModelTestResult>, String> {
+    test_provider_models_core(runtime.inner(), id).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -1445,6 +1508,10 @@ pub struct GatewaySettingsInput {
     pub gateway_client_api_key: Option<String>,
     #[serde(rename = "anthropicAccessMode")]
     pub anthropic_access_mode: Option<AnthropicAccessMode>,
+    /// 免费通道：获取模型列表后逐路由真实测速
+    pub free_models_fetch_and_test: Option<bool>,
+    /// 自定义通道：获取模型后逐模型真实测试
+    pub custom_models_fetch_and_test: Option<bool>,
 }
 
 #[tauri::command]
@@ -1490,6 +1557,12 @@ pub(crate) async fn update_gateway_settings_core(
     }
     if let Some(mode) = input.anthropic_access_mode {
         config.anthropic_access_mode = mode;
+    }
+    if let Some(enabled) = input.free_models_fetch_and_test {
+        config.free_models_fetch_and_test = enabled;
+    }
+    if let Some(enabled) = input.custom_models_fetch_and_test {
+        config.custom_models_fetch_and_test = enabled;
     }
     let snapshot = config.clone();
     drop(config);

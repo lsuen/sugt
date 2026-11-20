@@ -183,10 +183,20 @@ pub struct AppConfig {
     /// WebUI 监听端口，默认 8788（与网关 8787 分离）。
     #[serde(default = "default_webui_port")]
     pub webui_port: u16,
+    /// 免费通道获取模型列表后是否逐路由真实测速（默认开启）。
+    #[serde(default = "default_free_models_fetch_and_test")]
+    pub free_models_fetch_and_test: bool,
+    /// 自定义通道获取模型后是否逐模型真实测试（默认关闭）。
+    #[serde(default)]
+    pub custom_models_fetch_and_test: bool,
 }
 
 fn default_webui_port() -> u16 {
     8788
+}
+
+fn default_free_models_fetch_and_test() -> bool {
+    true
 }
 
 /// 日志保留期默认值（天）。
@@ -620,6 +630,8 @@ impl Default for AppConfig {
             log_retention_days: default_log_retention_days(),
             webui_enabled: false,
             webui_port: default_webui_port(),
+            free_models_fetch_and_test: default_free_models_fetch_and_test(),
+            custom_models_fetch_and_test: false,
         }
     }
 }

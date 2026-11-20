@@ -28,6 +28,7 @@ pub fn run() {
             commands::list_model_registry,
             commands::set_model_enabled,
             commands::probe_models,
+            commands::test_provider_models,
             commands::list_strategy_boxes,
             commands::save_strategy_box,
             commands::delete_strategy_box,
