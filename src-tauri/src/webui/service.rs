@@ -75,35 +75,19 @@ fn to_value<T: serde::Serialize>(v: T) -> Result<Value, String> {
 // 这里只保留确实被其它域命令依赖的部分。
 // ============================================================================
 
-async fn gateway_is_reachable(config: &AppConfig) -> bool {
-    crate::gateway_daemon::is_reachable(&config.client_host(), config.port).await
-}
-
 async fn clients_env_with_reachability(
     config_dir: &std::path::Path,
     config: &AppConfig,
 ) -> crate::clients::ClientsEnvStatus {
     let mut status = crate::clients::status(config_dir, config);
-    status.gateway_reachable = gateway_is_reachable(config).await;
+    status.gateway_reachable =
+        crate::gateway_daemon::is_reachable(&config.client_host(), config.port).await;
     status
 }
 
-async fn sync_gateway_port_if_changed(runtime: &AppRuntime) -> Result<(), String> {
-    let gw_config = runtime.gateway.config().await;
-    let mut cfg = runtime.config.write().await;
-    if cfg.port == gw_config.port {
-        return Ok(());
-    }
-    cfg.port = gw_config.port;
-    runtime.persist().await.map_err(|e| e.to_string())?;
-    crate::clients::write_launch_scripts(&runtime.paths, &cfg).map_err(|e| e.to_string())?;
-    crate::clients::repair(&runtime.paths.config_dir, &cfg).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 async fn ensure_gateway_listening(runtime: &AppRuntime, auto_start: bool) -> Result<(), String> {
-    let config = runtime.config.read().await.clone();
-    if gateway_is_reachable(&config).await {
+    let effective = crate::commands::config_with_listen_port(runtime).await;
+    if crate::gateway_daemon::is_reachable(&effective.client_host(), effective.port).await {
         return Ok(());
     }
     if !auto_start {
@@ -118,16 +102,22 @@ async fn ensure_gateway_listening(runtime: &AppRuntime, auto_start: bool) -> Res
             tracing::warn!(error = %err, "embedded gateway start failed, trying detached serve");
         }
     }
-    if crate::gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
+    let after_embed = crate::commands::config_with_listen_port(runtime).await;
+    if crate::gateway_daemon::wait_reachable(&after_embed.client_host(), after_embed.port, 8).await
+    {
+        let _ = crate::commands::sync_client_endpoints_to_listen_port(runtime).await;
         return Ok(());
     }
 
     if let Err(err) = crate::gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
         tracing::warn!(error = %err, "detached gateway spawn failed");
     }
-    if crate::gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
-        sync_gateway_port_if_changed(runtime).await?;
-        return Ok(());
+    let preferred = runtime.config.read().await.clone();
+    for port in preferred.port_candidates() {
+        if crate::gateway_daemon::wait_reachable(&preferred.client_host(), port, 4).await {
+            crate::commands::sync_client_endpoints_to_listen_port(runtime).await?;
+            return Ok(());
+        }
     }
 
     Err(
@@ -236,15 +226,15 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
 
         // ===== P0 网关设置 =====
         "get_lan_share_info" => {
-            let config = runtime.config.read().await.clone();
+            let config = crate::commands::config_with_listen_port(runtime).await;
             to_value(crate::commands::lan_share_info_from_config(&config))
         }
         "get_local_access_info" => {
-            let config = runtime.config.read().await.clone();
+            let config = crate::commands::config_with_listen_port(runtime).await;
             to_value(crate::commands::local_access_info_from_config(&config))
         }
         "fetch_local_models" => {
-            let config = runtime.config.read().await.clone();
+            let config = crate::commands::config_with_listen_port(runtime).await;
             to_value(
                 crate::commands::fetch_local_models_report(runtime.gateway.http_client(), &config)
                     .await,

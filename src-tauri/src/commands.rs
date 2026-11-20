@@ -32,6 +32,32 @@ async fn gateway_is_reachable(config: &AppConfig) -> bool {
     gateway_daemon::is_reachable(&config.client_host(), config.port).await
 }
 
+/// 运行时有效配置：`config.port` 始终是用户首选口；若嵌入式网关已绑定到备选口，
+/// 则把返回值里的 `port` 覆盖为实际监听口，供健康检查 / 接入信息 / 脚本使用。
+/// 不写回磁盘，避免首选口被「漂」成临时口。
+pub(crate) async fn config_with_listen_port(runtime: &AppRuntime) -> AppConfig {
+    let mut cfg = runtime.config.read().await.clone();
+    if runtime.gateway.is_running().await {
+        let listen = runtime.gateway.config().await.port;
+        cfg.port = listen;
+        return cfg;
+    }
+    // 独立/detached 进程可能绑在备选口：扫候选表找可达口，仍不改 preferred。
+    if let Some(port) = find_reachable_listen_port(&cfg).await {
+        cfg.port = port;
+    }
+    cfg
+}
+
+async fn find_reachable_listen_port(config: &AppConfig) -> Option<u16> {
+    for port in config.port_candidates() {
+        if gateway_daemon::is_reachable(&config.client_host(), port).await {
+            return Some(port);
+        }
+    }
+    None
+}
+
 async fn fetch_live_traffic(config: &AppConfig) -> Option<crate::gateway_stats::TrafficStatsView> {
     let url = format!(
         "{}/v1/_sugt/traffic",
@@ -61,8 +87,8 @@ async fn ensure_gateway_listening(
     runtime: &AppRuntime,
     auto_start: bool,
 ) -> Result<(), String> {
-    let config = runtime.config.read().await.clone();
-    if gateway_is_reachable(&config).await {
+    let effective = config_with_listen_port(runtime).await;
+    if gateway_is_reachable(&effective).await {
         return Ok(());
     }
     if !auto_start {
@@ -77,15 +103,20 @@ async fn ensure_gateway_listening(
             warn!(error = %err, "embedded gateway start failed, trying detached serve");
         }
     }
-    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
+    let after_embed = config_with_listen_port(runtime).await;
+    if gateway_daemon::wait_reachable(&after_embed.client_host(), after_embed.port, 8).await {
+        let _ = sync_client_endpoints_to_listen_port(runtime).await;
         return Ok(());
     }
 
     if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
         warn!(error = %err, "detached gateway spawn failed");
     }
-    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
-        sync_gateway_port_if_changed(runtime).await?;
+    if find_reachable_listen_port(&runtime.config.read().await.clone())
+        .await
+        .is_some()
+    {
+        sync_client_endpoints_to_listen_port(runtime).await?;
         return Ok(());
     }
 
@@ -95,17 +126,17 @@ async fn ensure_gateway_listening(
     )
 }
 
-async fn sync_gateway_port_if_changed(runtime: &AppRuntime) -> Result<(), String> {
-    let gw_config = runtime.gateway.config().await;
-    let mut cfg = runtime.config.write().await;
-    if cfg.port == gw_config.port {
+/// 用实际监听口刷新接管脚本，但**绝不**把临时口写进 `config.toml` 的首选 `port`。
+pub(crate) async fn sync_client_endpoints_to_listen_port(
+    runtime: &AppRuntime,
+) -> Result<(), String> {
+    let preferred = runtime.config.read().await.port;
+    let effective = config_with_listen_port(runtime).await;
+    if effective.port == preferred {
         return Ok(());
     }
-    cfg.port = gw_config.port;
-    let updated = cfg.clone();
-    runtime.persist().await.map_err(|e| e.to_string())?;
-    clients::write_launch_scripts(&runtime.paths, &updated).map_err(|e| e.to_string())?;
-    clients::repair(&runtime.paths.config_dir, &updated).map_err(|e| e.to_string())?;
+    clients::write_launch_scripts(&runtime.paths, &effective).map_err(|e| e.to_string())?;
+    clients::repair(&runtime.paths.config_dir, &effective).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -177,7 +208,8 @@ pub async fn get_status(runtime: State<'_, AppRuntime>) -> Result<RuntimeStatus,
 }
 
 pub(crate) async fn get_status_core(runtime: &AppRuntime) -> Result<RuntimeStatus, String> {
-    let config = runtime.config.read().await.clone();
+    let preferred = runtime.config.read().await.clone();
+    let config = config_with_listen_port(runtime).await;
     let provider = runtime.gateway.active_provider().await;
     let local_hit = runtime.gateway.last_proxy_hit().await;
     let gateway_reachable = gateway_is_reachable(&config).await;
@@ -225,6 +257,8 @@ pub(crate) async fn get_status_core(runtime: &AppRuntime) -> Result<RuntimeStatu
     Ok(RuntimeStatus {
         running: gateway_reachable,
         listen_url: config.listen_url(),
+        preferred_port: preferred.port,
+        listen_port: config.port,
         openai_base_url: format!("{}/v1", config.listen_url()),
         anthropic_base_url: config.listen_url(),
         gateway_client_api_key: config.gateway_client_api_key.clone(),
@@ -253,28 +287,31 @@ pub(crate) async fn get_status_core(runtime: &AppRuntime) -> Result<RuntimeStatu
 
 pub(crate) async fn ensure_gateway_running(runtime: &AppRuntime) -> Result<String, String> {
     trial::ensure_allowed(&runtime.paths).map_err(|err| err.to_string())?;
-    let config = runtime.config.read().await.clone();
-    if gateway_is_reachable(&config).await {
-        return Ok(config.listen_url());
+    let effective = config_with_listen_port(runtime).await;
+    if gateway_is_reachable(&effective).await {
+        return Ok(effective.listen_url());
     }
     runtime
         .gateway
         .start()
         .await
         .map_err(|err| error_hint::format_gateway_start_error(&err))?;
-    sync_gateway_port_if_changed(runtime).await?;
-    let config = runtime.config.read().await.clone();
-    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
-        sync_gateway_port_if_changed(runtime).await?;
-        return Ok(runtime.config.read().await.listen_url());
+    sync_client_endpoints_to_listen_port(runtime).await?;
+    let after_embed = config_with_listen_port(runtime).await;
+    if gateway_daemon::wait_reachable(&after_embed.client_host(), after_embed.port, 8).await {
+        sync_client_endpoints_to_listen_port(runtime).await?;
+        return Ok(after_embed.listen_url());
     }
 
     if let Err(err) = gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
         return Err(err.to_string());
     }
-    if gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
-        sync_gateway_port_if_changed(runtime).await?;
-        Ok(runtime.config.read().await.listen_url())
+    // detached 可能走了备选口：扫候选表，而不是死盯首选口。
+    if let Some(port) = find_reachable_listen_port(&runtime.config.read().await.clone()).await {
+        sync_client_endpoints_to_listen_port(runtime).await?;
+        let mut cfg = runtime.config.read().await.clone();
+        cfg.port = port;
+        Ok(cfg.listen_url())
     } else {
         Err("启动网关失败：健康检查未通过，请查看日志或更换监听端口".to_string())
     }
@@ -1505,6 +1542,8 @@ pub struct GatewaySettingsInput {
     pub gateway_watchdog_enabled: Option<bool>,
     pub allow_lan_access: Option<bool>,
     pub port: Option<u16>,
+    /// 备选监听口列表；空数组表示恢复默认 `9878/18887/28887`。
+    pub port_fallback_ports: Option<Vec<u16>>,
     pub gateway_client_api_key: Option<String>,
     #[serde(rename = "anthropicAccessMode")]
     pub anthropic_access_mode: Option<AnthropicAccessMode>,
@@ -1512,6 +1551,10 @@ pub struct GatewaySettingsInput {
     pub free_models_fetch_and_test: Option<bool>,
     /// 自定义通道：获取模型后逐模型真实测试
     pub custom_models_fetch_and_test: Option<bool>,
+    /// 单次请求内上游重试总预算（毫秒）；`null` 表示恢复默认 8 分钟。
+    pub upstream_retry_budget_ms: Option<Option<u64>>,
+    /// 单次等待上限（毫秒）；`null` 表示恢复默认 60 秒。
+    pub upstream_retry_single_ms: Option<Option<u64>>,
 }
 
 #[tauri::command]
@@ -1529,6 +1572,7 @@ pub(crate) async fn update_gateway_settings_core(
     app: Option<&AppHandle>,
 ) -> Result<AppConfig, String> {
     let mut lan_changed = false;
+    let mut port_changed = false;
     let mut config = runtime.config.write().await;
     if let Some(enabled) = input.port_fallback_enabled {
         config.port_fallback_enabled = enabled;
@@ -1546,7 +1590,23 @@ pub(crate) async fn update_gateway_settings_core(
         if port == 0 {
             return Err("端口不能为 0".to_string());
         }
+        if config.port != port {
+            port_changed = true;
+        }
         config.port = port;
+    }
+    if let Some(ports) = input.port_fallback_ports {
+        let cleaned: Vec<u16> = ports
+            .into_iter()
+            .filter(|p| *p != 0)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        config.port_fallback_ports = if cleaned.is_empty() {
+            vec![9878, 18887, 28887]
+        } else {
+            cleaned
+        };
     }
     if let Some(key) = input.gateway_client_api_key {
         let trimmed = key.trim();
@@ -1564,11 +1624,18 @@ pub(crate) async fn update_gateway_settings_core(
     if let Some(enabled) = input.custom_models_fetch_and_test {
         config.custom_models_fetch_and_test = enabled;
     }
+    if let Some(budget) = input.upstream_retry_budget_ms {
+        config.upstream_retry_budget_ms = budget.filter(|v| *v > 0);
+    }
+    if let Some(single) = input.upstream_retry_single_ms {
+        config.upstream_retry_single_ms = single.filter(|v| *v > 0);
+    }
     let snapshot = config.clone();
     drop(config);
     runtime.persist().await.map_err(|err| err.to_string())?;
-    // 绑定地址变化后需重启监听，否则仍停在旧 host
-    if lan_changed && runtime.gateway.is_running().await {
+    let need_rebind = lan_changed || port_changed;
+    // 绑定地址 / 首选口变化后需重启监听，否则仍停在旧 socket
+    if need_rebind && runtime.gateway.is_running().await {
         let _ = runtime.gateway.stop().await;
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         runtime
@@ -1576,10 +1643,11 @@ pub(crate) async fn update_gateway_settings_core(
             .replace_config(snapshot.clone())
             .await;
         if let Err(err) = runtime.gateway.start().await {
-            warn!(error = %err, "restart gateway after LAN toggle failed");
+            warn!(error = %err, "restart gateway after bind settings change failed");
             return Err(error_hint::format_gateway_start_error(&err));
         }
-    } else if lan_changed {
+        let _ = sync_client_endpoints_to_listen_port(runtime).await;
+    } else if need_rebind {
         runtime.gateway.replace_config(snapshot.clone()).await;
     }
     // WebUI 的绑定地址同样跟随 allow_lan_access，必须一起重启，
@@ -1725,7 +1793,7 @@ pub struct LanShareInfo {
 
 #[tauri::command]
 pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanShareInfo, String> {
-    let config = runtime.config.read().await.clone();
+    let config = config_with_listen_port(runtime.inner()).await;
     Ok(lan_share_info_from_config(&config))
 }
 
@@ -1848,7 +1916,7 @@ fn build_local_access_info(
 pub async fn get_local_access_info(
     runtime: State<'_, AppRuntime>,
 ) -> Result<LocalAccessInfo, String> {
-    let config = runtime.config.read().await;
+    let config = config_with_listen_port(runtime.inner()).await;
     Ok(local_access_info_from_config(&config))
 }
 
@@ -1956,7 +2024,7 @@ pub async fn fetch_local_models_report(
 pub async fn fetch_local_models(
     runtime: State<'_, AppRuntime>,
 ) -> Result<LocalModelsFetchReport, String> {
-    let config = runtime.config.read().await.clone();
+    let config = config_with_listen_port(runtime.inner()).await;
     Ok(fetch_local_models_report(runtime.gateway.http_client(), &config).await)
 }
 

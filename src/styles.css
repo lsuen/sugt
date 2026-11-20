@@ -2683,7 +2683,7 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   flex: 1;
 }
 
-/* 门面层（控制台 / SOUL）与工具层（模型 / 客户端 / 技能 / 规则 / 设置）的分隔 */
+/* 门面层（控制台 / SOUL）与工具层（网关 / 规则 / 接入 / 技能 / 设置）的分隔 */
 .nav-divider {
   height: 1px;
   margin: 2px 12px;

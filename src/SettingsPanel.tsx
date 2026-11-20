@@ -41,11 +41,15 @@ type AppConfigView = {
   failover_enabled?: boolean;
   autostart_gateway?: boolean;
   quit_behavior?: QuitBehavior;
+  port?: number;
   port_fallback_enabled?: boolean;
+  port_fallback_ports?: number[];
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
   free_models_fetch_and_test?: boolean;
   custom_models_fetch_and_test?: boolean;
+  upstream_retry_budget_ms?: number | null;
+  upstream_retry_single_ms?: number | null;
   log_retention_days?: number;
   overlay?: OverlayConfigView;
 };
@@ -126,6 +130,10 @@ export function SettingsPanel({
   const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
   const [webui, setWebui] = useState<WebUiSettingsView | null>(null);
   const [webuiPortDraft, setWebuiPortDraft] = useState('8788');
+  const [gatewayPortDraft, setGatewayPortDraft] = useState('8787');
+  const [fallbackPortsDraft, setFallbackPortsDraft] = useState('9878, 18887, 28887');
+  const [retryBudgetDraft, setRetryBudgetDraft] = useState('');
+  const [retrySingleDraft, setRetrySingleDraft] = useState('');
 
   const tab = settingsTab ?? internalTab;
   const selectTab = (next: SettingsTab) => {
@@ -136,6 +144,75 @@ export function SettingsPanel({
   const toast = (message: string, type?: 'ok' | 'error' | 'info') =>
     (pushToast ?? (() => undefined))(message, type ?? 'ok');
   const formatError = formatInvokeError ?? ((error: unknown) => String(error));
+
+  useEffect(() => {
+    if (!config) return;
+    setGatewayPortDraft(String(config.port ?? 8787));
+    setFallbackPortsDraft((config.port_fallback_ports ?? [9878, 18887, 28887]).join(', '));
+    setRetryBudgetDraft(
+      config.upstream_retry_budget_ms == null ? '' : String(config.upstream_retry_budget_ms),
+    );
+    setRetrySingleDraft(
+      config.upstream_retry_single_ms == null ? '' : String(config.upstream_retry_single_ms),
+    );
+  }, [config]);
+
+  const saveGatewayPort = (raw: string) => {
+    const port = Number(raw);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      toast(t('set.gatewayPortInvalid'), 'error');
+      setGatewayPortDraft(String(config?.port ?? 8787));
+      return;
+    }
+    if (port === (config?.port ?? 8787)) return;
+    run(
+      () => invoke('update_gateway_settings', { input: { port } }),
+      t('set.gatewayPortSaved'),
+    );
+  };
+
+  const saveFallbackPorts = (raw: string) => {
+    const ports = raw
+      .split(/[,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s));
+    if (ports.some((p) => !Number.isInteger(p) || p <= 0 || p > 65535)) {
+      toast(t('set.fallbackPortsInvalid'), 'error');
+      setFallbackPortsDraft((config?.port_fallback_ports ?? [9878, 18887, 28887]).join(', '));
+      return;
+    }
+    run(
+      () => invoke('update_gateway_settings', { input: { portFallbackPorts: ports } }),
+      t('common.update'),
+    );
+  };
+
+  const saveRetryBudgets = () => {
+    const parseOptional = (raw: string): number | null | undefined => {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n <= 0) return undefined;
+      return Math.floor(n);
+    };
+    const budget = parseOptional(retryBudgetDraft);
+    const single = parseOptional(retrySingleDraft);
+    if (budget === undefined || single === undefined) {
+      toast(t('set.retryBudgetInvalid'), 'error');
+      return;
+    }
+    run(
+      () =>
+        invoke('update_gateway_settings', {
+          input: {
+            upstreamRetryBudgetMs: budget,
+            upstreamRetrySingleMs: single,
+          },
+        }),
+      t('common.update'),
+    );
+  };
 
   // WebUI 设置只在桌面端可改：浏览器端走 WebUI 自带 RPC，未暴露这两个命令。
   useEffect(() => {
@@ -307,6 +384,22 @@ export function SettingsPanel({
           <div className="card settings-group switches">
             <h4>{t('set.gateway')}</h4>
             <p className="hint compact">{t('set.gatewayHint')}</p>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.gatewayPort')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  step={1}
+                  value={gatewayPortDraft}
+                  aria-label={t('set.gatewayPort')}
+                  onChange={(e) => setGatewayPortDraft(e.target.value)}
+                  onBlur={() => saveGatewayPort(gatewayPortDraft)}
+                />
+              </span>
+            </div>
+            <p className="hint compact">{t('set.gatewayPortHint')}</p>
             <label className="switch-line">
               <span>{t('set.failover')}</span>
               <input type="checkbox" checked={Boolean(config?.failover_enabled)} onChange={(e) => run(() => invoke('set_failover', { enabled: e.target.checked }), t('common.update'))} />
@@ -546,6 +639,71 @@ export function SettingsPanel({
                 <option value="true">{t('set.fetchAndTest')}</option>
               </select>
             </label>
+          </div>
+
+          <div className="card settings-group">
+            <h4>{t('set.advListen')}</h4>
+            <p className="hint compact">{t('set.advListenHint')}</p>
+            <label className="switch-line select-line">
+              <span>{t('set.fallbackPorts')}</span>
+              <input
+                type="text"
+                value={fallbackPortsDraft}
+                aria-label={t('set.fallbackPorts')}
+                onChange={(e) => setFallbackPortsDraft(e.target.value)}
+                onBlur={() => saveFallbackPorts(fallbackPortsDraft)}
+              />
+            </label>
+            <div className="settings-actions-row">
+              <button
+                type="button"
+                className="ghost tiny-btn"
+                onClick={() => {
+                  setFallbackPortsDraft('9878, 18887, 28887');
+                  saveFallbackPorts('9878, 18887, 28887');
+                }}
+              >
+                {t('set.fallbackPortsReset')}
+              </button>
+            </div>
+          </div>
+
+          <div className="card settings-group">
+            <h4>{t('set.advRetry')}</h4>
+            <p className="hint compact">{t('set.advRetryHint')}</p>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.retryBudgetMs')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={retryBudgetDraft}
+                  placeholder="480000"
+                  aria-label={t('set.retryBudgetMs')}
+                  onChange={(e) => setRetryBudgetDraft(e.target.value)}
+                />
+              </span>
+            </div>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.retrySingleMs')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={retrySingleDraft}
+                  placeholder="60000"
+                  aria-label={t('set.retrySingleMs')}
+                  onChange={(e) => setRetrySingleDraft(e.target.value)}
+                />
+              </span>
+            </div>
+            <div className="settings-actions-row">
+              <button type="button" className="ghost tiny-btn" onClick={() => saveRetryBudgets()}>
+                {t('common.save')}
+              </button>
+            </div>
           </div>
 
           <div className="card settings-group">

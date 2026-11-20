@@ -7,7 +7,7 @@ import {
 } from './transport';
 import {
   Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Play, Plus,
-  ScrollText, Settings2, ShieldCheck, Trash2, Users, X, XCircle,
+  ScrollText, Settings2, ShieldCheck, Sparkles, Trash2, Users, Wand2, X, XCircle,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { ModalPortal } from './ModalPortal';
@@ -38,18 +38,21 @@ import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
 
 bootstrapTheme();
 
-// 左侧导航收敛为 5 组：组内用横向子 Tab 切换。组与叶子一一对应，
-// 当前组由当前叶子反推，避免「当前组」和「当前页」两套状态互相打架。
-type NavGroup = 'overview' | 'gateway' | 'rules' | 'access' | 'settings';
+// 左侧导航：门面层（控制台 / SOUL）在分割线之上，工具层（网关 / 规则 / 接入 / 技能 / 设置）在下。
+// 组内用横向子 Tab；当前组由当前叶子反推，避免「当前组」与「当前页」两套状态打架。
+type NavGroup = 'overview' | 'soul' | 'gateway' | 'rules' | 'access' | 'skills' | 'settings';
 type NavLeaf =
   | 'dashboard' | 'me'
   | 'models' | 'modelList' | 'strategyBox' | 'keyPool'
   | 'rulesInject' | 'rulesRewrite'
-  | 'clients' | 'skills' | 'clientKeys'
+  | 'clients' | 'clientKeys' | 'skills'
   | 'settings';
 
 type NavLeafDef = { id: NavLeaf; labelKey: TKey };
 type NavGroupDef = { id: NavGroup; icon: typeof Activity; labelKey: TKey; leaves: NavLeafDef[] };
+
+/** 门面层：分割线之上；其余组一律视为工具层。 */
+const FACADE_GROUP_IDS: ReadonlySet<NavGroup> = new Set(['overview', 'soul']);
 
 const NAV_GROUPS: NavGroupDef[] = [
   {
@@ -58,6 +61,13 @@ const NAV_GROUPS: NavGroupDef[] = [
     labelKey: 'nav.group.overview',
     leaves: [
       { id: 'dashboard', labelKey: 'nav.dashboard' },
+    ],
+  },
+  {
+    id: 'soul',
+    icon: Sparkles,
+    labelKey: 'nav.me',
+    leaves: [
       { id: 'me', labelKey: 'nav.me' },
     ],
   },
@@ -87,8 +97,15 @@ const NAV_GROUPS: NavGroupDef[] = [
     labelKey: 'nav.group.access',
     leaves: [
       { id: 'clients', labelKey: 'nav.clients' },
-      { id: 'skills', labelKey: 'nav.skills' },
       { id: 'clientKeys', labelKey: 'nav.clientKeys' },
+    ],
+  },
+  {
+    id: 'skills',
+    icon: Wand2,
+    labelKey: 'nav.group.skills',
+    leaves: [
+      { id: 'skills', labelKey: 'nav.skills' },
     ],
   },
   {
@@ -106,9 +123,11 @@ const NAV_LEAF_STORAGE_PREFIX = 'sugt_nav_leaf_';
 
 const NAV_DEFAULT_LEAF: Record<NavGroup, NavLeaf> = {
   overview: 'dashboard',
+  soul: 'me',
   gateway: 'models',
   rules: 'rulesInject',
   access: 'clients',
+  skills: 'skills',
   settings: 'settings',
 };
 
@@ -133,7 +152,31 @@ function storedLeafFor(group: NavGroup): NavLeaf {
   return NAV_DEFAULT_LEAF[group];
 }
 
+/**
+ * 旧版：SOUL 在「总览」叶子、技能在「接入」叶子。
+ * 升为一级主 Tab 后迁到 soul / skills 组，避免旧 localStorage 指到空页。
+ */
+function migrateNavStorage() {
+  try {
+    const overviewLeaf = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}overview`);
+    if (overviewLeaf === 'me') {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, 'soul');
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}soul`, 'me');
+      localStorage.removeItem(`${NAV_LEAF_STORAGE_PREFIX}overview`);
+    }
+    const accessLeaf = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}access`);
+    if (accessLeaf === 'skills') {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, 'skills');
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}skills`, 'skills');
+      localStorage.removeItem(`${NAV_LEAF_STORAGE_PREFIX}access`);
+    }
+  } catch {
+    /* 隐私模式无持久化，跳过迁移 */
+  }
+}
+
 function initialLeaf(): NavLeaf {
+  migrateNavStorage();
   try {
     const raw = localStorage.getItem(NAV_GROUP_STORAGE_KEY);
     return storedLeafFor(isNavGroup(raw) ? raw : 'overview');
@@ -165,6 +208,8 @@ type ProviderTestOutcome = {
 type RuntimeStatus = {
   running: boolean;
   listen_url: string;
+  preferred_port?: number;
+  listen_port?: number;
   openai_base_url?: string;
   anthropic_base_url?: string;
   gateway_client_api_key?: string;
@@ -236,6 +281,8 @@ type AppConfig = {
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
   port_fallback_ports?: number[];
+  upstream_retry_budget_ms?: number | null;
+  upstream_retry_single_ms?: number | null;
   providers: unknown[];
   overlay?: OverlayConfigView;
   workspace_rules?: WorkspaceRulesView;
@@ -765,15 +812,24 @@ function AppMain() {
           </div>
         </div>
         <div className="nav-scroll">
-        {/* 5 组固定顺序：总览（门面层）｜网关 / 规则 / 接入（工具层）｜设置 */}
+        {/* 门面：总览 → SOUL；分割线；工具：网关 / 规则 / 接入 / 设置 */}
         {NAV_GROUPS.map((item, index) => {
           const Icon = item.icon;
           const active = group === item.id;
+          const prev = index > 0 ? NAV_GROUPS[index - 1] : null;
+          const showDivider = Boolean(
+            prev && FACADE_GROUP_IDS.has(prev.id) && !FACADE_GROUP_IDS.has(item.id),
+          );
+          const className = [
+            'nav',
+            active ? 'active' : '',
+            item.id === 'soul' ? 'nav--soul' : '',
+          ].filter(Boolean).join(' ');
           return (
             <React.Fragment key={item.id}>
-              {index === 1 ? <div className="nav-divider" role="separator" aria-hidden="true" /> : null}
+              {showDivider ? <div className="nav-divider" role="separator" aria-hidden="true" /> : null}
               <button
-                className={active ? 'nav active' : 'nav'}
+                className={className}
                 onClick={() => setTab(storedLeafFor(item.id))}
               >
                 <Icon size={18} />{t(item.labelKey)}
@@ -829,6 +885,16 @@ function AppMain() {
                   <div>
                     <h3>{t('dash.service')}</h3>
                     <p>{status?.listen_url ?? 'http://127.0.0.1:8787'}</p>
+                    {status?.preferred_port != null
+                      && status?.listen_port != null
+                      && status.preferred_port !== status.listen_port ? (
+                      <p className="hint compact">
+                        {t('dash.portDrift', {
+                          preferred: String(status.preferred_port),
+                          listen: String(status.listen_port),
+                        })}
+                      </p>
+                    ) : null}
                   </div>
                   {statusBadge}
                 </div>

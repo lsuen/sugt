@@ -47,6 +47,8 @@ type Props = {
   status: {
     running?: boolean
     listen_url?: string
+    preferred_port?: number
+    listen_port?: number
     openai_base_url?: string
     anthropic_base_url?: string
     gateway_client_api_key?: string
@@ -175,6 +177,16 @@ export function GatewayAccessBanner({
           {status?.running ? t('gateway.up') : t('gateway.down')}
         </span>
       </div>
+      {status?.preferred_port != null
+        && status?.listen_port != null
+        && status.preferred_port !== status.listen_port ? (
+        <p className="hint compact">
+          {t('gateway.portDrift', {
+            preferred: String(status.preferred_port),
+            listen: String(status.listen_port),
+          })}
+        </p>
+      ) : null}
 
       <div className="access-config-block">
         {/* LLM 上游：服务商 / 模型 / 接入协议（徽标为同行小字副标） */}

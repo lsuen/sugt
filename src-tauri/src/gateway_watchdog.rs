@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
-use crate::{clients, commands::AppRuntime, gateway_daemon};
+use crate::{commands::AppRuntime, gateway_daemon};
 
 /// 后台循环：网关不可达时自动拉起（嵌入式 +  detached 双路径）。
 pub fn spawn(runtime: Arc<AppRuntime>) {
@@ -29,8 +29,8 @@ pub fn spawn(runtime: Arc<AppRuntime>) {
 }
 
 async fn recover_gateway(runtime: &AppRuntime) -> Result<(), String> {
-    let config = runtime.config.read().await.clone();
-    let client_host = config.client_host();
+    let preferred = runtime.config.read().await.clone();
+    let client_host = preferred.client_host();
 
     if !runtime.gateway.is_running().await {
         if let Err(err) = runtime.gateway.start().await {
@@ -38,26 +38,26 @@ async fn recover_gateway(runtime: &AppRuntime) -> Result<(), String> {
         }
     }
 
-    if gateway_daemon::wait_reachable(&client_host, config.port, 6).await {
+    let after_embed = crate::commands::config_with_listen_port(runtime).await;
+    if gateway_daemon::wait_reachable(&client_host, after_embed.port, 6).await {
+        let _ = crate::commands::sync_client_endpoints_to_listen_port(runtime).await;
         return Ok(());
     }
 
     gateway_daemon::spawn_detached(&runtime.paths.config_dir)
         .map_err(|e| e.to_string())?;
 
-    if !gateway_daemon::wait_reachable(&client_host, config.port, 20).await {
+    // 扫候选口；成功只刷新接管脚本，不把临时口写进首选 port。
+    let mut found = false;
+    for port in preferred.port_candidates() {
+        if gateway_daemon::wait_reachable(&client_host, port, 4).await {
+            found = true;
+            break;
+        }
+    }
+    if !found {
         return Err("watchdog: health check still failing after recovery".to_string());
     }
-
-  let gw_config = runtime.gateway.config().await;
-    if gw_config.port != config.port {
-        let mut cfg = runtime.config.write().await;
-        cfg.port = gw_config.port;
-        let updated = cfg.clone();
-        runtime.persist().await.map_err(|e| e.to_string())?;
-        let _ = clients::write_launch_scripts(&runtime.paths, &updated);
-        let _ = clients::repair(&runtime.paths.config_dir, &updated);
-    }
-
+    crate::commands::sync_client_endpoints_to_listen_port(runtime).await?;
     Ok(())
 }

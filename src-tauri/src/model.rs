@@ -657,6 +657,10 @@ pub struct ProxyHit {
 pub struct RuntimeStatus {
     pub running: bool,
     pub listen_url: String,
+    /// 用户配置的首选监听口（`config.toml` 的 `port`，不被回退绑定改写）。
+    pub preferred_port: u16,
+    /// 本次实际可达的监听口（回退绑定时可与 preferred 不同）。
+    pub listen_port: u16,
     pub openai_base_url: String,
     pub anthropic_base_url: String,
     pub gateway_client_api_key: String,

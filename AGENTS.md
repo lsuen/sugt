@@ -26,6 +26,38 @@ Every item below is an **expectation grounded in measured experience**, not a pr
 
 SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefer small, reversible changes. Do not invent private packaging scripts or closed-source paths.
 
+## Keys & auth (do not conflate)
+
+Three distinct systems share the word “key”. Mixing them produces wrong UI and wrong docs:
+
+| Concept | Persist | GUI | Role |
+| --- | --- | --- | --- |
+| **Access / inbound keys** | `config_dir/client-keys.json` | **接入 → 接入密钥** (`ClientKeyPanel`) | Keys clients present to this gateway (`Authorization` / `x-api-key`). Multi-key, enable/disable, per-key usage + client/IP detail. |
+| **Primary inbound key** | also mirrored to `AppConfig.gateway_client_api_key` | same panel — row with `primary: true` | Cannot delete/disable. Editing it writes `config.toml`, refreshes access-info card, and is what LAN WebUI login + takeover scripts use. `ensure_primary` seeds from config (fallback `sugt-local-key`). |
+| **Upstream key rotation** | key-pool file | **网关 → 上游 Key 轮换** | Provider API keys for outbound calls. Quotas/rotation only. |
+
+**Expect** agents to edit inbound keys only via the Access Keys UI / `client_keys` commands, never by inventing a Settings “gateway key” editor. `update_gateway_settings.gateway_client_api_key` exists for programmatic sync (e.g. primary-key save) — it is not a second product surface. WebUI login hint text may still say `gateway_client_api_key`; that value is the primary access key.
+
+LAN / non-loopback binds require a matching inbound key on every request; loopback may omit the header for local Codex. Verify with `src-tauri/tests/client_keys_e2e.rs`.
+
+## AppConfig ↔ GUI surface
+
+Most day-to-day knobs are in GUI. Port model (2026-11-20):
+
+| Field | GUI | Notes |
+| --- | --- | --- |
+| `port` (preferred listen) | **设置 → 常规 → 网关** | User intent. Changing it rebinds a running gateway. |
+| Runtime listen port | Console / access banner when ≠ preferred | From embedded bind or candidate scan; **must not** be persisted over `config.port`. `sync_client_endpoints_to_listen_port` only rewrites takeover scripts. |
+| `port_fallback_enabled` | Settings → General | keep |
+| `port_fallback_ports` | **设置 → 高级** (comma list; empty → defaults `9878/18887/28887`) | |
+| `gateway_client_api_key` | **接入 → 接入密钥** (primary) | do not duplicate under Settings |
+| `upstream_retry_budget_ms` / `upstream_retry_single_ms` | **设置 → 高级 → 上游韧性** | blank = defaults (8 min / 60 s) |
+| `allow_lan_access` / WebUI enable+port / watchdog / failover / fetch-and-test | Settings | keep |
+| `host` | derived from LAN toggle | do not expose separately |
+| Takeover flags / providers / rules | their own tabs | keep |
+
+**Expect** new config fields to land on the existing tab that owns that behaviour (Access for inbound auth, Gateway for upstream, Settings for process/bind), not a catch-all “raw TOML” page. Docs: Chinese main README is `README.md`; English is `README.en.md` (`README.zh.md` is a stub redirect).
+
 ## Theme system (skins)
 
 **Goal:** lightweight, file-per-theme, importable packs — never a God-token CSS file.
@@ -202,14 +234,14 @@ A working Chat Completions bridge does **not** prove Responses compatibility. Ke
 - **SOUL is a read-only orchestrator.** `soul_context::soul_brief()` injects runtime facts (capability matrix, taken-over clients, local skills, repos) into `system_prompt_with_brief()`. The model may only emit one `[[SUGT_ROUTE]]<intent>[[/SUGT_ROUTE]]` line (`clients` / `skills` / `preview` / `settings`), which the frontend renders as suggestion buttons. Never give SOUL a tool loop, never let it emit bash for management intents, never let it write client configs, clone repos or install skills. All writes go through the existing deterministic commands plus `TakeoverPreviewModal` impact preview and explicit user confirmation. Unknown/partial route tokens must be stripped, never executed or shown.
 - **GitHub URL skill install is deterministic and transactional.** `store::github_install` reuses `parse_git_url` → host allowlist → `git clone --depth 1` (proxy-aware, `main`→`master` fallback) → `SKILL.md` scan → `replace_dir` → `staged.json`. It never registers a repo in `repos.toml`, caps the skill count, cleans the temp clone, and on failure restores `staged.json` and removes already-written dirs. It is idempotent (same URL overwrites the same ids). The frontend must guide users to Skills → Local Skills for mounting afterwards.
 - **Trigger words and skill advice are rule-based, with LLM as optional explanation only.** `catalog::parse_skill_meta()` reads frontmatter (`triggers` / `触发词` / `when_to_use`, comma-separated or YAML list) and emits deterministic suggestions. Never invent trigger words from thin air; missing metadata produces an empty list plus an actionable suggestion. These still work when the model is unavailable.
-- **Navigation:** Logs and About live under Settings as horizontal sub-tabs (`overview` / `general` / `appearance` / `advanced` / `pet` / `logs` / `about`), with `overview` first and `.settings-tabs` sticky. Desktop companion (小su) settings live on the `pet` tab between Advanced and Logs. The sub-tab state is owned by `App` so the status-bar drawer can jump straight to `logs`. High-frequency log polling is gated on the logs sub-tab being visible; the drawer keeps its own timer — do not double-poll.
+- **Navigation:** Sidebar facade layer is `控制台` then `SOUL`, then a divider; tool layer is `网关` / `规则` / `接入` / `技能` / `设置` (`FACADE_GROUP_IDS` in `src/main.tsx`). Copy uses `控制台` (not `总览`). SOUL and Skills are first-class main groups (not leaves under overview/access); migrating old `access/skills` localStorage lands on the skills group. Gateway leaves stay separate: `models` / `modelList` / `strategyBox` / `keyPool` — never merge 模型配置 with 模型列表. Access leaves are `clients` + `clientKeys` only. Logs and About live under Settings as horizontal sub-tabs (`overview` / `general` / `appearance` / `advanced` / `pet` / `logs` / `about`), with `overview` first and `.settings-tabs` sticky. Desktop companion (小su) settings live on the `pet` tab between Advanced and Logs. The sub-tab state is owned by `App` so the status-bar drawer can jump straight to `logs`. High-frequency log polling is gated on the logs sub-tab being visible; the drawer keeps its own timer — do not double-poll.
 
 ## Release & packaging
 
 - **Release asset names are stable and version-free.** Only the git tag carries a version. Builds always upload `SUTAI-windows-x64-setup.exe`, `SUTAI-windows-x64.zip`, `SUTAI-macos-arm64.zip`, `SUTAI-macos-x64.zip`, `SUTAI-linux-x64.tar.gz`, `SUTAI-linux-arm64.tar.gz` and `SUTAI-checksums.txt`. Never put a version in an asset filename again: the download site, the Homebrew cask and the in-app updater all resolve `/releases/latest` by filename, so a versioned filename forces a coordinated edit on every release.
 - **Tags stay semantic (`v1.1.9`).** `update::check_for_update` compares `release.tag_name` with the bundled `CARGO_PKG_VERSION`; a fixed `latest` tag parses to `0.0.0` and silently disables update checks. Use `v*` tags, never a rolling tag.
 - **One workflow, four build legs.** `.github/workflows/release.yml` runs on every `v*` tag push (and manual dispatch with an explicit tag): `windows-latest` builds NSIS + portable zip, `macos-15` / `macos-15-intel` build both macOS arches, `ubuntu-latest` / `ubuntu-24.04-arm` build **headless `sugt-cli`** tarballs (no Linux desktop GUI yet); a final `publish` job merges artifacts, writes checksums and uploads everything. CI never depends on the author-only `/scripts` PowerShell files (gitignored), and `package.json` `package:release*` entries remain local conveniences.
-- **LAN / server mode is opt-in, auth-hardened.** Default bind stays `127.0.0.1`. `sugt-cli serve --lan` (or host `0.0.0.0` / `allow_lan_access`) binds non-loopback and **requires** a matching `gateway_client_api_key` on every request; missing headers are only tolerated on loopback for local Codex. Ship `deploy/sugt-gateway.service` as the systemd sample — do not make LAN the Linux platform default.
+- **LAN / server mode is opt-in, auth-hardened.** Default bind stays `127.0.0.1`. `sugt-cli serve --lan` (or host `0.0.0.0` / `allow_lan_access`) binds non-loopback and **requires** a matching inbound key on every request (primary `gateway_client_api_key` or any enabled row in `client-keys.json`); missing headers are only tolerated on loopback for local Codex. Ship `deploy/sugt-gateway.service` as the systemd sample — do not make LAN the Linux platform default.
 - **Homebrew is a rolling release.** `lsuen/homebrew-sugt` uses `version :latest` + `sha256 :no_check` + `releases/latest/download/<fixed-name>`; publishing a new SUGT version needs no tap change. Integrity is covered by `SUTAI-checksums.txt` and the GitHub asset `digest` used by the in-app updater. Users must run `brew upgrade --cask --greedy sugt` (or use in-app updates) because `:latest` casks are skipped by plain `brew upgrade`.
 - **Download site reads `/releases/latest` too.** `lsuenweb` maps kinds to explicit asset names in `assets/projects.toml` and falls back to substring rules. Once names are stable, a new release only replaces same-named assets — neither repository needs a code or link change.
 - **Version lives in six places**, not four: `package.json`, `package-lock.json` (two keys), `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`, `src/release-notes.ts`. Run `python3 docs/孙测测/scripts/check_version_consistency.py --root .` before tagging.
