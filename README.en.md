@@ -30,6 +30,8 @@ The [GitHub Releases](https://github.com/lsuen/sugt/releases) build is the full 
 
 SUGT’s bet: make the **access surface** thick (takeover, keys, rules, skills, strategy) while keeping the gateway predictable and local — not another cloud aggregator.
 
+SUGT does not position itself as a "free-token aggregator." Free tiers are for experimenting and backup; reliable output still calls for paid models. We are not in the business of farming free quotas and make no "unlimited free" promises. SUGT solves the **last mile** — making model governance (access, strategy boxes, rule constraints, and the skills ecosystem) controllable, portable, and ready to use.
+
 ## Features
 
 ### Console layout
