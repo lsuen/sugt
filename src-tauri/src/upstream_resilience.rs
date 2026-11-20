@@ -177,7 +177,8 @@ impl FailureMemory {
         } else if self.is_free && self.sticky_switch {
             NoticeKind::FreeExhausted
         } else if self.sticky_switch {
-            NoticeKind::BadRequest
+            // 付费通道 Switch（如无自有 Key 的 401）耗尽后，不是「请求形态被拒」。
+            NoticeKind::UpstreamDown
         } else {
             NoticeKind::UpstreamDown
         }
@@ -201,6 +202,14 @@ pub fn route_circuit_key(provider_id: &str, base_url: &str, model: &str, is_free
 pub fn classify_network() -> FailureClass {
     FailureClass::Retryable {
         retry_after: Duration::from_secs(2),
+        reason: RetryReason::Unavailable,
+    }
+}
+
+/// 本轮所有路由都因熔断被跳过：按最短剩余冷却等待后重试，而不是立刻回「上游拒绝」。
+pub fn classify_circuits_open(wait: Duration) -> FailureClass {
+    FailureClass::Retryable {
+        retry_after: wait.max(Duration::from_millis(200)).min(Duration::from_secs(30)),
         reason: RetryReason::Unavailable,
     }
 }
@@ -240,7 +249,9 @@ pub fn classify_http(
             }
         }
         400 | 413 | 422 => {
-            if is_free && model_rejected(&lower) {
+            // 免费通道：坏请求多半是这条路由/模型不吃当前历史形态，换下一条；
+            // 绝不能 Terminal 立刻回「上游拒绝」——否则同一次请求里后面的免费路由永不会试。
+            if is_free {
                 FailureClass::Switch
             } else {
                 FailureClass::Terminal(NoticeKind::BadRequest)
@@ -703,11 +714,6 @@ fn is_context_length(lower: &str) -> bool {
             && lower.contains("context")
 }
 
-fn model_rejected(lower: &str) -> bool {
-    (lower.contains("model") || lower.contains("not found") || lower.contains("no such"))
-        && !is_context_length(lower)
-}
-
 fn retry_after_hint(header: Option<&str>, body: &str, default: Duration) -> Duration {
     if let Some(header) = header {
         if let Some(wait) = parse_retry_after_token(header.trim()) {
@@ -845,6 +851,24 @@ mod tests {
             false,
         );
         assert_eq!(class, FailureClass::Terminal(NoticeKind::ContextTooLong));
+    }
+
+    #[test]
+    fn free_route_400_switches_instead_of_terminal_reject() {
+        let class = classify_http(
+            400,
+            r#"{"message":"function.arguments must be a valid JSON object string: trailing characters"}"#,
+            None,
+            false,
+            true,
+        );
+        assert_eq!(class, FailureClass::Switch);
+    }
+
+    #[test]
+    fn paid_route_400_stays_terminal_bad_request() {
+        let class = classify_http(400, "invalid_argument", None, true, false);
+        assert_eq!(class, FailureClass::Terminal(NoticeKind::BadRequest));
     }
 
     #[test]

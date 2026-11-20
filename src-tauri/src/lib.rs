@@ -36,6 +36,7 @@ pub mod quick_chat;
 pub mod request_rules;
 pub mod store;
 pub mod codex_config;
+pub mod chat_tool_history;
 pub mod command_mode;
 pub mod openai_responses_adapter;
 pub mod responses_upstream;

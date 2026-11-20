@@ -475,12 +475,21 @@ impl GatewayState {
 
     /// 检查 provider 是否处于熔断冷却期
     async fn is_circuit_open(&self, provider_id: &str) -> bool {
-        let inner = self.inner.read().await;
-        inner
-            .circuit_breaker
-            .get(provider_id)
-            .map(|tripped_at| tripped_at.elapsed() < CIRCUIT_BREAKER_COOLDOWN)
-            .unwrap_or(false)
+        self.circuit_remaining(provider_id).await.is_some()
+    }
+
+    /// 熔断剩余冷却；已过期的键顺手清掉，避免「看起来永远开着」。
+    async fn circuit_remaining(&self, provider_id: &str) -> Option<Duration> {
+        let mut inner = self.inner.write().await;
+        let Some(tripped_at) = inner.circuit_breaker.get(provider_id).copied() else {
+            return None;
+        };
+        let elapsed = tripped_at.elapsed();
+        if elapsed >= CIRCUIT_BREAKER_COOLDOWN {
+            inner.circuit_breaker.remove(provider_id);
+            return None;
+        }
+        Some(CIRCUIT_BREAKER_COOLDOWN - elapsed)
     }
 
     /// 将 provider 纳入熔断器
@@ -1927,13 +1936,20 @@ async fn proxy_chat_upstream(
     for pass in 0..crate::upstream_resilience::MAX_PASSES {
         memory.begin_pass();
         let all_attempts = build_global_attempts(&providers, config.failover_enabled);
+        let mut attempted = false;
+        let mut soonest_circuit: Option<Duration> = None;
         for (attempt_idx, attempt) in all_attempts.iter().enumerate() {
             let is_free = crate::experimental_free::is_experimental_free(attempt);
             memory.set_free(is_free);
             let key = route_key(attempt);
-            if state.is_circuit_open(&key).await {
+            if let Some(remain) = state.circuit_remaining(&key).await {
+                soonest_circuit = Some(match soonest_circuit {
+                    Some(have) => have.min(remain),
+                    None => remain,
+                });
                 continue;
             }
+            attempted = true;
                 let target = build_target_url(&attempt.base_url, &path, &query);
                 let payload = rewrite_model(
                     body_bytes.clone(),
@@ -2129,7 +2145,7 @@ async fn proxy_chat_upstream(
                         .await;
                 }
                 if let Some(kind) = memory.observe(class) {
-                    remember_route_failure(&state, attempt).await;
+                    remember_route_failure(&state, attempt, kind).await;
                     return Ok(session_notice(
                         crate::upstream_resilience::Wire::Chat,
                         &client_model,
@@ -2138,6 +2154,11 @@ async fn proxy_chat_upstream(
                     ));
                 }
             }
+        if !attempted {
+            if let Some(wait) = soonest_circuit {
+                let _ = memory.observe(crate::upstream_resilience::classify_circuits_open(wait));
+            }
+        }
         if let Some(response) = finish_pass(
             &mut memory,
             &mut budget,
@@ -2191,13 +2212,20 @@ async fn proxy_responses_via_chat(
     for pass in 0..crate::upstream_resilience::MAX_PASSES {
         memory.begin_pass();
         let all_attempts = build_global_attempts(&providers, config.failover_enabled);
+        let mut attempted = false;
+        let mut soonest_circuit: Option<Duration> = None;
         for (attempt_idx, attempt) in all_attempts.iter().enumerate() {
             let is_free = crate::experimental_free::is_experimental_free(attempt);
             memory.set_free(is_free);
             let key = route_key(attempt);
-            if state.is_circuit_open(&key).await {
+            if let Some(remain) = state.circuit_remaining(&key).await {
+                soonest_circuit = Some(match soonest_circuit {
+                    Some(have) => have.min(remain),
+                    None => remain,
+                });
                 continue;
             }
+            attempted = true;
             let own_key = !attempt.api_key.trim().is_empty();
             let attempt_started = std::time::Instant::now();
             // Codex 几乎每轮都带 tools。火山原生 /responses 常「200 纯文本收工」不发
@@ -2937,6 +2965,12 @@ async fn proxy_responses_via_chat(
             } // command_mode retry loop
         }
 
+        if !attempted {
+            if let Some(wait) = soonest_circuit {
+                let _ = memory.observe(crate::upstream_resilience::classify_circuits_open(wait));
+            }
+        }
+
         if let Some(response) = finish_pass(
             &mut memory,
             &mut budget,
@@ -2995,8 +3029,16 @@ fn session_notice(
     crate::upstream_resilience::notice_response(wire, model, kind, stream)
 }
 
-async fn remember_route_failure(state: &GatewayState, attempt: &ProviderConfig) {
-    state.trip_circuit(&route_key(attempt)).await;
+/// 仅密钥类终态记熔断。坏请求 / 上下文过长是「这一轮请求形态」问题，
+/// 锁路由 30 秒会导致下一句用户消息仍被跳过，表现为「熔断后无法恢复」。
+async fn remember_route_failure(
+    state: &GatewayState,
+    attempt: &ProviderConfig,
+    kind: crate::upstream_resilience::NoticeKind,
+) {
+    if matches!(kind, crate::upstream_resilience::NoticeKind::Auth) {
+        state.trip_circuit(&route_key(attempt)).await;
+    }
 }
 
 /// 这一轮路由都失败了：还有预算就等待后返回 None，调用方再跑一轮；否则给出提示。
@@ -3324,17 +3366,20 @@ async fn request_rule_effects(
     (effects, is_codex)
 }
 
-/// 默认 max_tokens：规则关闭（仅 codex 语境）时返回 None，表示「不填」。
+/// 默认 max_tokens：
+/// - Codex：规则给出值则用；规则被显式关闭则不填；否则回落安全默认。
+/// - 非 Codex（Chat 透传等）：只有规则显式给出才填，默认不加这一层。
 fn rule_default_max_tokens(effects: &RuleEffects, is_codex: bool) -> Option<u64> {
-    if is_codex && effects.max_tokens_suppressed {
-        return None;
+    if let Some(value) = effects.max_tokens {
+        return Some(u64::from(value));
     }
-    Some(
-        effects
-            .max_tokens
-            .map(u64::from)
-            .unwrap_or(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
-    )
+    if is_codex {
+        if effects.max_tokens_suppressed {
+            return None;
+        }
+        return Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS);
+    }
+    None
 }
 
 /// 把规则的 body_fields 写进出站 JSON 对象；值先按 JSON 解析（数字/布尔/对象），

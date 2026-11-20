@@ -135,8 +135,15 @@ fn default_max_tokens_follows_rule_suppression() {
     assert_eq!(rule_default_max_tokens(&effects, true), None, "codex 语境可抑制");
     assert_eq!(
         rule_default_max_tokens(&effects, false),
+        None,
+        "非 Codex 默认透传：规则没给就不填 max_tokens"
+    );
+
+    effects.max_tokens_suppressed = false;
+    assert_eq!(
+        rule_default_max_tokens(&effects, true),
         Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
-        "Claude 路径保持原默认"
+        "Codex 无规则值时回落安全默认"
     );
 }
 

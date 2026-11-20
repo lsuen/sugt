@@ -73,6 +73,41 @@ fn converts_string_input() {
 }
 
 #[test]
+fn trailing_body_bytes_still_convert() {
+    let body = Bytes::from(&b"{\"model\":\"gpt-4\",\"input\":\"hi\",\"stream\":false}{\"noise\":1}"[..]);
+    let out = responses_to_chat(&body, "upstream-model").unwrap();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["messages"][0]["content"], "hi");
+}
+
+#[test]
+fn history_tool_arguments_are_canonical_json_objects() {
+    let body = Bytes::from(
+        r#"{
+          "model":"gpt-4",
+          "stream":false,
+          "tools":[{"type":"function","name":"exec","parameters":{"type":"object"}}],
+          "input":[
+            {"type":"function_call","call_id":"c1","name":"exec","arguments":"{\"cmd\":\"ls\"}TRAILING"},
+            {"type":"function_call_output","call_id":"c1","output":"ok"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"again"}]}
+          ]
+        }"#,
+    );
+    let out = responses_to_chat(&body, "upstream-model").unwrap();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    let args = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m.get("tool_calls").is_some())
+        .unwrap()["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap();
+    assert_eq!(args, r#"{"cmd":"ls"}"#);
+}
+
+#[test]
 fn converts_responses_input_text_array() {
     let body = Bytes::from(
         r#"{"model":"gpt-4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codex"}]}]}"#,
