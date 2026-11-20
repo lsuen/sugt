@@ -1926,19 +1926,14 @@ async fn proxy_chat_upstream(
 
     for pass in 0..crate::upstream_resilience::MAX_PASSES {
         memory.begin_pass();
-        for (index, provider) in providers.iter().enumerate() {
-            let is_free = crate::experimental_free::is_experimental_free(provider);
+        let all_attempts = build_global_attempts(&providers, config.failover_enabled);
+        for (attempt_idx, attempt) in all_attempts.iter().enumerate() {
+            let is_free = crate::experimental_free::is_experimental_free(attempt);
             memory.set_free(is_free);
-            if !is_free && state.is_circuit_open(&provider.id).await {
-                warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
+            let key = route_key(attempt);
+            if state.is_circuit_open(&key).await {
                 continue;
             }
-            let attempts = upstream_attempts(provider, config.failover_enabled);
-            for (attempt_idx, attempt) in attempts.iter().enumerate() {
-                let key = route_key(attempt);
-                if state.is_circuit_open(&key).await {
-                    continue;
-                }
                 let target = build_target_url(&attempt.base_url, &path, &query);
                 let payload = rewrite_model(
                     body_bytes.clone(),
@@ -1986,7 +1981,7 @@ async fn proxy_chat_upstream(
                                     match crate::upstream_resilience::text_only_step(
                                         text_tries,
                                         attempt_idx,
-                                        attempt_idx + 1 < attempts.len(),
+                                        attempt_idx + 1 < all_attempts.len(),
                                         paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
@@ -2022,7 +2017,7 @@ async fn proxy_chat_upstream(
                                     .record_proxy_hit(
                                         attempt,
                                         &path,
-                                        index,
+                                        attempt_idx,
                                         started.elapsed().as_millis() as u64,
                                         &headers,
                                         "openai_direct",
@@ -2034,7 +2029,7 @@ async fn proxy_chat_upstream(
                                     state
                                         .note_member_success(
                                             box_id,
-                                            provider,
+                                            attempt,
                                             attempt_started.elapsed().as_millis() as u64,
                                         )
                                         .await;
@@ -2065,7 +2060,7 @@ async fn proxy_chat_upstream(
                                 .record_proxy_hit(
                                     attempt,
                                     &path,
-                                    index,
+                                    attempt_idx,
                                     started.elapsed().as_millis() as u64,
                                     &headers,
                                     "openai_direct",
@@ -2077,7 +2072,7 @@ async fn proxy_chat_upstream(
                                 state
                                     .note_member_success(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         attempt_started.elapsed().as_millis() as u64,
                                     )
                                     .await;
@@ -2130,7 +2125,7 @@ async fn proxy_chat_upstream(
                 };
                 if let Some(box_id) = box_id.as_deref() {
                     state
-                        .note_member_failure(box_id, provider, &format!("{class:?}"), cooldown_ms)
+                        .note_member_failure(box_id, attempt, &format!("{class:?}"), cooldown_ms)
                         .await;
                 }
                 if let Some(kind) = memory.observe(class) {
@@ -2143,7 +2138,6 @@ async fn proxy_chat_upstream(
                     ));
                 }
             }
-        }
         if let Some(response) = finish_pass(
             &mut memory,
             &mut budget,
@@ -2196,16 +2190,10 @@ async fn proxy_responses_via_chat(
 
     for pass in 0..crate::upstream_resilience::MAX_PASSES {
         memory.begin_pass();
-    for (index, provider) in providers.iter().enumerate() {
-        let is_free = crate::experimental_free::is_experimental_free(provider);
-        memory.set_free(is_free);
-        if !is_free && state.is_circuit_open(&provider.id).await {
-            warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
-            continue;
-        }
-
-        let attempts = upstream_attempts(provider, config.failover_enabled);
-        for (attempt_idx, attempt) in attempts.iter().enumerate() {
+        let all_attempts = build_global_attempts(&providers, config.failover_enabled);
+        for (attempt_idx, attempt) in all_attempts.iter().enumerate() {
+            let is_free = crate::experimental_free::is_experimental_free(attempt);
+            memory.set_free(is_free);
             let key = route_key(attempt);
             if state.is_circuit_open(&key).await {
                 continue;
@@ -2274,7 +2262,7 @@ async fn proxy_responses_via_chat(
                             .record_proxy_hit(
                                 attempt,
                                 "v1/responses",
-                                index,
+                                attempt_idx,
                                 started.elapsed().as_millis() as u64,
                                 &headers,
                                 "responses_native",
@@ -2286,7 +2274,7 @@ async fn proxy_responses_via_chat(
                             state
                                 .note_member_success(
                                     box_id,
-                                    provider,
+                                    attempt,
                                     attempt_started.elapsed().as_millis() as u64,
                                 )
                                 .await;
@@ -2323,7 +2311,7 @@ async fn proxy_responses_via_chat(
                             state
                                 .note_member_failure(
                                     box_id,
-                                    provider,
+                                    attempt,
                                     &format!("HTTP {} {}", status.as_u16(), text),
                                     cooldown_ms,
                                 )
@@ -2459,7 +2447,7 @@ async fn proxy_responses_via_chat(
                                     match crate::upstream_resilience::text_only_step(
                                         text_tries,
                                         attempt_idx,
-                                        attempt_idx + 1 < attempts.len(),
+                                        attempt_idx + 1 < all_attempts.len(),
                                         paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
@@ -2495,7 +2483,7 @@ async fn proxy_responses_via_chat(
                                     .record_proxy_hit(
                                         attempt,
                                         "v1/responses",
-                                        index,
+                                        attempt_idx,
                                         started.elapsed().as_millis() as u64,
                                         &headers,
                                         "chat_completions_adapter",
@@ -2507,7 +2495,7 @@ async fn proxy_responses_via_chat(
                                     state
                                         .note_member_success(
                                             box_id,
-                                            provider,
+                                            attempt,
                                             attempt_started.elapsed().as_millis() as u64,
                                         )
                                         .await;
@@ -2529,7 +2517,7 @@ async fn proxy_responses_via_chat(
                                 .record_proxy_hit(
                                     attempt,
                                     "v1/responses",
-                                    index,
+                                    attempt_idx,
                                     started.elapsed().as_millis() as u64,
                                     &headers,
                                     "chat_completions_adapter",
@@ -2541,7 +2529,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_success(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         attempt_started.elapsed().as_millis() as u64,
                                     )
                                     .await;
@@ -2605,7 +2593,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_failure(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         &format!("HTTP {} {}", status.as_u16(), text),
                                         cooldown_ms,
                                     )
@@ -2649,7 +2637,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_failure(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         &format!("HTTP {} {}", status.as_u16(), text),
                                         cooldown_ms,
                                     )
@@ -2676,7 +2664,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_failure(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         &err.to_string(),
                                         cooldown_ms,
                                     )
@@ -2747,7 +2735,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_failure(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         &format!("HTTP {} {}", status.as_u16(), body_text),
                                         cooldown_ms,
                                     )
@@ -2768,7 +2756,7 @@ async fn proxy_responses_via_chat(
                                 state
                                     .note_member_failure(
                                         box_id,
-                                        provider,
+                                        attempt,
                                         &format!("HTTP {} {}", status.as_u16(), body_text),
                                         cooldown_ms,
                                     )
@@ -2785,7 +2773,7 @@ async fn proxy_responses_via_chat(
                             match crate::upstream_resilience::text_only_step(
                                 text_tries,
                                 attempt_idx,
-                                attempt_idx + 1 < attempts.len(),
+                                attempt_idx + 1 < all_attempts.len(),
                                 paid_text_total(attempt, &effects),
                             ) {
                                 crate::upstream_resilience::TextOnlyStep::RetrySame => {
@@ -2821,7 +2809,7 @@ async fn proxy_responses_via_chat(
                             .record_proxy_hit(
                                 attempt,
                                 "v1/responses",
-                                index,
+                                attempt_idx,
                                 started.elapsed().as_millis() as u64,
                                 &headers,
                                 "chat_completions_adapter",
@@ -2872,7 +2860,7 @@ async fn proxy_responses_via_chat(
                             state
                                 .note_member_success(
                                     box_id,
-                                    provider,
+                                    attempt,
                                     attempt_started.elapsed().as_millis() as u64,
                                 )
                                 .await;
@@ -2903,7 +2891,7 @@ async fn proxy_responses_via_chat(
                             state
                                 .note_member_failure(
                                     box_id,
-                                    provider,
+                                    attempt,
                                     &format!("HTTP {} {}", status.as_u16(), text),
                                     cooldown_ms,
                                 )
@@ -2926,7 +2914,7 @@ async fn proxy_responses_via_chat(
                             state
                                 .note_member_failure(
                                     box_id,
-                                    provider,
+                                    attempt,
                                     &err.to_string(),
                                     cooldown_ms,
                                 )
@@ -2949,7 +2937,6 @@ async fn proxy_responses_via_chat(
             } // command_mode retry loop
         }
 
-    }
         if let Some(response) = finish_pass(
             &mut memory,
             &mut budget,
@@ -3705,6 +3692,18 @@ fn upstream_attempts(provider: &ProviderConfig, failover_enabled: bool) -> Vec<P
         next.base_url = base.to_string();
         next.model_name = model.to_string();
         out.push(next);
+    }
+    out
+}
+
+/// 把所有 enabled provider 的 upstream_attempts 展平成一个全局路由池。
+/// 这样 text_only_step 的 has_another_route 能真实反映"全局还有没有下一条可试"，
+/// 而不是只在当前 provider 内部判断——之前非 free provider 永远只有 1 条路由，
+/// 连续多次不返回 tool_call 会 Forward 直接交回文本，failover 中断到不了外层下一个 provider。
+fn build_global_attempts(providers: &[ProviderConfig], failover_enabled: bool) -> Vec<ProviderConfig> {
+    let mut out = Vec::new();
+    for p in providers {
+        out.extend(upstream_attempts(p, failover_enabled));
     }
     out
 }
