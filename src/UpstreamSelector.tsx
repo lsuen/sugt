@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from './transport';
-import { Play, RefreshCw, Shuffle } from 'lucide-react'
+import { ChevronDown, Play, RefreshCw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
 
 /**
@@ -22,10 +22,36 @@ type ProviderOption = {
   tool_text_retry_extra?: number
 }
 
-type FreeModelProbe = { name: string; available: boolean }
+type FreeModelProbe = {
+  name: string
+  available: boolean
+  latencyMs: number | null
+  tokensPerSec: number | null
+}
 type FreeRouteChoice = { model: string; host: string }
 
-type ModelOption = { name: string; host?: string; available: boolean | null; boxName?: string }
+/** test_provider_models 的单模型探测结果（仅自定义通道「获取并测试」用） */
+type ModelTestResult = {
+  modelName: string
+  available: boolean
+  latencyMs: number | null
+  tokensPerSec: number | null
+}
+
+type ModelOption = {
+  name: string
+  host?: string
+  available: boolean | null
+  boxName?: string
+  latencyMs?: number | null
+  tokensPerSec?: number | null
+}
+
+/** get_config 里本组件只关心「获取模型行为」两个开关（snake_case，缺省按产品默认） */
+type FetchModeConfig = {
+  free_models_fetch_and_test?: boolean
+  custom_models_fetch_and_test?: boolean
+}
 
 /** 与 src-tauri/src/strategy_box.rs 的 StrategyBox 对齐（这里只关心对外 model id） */
 type StrategyBoxOption = { id: string; name: string; publicModelId: string; enabled: boolean }
@@ -35,10 +61,19 @@ type ModelEntry = { modelName: string; enabled: boolean }
 
 const FREE_PROVIDER_ID = 'sugt-free'
 
-/** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐（这里只关心成败） */
+/** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐（真实 LLM 探测报告） */
+type ProviderTestReport = {
+  ok: boolean
+  reply: string | null
+  latencyMs: number
+  tokensPerSec: number
+  completionTokens: number
+  estimated: boolean
+  error: string | null
+}
 type ProviderTestOutcome = {
   status: 'Unknown' | 'Available' | 'Unavailable'
-  report: { ok: boolean; error: string | null }
+  report: ProviderTestReport
 }
 
 type Props = {
@@ -51,6 +86,124 @@ type Props = {
   pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void
   /** 行尾右对齐的协议循环切换按钮回调（auto → openai → anthropic） */
   onCycleMode: () => void
+}
+
+/** 行文本拼装规则与原生 option 时代一致：●/○ 点 + name + 盒子 tag + · host */
+function modelRowLabel(m: ModelOption): string {
+  return `${m.available === true ? '● ' : m.available === false ? '○ ' : ''}${m.name}${
+    m.boxName ? t('upstream.strategyBoxTag') : ''
+  }${m.host ? ` · ${m.host}` : ''}`
+}
+
+/** 指标区只在 latencyMs 有值时出现；tokensPerSec 缺失则只展示延迟 */
+function modelMetricsLabel(m: ModelOption): string | null {
+  if (m.latencyMs == null) return null
+  const speed = m.tokensPerSec != null ? ` ${m.tokensPerSec.toFixed(1)}t/s` : ''
+  return `${m.latencyMs}ms${speed}`
+}
+
+/**
+ * 模型下拉：原生 <option> 无法把指标排到行尾，这里换成自定义 listbox。
+ * 触发器外观沿用 app-select；面板绝对定位，行右侧居右显示延迟与 t/s。
+ */
+function ModelListbox({
+  models,
+  selectValue,
+  placeholderName,
+  disabled,
+  emptyText,
+  onSelect,
+}: {
+  models: ModelOption[]
+  selectValue: string
+  /** 当前模型被禁用后不在列表里，仍占一行可重新选中 */
+  placeholderName: string | null
+  disabled: boolean
+  emptyText: string
+  onSelect: (name: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [open])
+
+  const rows: ModelOption[] =
+    placeholderName && !models.some((m) => m.name === placeholderName)
+      ? [{ name: placeholderName, available: null }, ...models]
+      : models
+
+  const selected = rows.find((m) => m.name === selectValue)
+  const triggerText = selected
+    ? selected.name === placeholderName
+      ? `${placeholderName}${t('upstream.modelDisabled')}`
+      : modelRowLabel(selected)
+    : emptyText
+
+  const choose = (name: string) => {
+    setOpen(false)
+    onSelect(name)
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      className="model-listbox"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation()
+          setOpen(false)
+        }
+      }}
+    >
+      <button
+        type="button"
+        className="app-select model-listbox-trigger"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="model-listbox-trigger-text">{triggerText}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open && !disabled && (
+        <div className="model-listbox-panel" role="listbox">
+          {rows.map((m) => {
+            const isPlaceholder = m.name === placeholderName
+            const metrics = isPlaceholder ? null : modelMetricsLabel(m)
+            return (
+              <div
+                key={m.name}
+                role="option"
+                aria-selected={m.name === selectValue}
+                tabIndex={0}
+                className="model-listbox-option"
+                onClick={() => choose(m.name)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    choose(m.name)
+                  }
+                }}
+              >
+                <span className="model-listbox-name">
+                  {isPlaceholder ? `${m.name}${t('upstream.modelDisabled')}` : modelRowLabel(m)}
+                </span>
+                {metrics && <span className="model-listbox-metrics">{metrics}</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function UpstreamSelector({
@@ -66,6 +219,7 @@ export function UpstreamSelector({
   const [upstreamProviderId, setUpstreamProviderId] = useState('')
   const [models, setModels] = useState<ModelOption[]>([])
   const [modelsBusy, setModelsBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
   const [modelsLoaded, setModelsLoaded] = useState(false)
   const [boxModels, setBoxModels] = useState<StrategyBoxOption[]>([])
 
@@ -151,7 +305,13 @@ export function UpstreamSelector({
     if (!provider) return
     setModelsBusy(true)
     try {
+      const cfg = await invoke<FetchModeConfig>('get_config')
       if (provider.experimental) {
+        // 「只获取」：维持纯路由列表，不打真实补全、无指标。
+        if (!(cfg.free_models_fetch_and_test ?? true)) {
+          await loadFreeRoutes()
+          return
+        }
         const disabled = await loadDisabledModels(FREE_PROVIDER_ID)
         const choices = await invoke<FreeRouteChoice[]>(
           'list_experimental_free_candidates',
@@ -162,16 +322,21 @@ export function UpstreamSelector({
         const probes = await invoke<FreeModelProbe[]>(
           'probe_experimental_free_models',
         )
-        const availability = new Map(probes.map((probe) => [probe.name, probe.available]))
+        const byName = new Map(probes.map((probe) => [probe.name, probe]))
         setModels(
-          visible.map((choice) => ({
-            name: choice.model,
-            host: choice.host,
-            available: availability.get(choice.model) ?? false,
-          })),
+          visible.map((choice) => {
+            const probe = byName.get(choice.model)
+            return {
+              name: choice.model,
+              host: choice.host,
+              available: probe?.available ?? false,
+              latencyMs: probe?.latencyMs ?? null,
+              tokensPerSec: probe?.tokensPerSec ?? null,
+            }
+          }),
         )
         setModelsLoaded(true)
-        if (!visible.some((choice) => availability.get(choice.model))) {
+        if (!visible.some((choice) => byName.get(choice.model)?.available)) {
           pushToast(t('upstream.freeEmpty'), 'error')
         }
         onRefresh()
@@ -179,11 +344,24 @@ export function UpstreamSelector({
         const entries = await invoke<ModelEntry[]>('list_model_registry', {
           input: { provider_id: provider.id },
         })
-        setModels(
-          entries
-            .filter((entry) => entry.enabled)
-            .map((entry) => ({ name: entry.modelName, available: null })),
-        )
+        const rows: ModelOption[] = entries
+          .filter((entry) => entry.enabled)
+          .map((entry) => ({ name: entry.modelName, available: null }))
+        // 「获取并测试」：逐模型真实探测，按 modelName 合并指标；未测到/失败的行不显示指标。
+        if (cfg.custom_models_fetch_and_test ?? false) {
+          const tests = await invoke<ModelTestResult[]>('test_provider_models', {
+            id: provider.id,
+          })
+          const byModel = new Map(tests.map((item) => [item.modelName, item]))
+          for (const row of rows) {
+            const hit = byModel.get(row.name)
+            if (!hit) continue
+            row.available = hit.available
+            row.latencyMs = hit.latencyMs
+            row.tokensPerSec = hit.tokensPerSec
+          }
+        }
+        setModels(rows)
         setModelsLoaded(true)
       }
     } catch (e) {
@@ -225,19 +403,30 @@ export function UpstreamSelector({
   }
 
   const testCurrent = async () => {
-    if (!upstreamProviderId) return
-    await run(
-      async () => {
-        const outcome = await invoke<ProviderTestOutcome>('test_provider', {
-          id: upstreamProviderId,
-        })
-        // 命令本身成功但探测失败时也要报错，不能静默显示「测试完成」
-        if (!outcome.report.ok) {
-          throw new Error(t('pm.probeFail', { error: outcome.report.error ?? '—' }))
-        }
-      },
-      t('upstream.toastTested'),
-    )
+    if (!upstreamProviderId || testing) return
+    setTesting(true)
+    try {
+      const outcome = await invoke<ProviderTestOutcome>('test_provider', {
+        id: upstreamProviderId,
+      })
+      if (outcome.report.ok) {
+        pushToast(
+          t('upstream.toastRespOk', {
+            latency: outcome.report.latencyMs,
+            speed: outcome.report.tokensPerSec.toFixed(1),
+            reply: outcome.report.reply ?? '—',
+          }),
+          'ok',
+        )
+      } else {
+        // 后端已带错误分类与引导文案，原样展示。
+        pushToast(t('upstream.toastRespFail', { error: outcome.report.error ?? '—' }), 'error')
+      }
+    } catch (e) {
+      pushToast(String(e), 'error')
+    } finally {
+      setTesting(false)
+    }
   }
 
   const selectValue =
@@ -285,30 +474,14 @@ export function UpstreamSelector({
         <div className="access-field">
           <div className="access-value-row">
             {modelsLoaded ? (
-              <select
-                className="app-select access-model-select"
-                value={selectValue}
+              <ModelListbox
+                models={allModels}
+                selectValue={selectValue}
+                placeholderName={currentModelHidden ? currentModelName : null}
                 disabled={modelsBusy || (allModels.length === 0 && !currentModelHidden)}
-                onChange={(e) => void selectModel(e.target.value)}
-              >
-                {allModels.length === 0 && !currentModelHidden && (
-                  <option value="">{t('upstream.noModels')}</option>
-                )}
-                {currentModelHidden && (
-                  <option value={currentModelName}>
-                    {currentModelName}
-                    {t('upstream.modelDisabled')}
-                  </option>
-                )}
-                {allModels.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {m.available === true ? '● ' : m.available === false ? '○ ' : ''}
-                    {m.name}
-                    {m.boxName ? t('upstream.strategyBoxTag') : ''}
-                    {m.host ? ` · ${m.host}` : ''}
-                  </option>
-                ))}
-              </select>
+                emptyText={t('upstream.noModels')}
+                onSelect={(name) => void selectModel(name)}
+              />
             ) : (
               <code className="access-code">{activeProvider.model_name}</code>
             )}
@@ -336,11 +509,11 @@ export function UpstreamSelector({
             <button
               type="button"
               className="tiny icon-only"
-              disabled={busy}
+              disabled={busy || testing}
               onClick={() => void testCurrent()}
               aria-label={t('upstream.test')}
             >
-              <Play size={14} />
+              <Play size={14} className={testing ? 'spin' : ''} />
             </button>
           </div>
         </div>
