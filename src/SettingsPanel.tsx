@@ -46,7 +46,6 @@ type AppConfigView = {
   port_fallback_ports?: number[];
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
-  free_models_fetch_and_test?: boolean;
   custom_models_fetch_and_test?: boolean;
   upstream_retry_budget_ms?: number | null;
   upstream_retry_single_ms?: number | null;
@@ -618,17 +617,7 @@ export function SettingsPanel({
 
           <div className="card settings-group switches">
             <h4>{t('set.advFetchMode')}</h4>
-            <p className="hint compact">{t('set.advFetchModeHint')}</p>
-            <label className="switch-line select-line">
-              <span>{t('set.freeChannel')}</span>
-              <select
-                value={String(Boolean(config?.free_models_fetch_and_test ?? true))}
-                onChange={(e) => run(() => invoke('update_gateway_settings', { input: { freeModelsFetchAndTest: e.target.value === 'true' } }), t('common.update'))}
-              >
-                <option value="false">{t('set.fetchOnly')}</option>
-                <option value="true">{t('set.fetchAndTest')}</option>
-              </select>
-            </label>
+            <p className="hint compact">{t('set.advFetchModeHintCustom')}</p>
             <label className="switch-line select-line">
               <span>{t('set.customChannel')}</span>
               <select

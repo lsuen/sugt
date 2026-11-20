@@ -148,8 +148,9 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
-                    let watchdog_runtime = runtime.inner().clone();
-                    gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
+                    let shared = std::sync::Arc::new(runtime.inner().clone());
+                    gateway_watchdog::spawn(shared.clone());
+                    crate::experimental_free_idle::spawn(shared);
                     commands::maybe_autostart_gateway(&runtime).await;
                     // 按配置启动 WebUI（关闭时零占用）；句柄交给 state，进程退出时 stop。
                     if let Some(slot) = handle

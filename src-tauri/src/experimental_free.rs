@@ -149,6 +149,51 @@ pub fn apply_route(provider: &mut ProviderConfig) {
     provider.model_alias = Some(crate::model::CLIENT_MODEL_ID.to_string());
 }
 
+/// 在可用探测结果中选最优：优先更高 t/s，其次更低延迟；都无指标时保持 ROUTES 顺序。
+pub fn pick_best_probe<'a>(probes: &'a [FreeModelProbe]) -> Option<&'a FreeModelProbe> {
+    let mut best: Option<&FreeModelProbe> = None;
+    for probe in probes.iter().filter(|p| p.available) {
+        best = Some(match best {
+            None => probe,
+            Some(cur) => {
+                let cur_speed = cur.tokens_per_sec.unwrap_or(0.0);
+                let new_speed = probe.tokens_per_sec.unwrap_or(0.0);
+                if new_speed > cur_speed + f64::EPSILON {
+                    probe
+                } else if (new_speed - cur_speed).abs() <= f64::EPSILON {
+                    match (cur.latency_ms, probe.latency_ms) {
+                        (Some(a), Some(b)) if b < a => probe,
+                        (None, Some(_)) => probe,
+                        _ => cur,
+                    }
+                } else {
+                    cur
+                }
+            }
+        });
+    }
+    best
+}
+
+/// 若探测出更优路由则改写 provider 并返回 true。
+pub fn apply_best_from_probes(
+    provider: &mut ProviderConfig,
+    probes: &[FreeModelProbe],
+) -> bool {
+    if !is_experimental_free(provider) {
+        return false;
+    }
+    let Some(best) = pick_best_probe(probes) else {
+        return false;
+    };
+    if best.name.eq_ignore_ascii_case(provider.model_name.trim()) {
+        return false;
+    }
+    provider.model_name = best.name.clone();
+    apply_route(provider);
+    true
+}
+
 /// 请求失败时尝试的下一批 (base_url, model)，不含当前模型。
 pub fn failover_routes(current_model: &str) -> Vec<(&'static str, &'static str)> {
     ROUTES
@@ -181,7 +226,17 @@ pub fn make_experimental_free_provider() -> ProviderConfig {
 
 /// 迁移旧 Zen + 若未 dismiss 则植入。返回是否改动配置。
 pub fn ensure_experimental_free(config: &mut AppConfig) -> bool {
-    let changed = migrate_legacy_zen(config);
+    let mut changed = migrate_legacy_zen(config);
+    // 升级祖父：已启用的免费通道视为已接受免责（避免旧配置被突然卡住）。
+    if !config.experimental_free_disclaimer_accepted
+        && config
+            .providers
+            .iter()
+            .any(|p| is_experimental_free_id(&p.id) && p.enabled)
+    {
+        config.experimental_free_disclaimer_accepted = true;
+        changed = true;
+    }
 
     if config.experimental_zen_dismissed {
         return changed;
@@ -194,7 +249,9 @@ pub fn ensure_experimental_free(config: &mut AppConfig) -> bool {
         return changed;
     }
 
-    let provider = make_experimental_free_provider();
+    let mut provider = make_experimental_free_provider();
+    // 新植入默认禁用，需在设置弹窗确认免责后再启用。
+    provider.enabled = false;
     if config.active_provider_id.is_none() {
         config.active_provider_id = Some(provider.id.clone());
     }
@@ -226,6 +283,8 @@ fn migrate_legacy_zen(config: &mut AppConfig) -> bool {
 
 pub fn restore_experimental_free(config: &mut AppConfig) -> bool {
     config.experimental_zen_dismissed = false;
+    // 恢复后需重新确认免责声明，再允许启用。
+    config.experimental_free_disclaimer_accepted = false;
     if let Some(existing) = config
         .providers
         .iter_mut()
@@ -233,10 +292,19 @@ pub fn restore_experimental_free(config: &mut AppConfig) -> bool {
     {
         let enabled = existing.enabled;
         *existing = make_experimental_free_provider();
-        existing.enabled = enabled;
+        // 未确认免责前强制禁用，避免恢复即对外服务。
+        existing.enabled = enabled && config.experimental_free_disclaimer_accepted;
         return true;
     }
-    ensure_experimental_free(config)
+    let changed = ensure_experimental_free(config);
+    if let Some(provider) = config
+        .providers
+        .iter_mut()
+        .find(|p| is_experimental_free_id(&p.id))
+    {
+        provider.enabled = false;
+    }
+    changed
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -454,6 +522,46 @@ mod tests {
         // Tier 3：Pollinations 降级（index 9-10）
         assert!(route_for_model("openai-fast").is_some());
         assert_eq!(route_choices()[9].host, "text.pollinations.ai");
+    }
+
+    #[test]
+    fn pick_best_probe_prefers_speed_then_latency() {
+        let probes = vec![
+            FreeModelProbe {
+                name: "slow".into(),
+                available: true,
+                latency_ms: Some(50),
+                tokens_per_sec: Some(10.0),
+            },
+            FreeModelProbe {
+                name: "fast".into(),
+                available: true,
+                latency_ms: Some(80),
+                tokens_per_sec: Some(40.0),
+            },
+            FreeModelProbe {
+                name: "down".into(),
+                available: false,
+                latency_ms: None,
+                tokens_per_sec: None,
+            },
+        ];
+        assert_eq!(pick_best_probe(&probes).map(|p| p.name.as_str()), Some("fast"));
+        let tie = vec![
+            FreeModelProbe {
+                name: "a".into(),
+                available: true,
+                latency_ms: Some(120),
+                tokens_per_sec: Some(20.0),
+            },
+            FreeModelProbe {
+                name: "b".into(),
+                available: true,
+                latency_ms: Some(40),
+                tokens_per_sec: Some(20.0),
+            },
+        ];
+        assert_eq!(pick_best_probe(&tie).map(|p| p.name.as_str()), Some("b"));
     }
 
     #[test]

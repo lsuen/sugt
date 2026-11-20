@@ -504,6 +504,7 @@ pub(crate) async fn probe_experimental_free_models_core(
     let probes = crate::experimental_free::test_free_models(runtime.gateway.http_client()).await;
     {
         let mut config = runtime.config.write().await;
+        let auto_rotate = config.experimental_free_auto_rotate;
         if let Some(provider) = config
             .providers
             .iter_mut()
@@ -519,9 +520,12 @@ pub(crate) async fn probe_experimental_free_models_core(
                     Some("免费实验通道暂无可用模型，请稍后重试".into());
                 provider.status = ProviderStatus::Unavailable;
             } else {
-                // 探测只记录可用性。改首选路由必须由用户在下拉里点选。
                 provider.last_error = None;
                 provider.status = ProviderStatus::Available;
+                // 默认不擅自改首选；开启 auto_rotate 时按 t/s（其次延迟）切最优路由。
+                if auto_rotate {
+                    let _ = crate::experimental_free::apply_best_from_probes(provider, &probes);
+                }
             }
             provider.last_checked_at = Some(chrono::Utc::now());
         }
@@ -565,6 +569,15 @@ pub(crate) async fn set_provider_enabled_core(
     enabled: bool,
 ) -> Result<Vec<ProviderView>, String> {
     let is_free = crate::experimental_free::is_experimental_free_id(&id);
+    if enabled && is_free {
+        let accepted = runtime.config.read().await.experimental_free_disclaimer_accepted;
+        if !accepted {
+            return Err(
+                "free_disclaimer_required:请先在模型配置 → 实验·免费通道「设置」中确认免责声明"
+                    .to_string(),
+            );
+        }
+    }
     {
         let mut config = runtime.config.write().await;
         let provider = config
@@ -1555,6 +1568,14 @@ pub struct GatewaySettingsInput {
     pub upstream_retry_budget_ms: Option<Option<u64>>,
     /// 单次等待上限（毫秒）；`null` 表示恢复默认 60 秒。
     pub upstream_retry_single_ms: Option<Option<u64>>,
+    /// 实验·免费通道免责声明已确认
+    pub experimental_free_disclaimer_accepted: Option<bool>,
+    /// 闲时自动测速
+    pub experimental_free_idle_probe_enabled: Option<bool>,
+    /// 闲时测速间隔（秒）
+    pub experimental_free_idle_probe_interval_secs: Option<u64>,
+    /// 测速后按 t/s 自动切最优路由
+    pub experimental_free_auto_rotate: Option<bool>,
 }
 
 #[tauri::command]
@@ -1629,6 +1650,19 @@ pub(crate) async fn update_gateway_settings_core(
     }
     if let Some(single) = input.upstream_retry_single_ms {
         config.upstream_retry_single_ms = single.filter(|v| *v > 0);
+    }
+    if let Some(accepted) = input.experimental_free_disclaimer_accepted {
+        config.experimental_free_disclaimer_accepted = accepted;
+    }
+    if let Some(enabled) = input.experimental_free_idle_probe_enabled {
+        config.experimental_free_idle_probe_enabled = enabled;
+    }
+    if let Some(secs) = input.experimental_free_idle_probe_interval_secs {
+        config.experimental_free_idle_probe_interval_secs = secs
+            .max(crate::model::MIN_EXPERIMENTAL_FREE_IDLE_PROBE_INTERVAL_SECS);
+    }
+    if let Some(enabled) = input.experimental_free_auto_rotate {
+        config.experimental_free_auto_rotate = enabled;
     }
     let snapshot = config.clone();
     drop(config);

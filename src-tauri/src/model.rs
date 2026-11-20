@@ -189,6 +189,18 @@ pub struct AppConfig {
     /// 自定义通道获取模型后是否逐模型真实测试（默认关闭）。
     #[serde(default)]
     pub custom_models_fetch_and_test: bool,
+    /// 用户已确认实验·免费通道免责声明。
+    #[serde(default)]
+    pub experimental_free_disclaimer_accepted: bool,
+    /// 闲时自动对免费通道路由池测速（默认关；会打公开源）。
+    #[serde(default)]
+    pub experimental_free_idle_probe_enabled: bool,
+    /// 闲时探测间隔（秒）。默认 1800；下限 300。
+    #[serde(default = "default_experimental_free_idle_probe_interval_secs")]
+    pub experimental_free_idle_probe_interval_secs: u64,
+    /// 闲时/手动测速后按 t/s（其次延迟）自动切到当前最优路由。
+    #[serde(default)]
+    pub experimental_free_auto_rotate: bool,
 }
 
 fn default_webui_port() -> u16 {
@@ -198,6 +210,13 @@ fn default_webui_port() -> u16 {
 fn default_free_models_fetch_and_test() -> bool {
     true
 }
+
+fn default_experimental_free_idle_probe_interval_secs() -> u64 {
+    1800
+}
+
+/// 闲时探测间隔下限（秒）。
+pub const MIN_EXPERIMENTAL_FREE_IDLE_PROBE_INTERVAL_SECS: u64 = 300;
 
 /// 日志保留期默认值（天）。
 pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 7;
@@ -632,6 +651,11 @@ impl Default for AppConfig {
             webui_port: default_webui_port(),
             free_models_fetch_and_test: default_free_models_fetch_and_test(),
             custom_models_fetch_and_test: false,
+            experimental_free_disclaimer_accepted: false,
+            experimental_free_idle_probe_enabled: false,
+            experimental_free_idle_probe_interval_secs:
+                default_experimental_free_idle_probe_interval_secs(),
+            experimental_free_auto_rotate: false,
         }
     }
 }

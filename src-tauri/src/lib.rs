@@ -12,6 +12,7 @@ pub mod commands;
 pub mod common;
 pub mod config;
 pub mod experimental_free;
+pub mod experimental_free_idle;
 pub mod platform;
 pub mod probe;
 pub mod error_hint;

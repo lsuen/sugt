@@ -26,6 +26,12 @@ Every item below is an **expectation grounded in measured experience**, not a pr
 
 SUGT is a local AI gateway + skills console (Tauri 2 + React + Rust/Axum). Prefer small, reversible changes. Do not invent private packaging scripts or closed-source paths.
 
+## Experimental free channel (settings ownership)
+
+**Expect** the experimental free channel (`sugt-free`) to be configured from **网关 → 模型配置 → 该行「设置」** (`FreeChannelSettingsModal`), not from Settings → Advanced. That modal owns disclaimer acceptance, fetch-and-test for free routes, idle probe, and auto-rotate by t/s. Settings → Advanced may still restore a deleted channel and keeps **custom** fetch-and-test only.
+
+**Expect** strategy boxes to remain an optional outer layer: they may include `sugt-free` as a member, but must not be reimplemented inside the free-channel modal. Enabling the channel (or restoring it) without `experimental_free_disclaimer_accepted` is rejected; grandfathering marks already-enabled installs as accepted on load.
+
 ## Keys & auth (do not conflate)
 
 Three distinct systems share the word “key”. Mixing them produces wrong UI and wrong docs:

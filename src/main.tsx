@@ -27,6 +27,7 @@ import { StrategyBoxPanel } from './StrategyBoxPanel';
 import { ApiKeyPoolPanel } from './ApiKeyPoolPanel';
 import { ClientKeyPanel } from './ClientKeyPanel';
 import { AccessInfoCard } from './AccessInfoCard';
+import { FreeChannelSettingsModal } from './FreeChannelSettingsModal';
 import { MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
 import { t, type TKey } from './i18n';
@@ -464,6 +465,8 @@ function AppMain() {
   } = useNoticeQueue({ surface: 'toast' });
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
+  const [freeSettingsOpen, setFreeSettingsOpen] = useState(false);
+  const [freeSettingsRequireAccept, setFreeSettingsRequireAccept] = useState(false);
   const [skillsAgentFilter, setSkillsAgentFilter] = useState('');
   const [trialDetail, setTrialDetail] = useState(false);
   const versionClicks = useRef(0);
@@ -682,7 +685,23 @@ function AppMain() {
   };
 
   const setProviderEnabled = async (provider: ProviderView, enabled: boolean) => {
-    await run(() => invoke('set_provider_enabled', { id: provider.id, enabled }), enabled ? t('models.toastEnabled') : t('models.toastDisabled'));
+    if (enabled && provider.experimental) {
+      try {
+        const cfg = await invoke<{ experimental_free_disclaimer_accepted?: boolean }>('get_config');
+        if (!cfg.experimental_free_disclaimer_accepted) {
+          setFreeSettingsRequireAccept(true);
+          setFreeSettingsOpen(true);
+          pushToast(t('freeSettings.needAcceptFirst'), 'info');
+          return;
+        }
+      } catch {
+        /* 读配置失败时仍走后端门禁 */
+      }
+    }
+    await run(
+      () => invoke('set_provider_enabled', { id: provider.id, enabled }),
+      enabled ? t('models.toastEnabled') : t('models.toastDisabled'),
+    );
   };
 
   /** 探测报告 → toast；文案复用模型配置弹窗的 pm.* key，保持两处口径一致。 */
@@ -1063,7 +1082,7 @@ function AppMain() {
                       </div>
                       <span className="provider-sub">{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
                       {provider.experimental ? (
-                        <span className="hint compact">{t('models.restoreZenHint')}</span>
+                        <span className="hint compact">{t('models.freeRowHint')}</span>
                       ) : (
                         <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       )}
@@ -1071,6 +1090,18 @@ function AppMain() {
                     </div>
                     <div className="provider-actions">
                       {provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
+                      {provider.experimental && (
+                        <button
+                          className="tiny"
+                          disabled={busy}
+                          onClick={() => {
+                            setFreeSettingsRequireAccept(false);
+                            setFreeSettingsOpen(true);
+                          }}
+                        >
+                          {t('freeSettings.open')}
+                        </button>
+                      )}
                       <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
                       <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
                       <button className="tiny" disabled={busy} onClick={() => void testSingleProvider(provider)}>{t('common.test')}</button>
@@ -1182,6 +1213,22 @@ function AppMain() {
           </div>
         </Modal>
       )}
+
+      <FreeChannelSettingsModal
+        open={freeSettingsOpen}
+        busy={busy}
+        requireAccept={freeSettingsRequireAccept}
+        currentRoute={providers.find((p) => p.experimental)?.model_name}
+        onClose={() => {
+          setFreeSettingsOpen(false);
+          setFreeSettingsRequireAccept(false);
+        }}
+        onSaved={() => {
+          void refresh();
+        }}
+        run={run}
+        pushToast={pushToast}
+      />
 
       {trialDetail && (
         <Modal title={t('about.trialDetail')} onClose={() => setTrialDetail(false)} closeOnOverlay>
