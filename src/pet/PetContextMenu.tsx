@@ -1,11 +1,11 @@
-// 桌面精灵右键快捷菜单：紧凑动作面板，覆盖立绘浮出。
-// 菜单打开期间由 usePetGaze 保持窗口可点击，空白区仍穿透。
+// 桌面精灵右键快捷菜单。画在自己的不透明小窗里，不改精灵透明窗。
 import { t } from '../i18n';
 import { PET_SIZES, type OverlayConfigView } from './config';
 
 type Props = {
   cfg: OverlayConfigView;
   onSettings: () => void;
+  onShowInfo: () => void;
   onToggleQuiet: () => void;
   onToggleRoam: () => void;
   onSize: (size: (typeof PET_SIZES)[number]) => void;
@@ -17,6 +17,7 @@ type Props = {
 export function PetContextMenu({
   cfg,
   onSettings,
+  onShowInfo,
   onToggleQuiet,
   onToggleRoam,
   onSize,
@@ -31,6 +32,10 @@ export function PetContextMenu({
 
   return (
     <div className="pet-menu" role="menu">
+      {/* 只读信息弹窗入口；作者：孙文龙 sun */}
+      <button type="button" className="pet-menu-item" onClick={act(onShowInfo)}>
+        {t('pet.menu.status')}
+      </button>
       <button type="button" className="pet-menu-item" onClick={act(onSettings)}>
         {t('pet.menu.settings')}
       </button>

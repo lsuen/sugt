@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { Copy, Eraser, Loader2, Send, X } from 'lucide-react';
 import { t } from './i18n';
 import { ModalPortal } from './ModalPortal';
@@ -106,7 +106,14 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
   const enabledProviders = providers.filter((p) => p.enabled);
   const selected = enabledProviders.find((p) => p.id === providerId);
 
-  // 打开时加载持久化会话（不清空）
+  // providers / activeProviderId 由上层每 3 秒刷新一次（引用会变）。
+  // 用 ref 取最新值，历史加载 effect 只依赖 open，避免后台刷新覆盖本地消息、反复闪加载。
+  const providersRef = useRef(providers);
+  const activeProviderIdRef = useRef(activeProviderId);
+  providersRef.current = providers;
+  activeProviderIdRef.current = activeProviderId;
+
+  // 打开时加载持久化会话一次（不清空）
   useEffect(() => {
     if (!open) {
       hydrated.current = false;
@@ -120,18 +127,20 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
         const hist = await invoke<ChatHistory>('get_quick_chat_history');
         if (cancelled) return;
         setMessages(Array.isArray(hist.messages) ? hist.messages : []);
+        const list = providersRef.current;
         const preferred =
-          (hist.provider_id && providers.some((p) => p.id === hist.provider_id && p.enabled)
+          (hist.provider_id && list.some((p) => p.id === hist.provider_id && p.enabled)
             ? hist.provider_id
             : '') ||
-          activeProviderId ||
-          providers.find((p) => p.enabled)?.id ||
+          activeProviderIdRef.current ||
+          list.find((p) => p.enabled)?.id ||
           '';
         setProviderId(preferred);
         hydrated.current = true;
       } catch {
         if (cancelled) return;
-        const preferred = activeProviderId || providers.find((p) => p.enabled)?.id || '';
+        const list = providersRef.current;
+        const preferred = activeProviderIdRef.current || list.find((p) => p.enabled)?.id || '';
         setProviderId(preferred);
         hydrated.current = true;
       } finally {
@@ -141,7 +150,20 @@ export function QuickChatModal({ open, onClose, providers, activeProviderId, pus
     return () => {
       cancelled = true;
     };
-  }, [open, activeProviderId, providers]);
+  }, [open]);
+
+  // 历史加载完成后，providers 才到位或当前选择失效时，只补选模型，不触碰 messages。
+  useEffect(() => {
+    if (!open || loadingHistory || !hydrated.current) return;
+    if (providerId && providers.some((p) => p.id === providerId && p.enabled)) return;
+    const fallback =
+      (activeProviderId && providers.some((p) => p.id === activeProviderId && p.enabled)
+        ? activeProviderId
+        : '') ||
+      providers.find((p) => p.enabled)?.id ||
+      '';
+    if (fallback && fallback !== providerId) setProviderId(fallback);
+  }, [open, loadingHistory, providers, activeProviderId, providerId]);
 
   // 自动滚动到底部
   useEffect(() => {

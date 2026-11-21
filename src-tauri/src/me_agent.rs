@@ -15,7 +15,6 @@ pub use confirm::{command_needs_confirm, should_auto_run, MeAuthMode};
 pub use memory::{SoulMemory, GENDER_STANCE_EN, GENDER_STANCE_ZH};
 
 use crate::commands::{ensure_gateway_running, AppRuntime};
-use crate::quick_chat;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

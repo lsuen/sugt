@@ -2,28 +2,35 @@
 // 纯状态机在 ./petState.ts，光标/拖动/行为分别在 ./hooks，配置类型在 ./config。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, listen } from '../transport';
 import { t, type TKey } from '../i18n';
+import {
+  canEmitStateNotice,
+  DEDUPE_WINDOW_MS,
+  interactionMessageKeyFor,
+  type NoticeCategory,
+} from '../notify/messageModel';
 import {
   AUTO,
   petBubbleMs,
   petSleepAfterMs,
+  poseHoldMs,
   reducePetState,
   resolvePetPose,
+  resultHoldMs,
   shouldWake,
   type PetPose,
   type PetState,
 } from './petState';
 import { PET_MOTION, PET_POSE_NAMES } from './petManifest.generated';
 import {
-  type Bubble,
   type OverlayConfigView,
   type OverlayStatus,
 } from './config';
 import { usePetGaze } from './hooks/usePetGaze';
 import { usePetDrag } from './hooks/usePetDrag';
 import { usePetBehaviors } from './hooks/usePetBehaviors';
-import { PetContextMenu } from './PetContextMenu';
+import { PetInfoModal, type PetInfoSnapshot } from './PetInfoModal';
 import './pet.css';
 
 const PET_LABEL: Record<PetState, TKey> = {
@@ -33,6 +40,43 @@ const PET_LABEL: Record<PetState, TKey> = {
   done: 'pet.done',
   error: 'pet.error',
   sleep: 'pet.sleep',
+};
+
+/**
+ * 单击要等这一小段时间才落地：浏览器先派发 detail=1 的 click，随后才派发 detail=2。
+ * 不等就无法区分「双击的首击」和「普通单击」，首击会多播摸头/轻碰、推气泡并抢主窗口焦点（QD-03）。
+ * 双击阈值由系统决定，这里取一个远小于常见双击间隔的值，只用于兜住首击。
+ */
+const CLICK_SETTLE_MS = 220;
+
+/**
+ * 自动动作的视觉停留：manifest 只声明「播几遍 + 尾部停留」，
+ * 毫秒由素材逐帧时长派生，换素材后自动跟随，不会播到一半就被切回。
+ * 作者：孙文龙 sun
+ */
+function autoHold(pose: PetPose, cfg: { holdCycles: number; tailMs: number }): number {
+  return poseHoldMs(pose, { cycles: cfg.holdCycles, tailMs: cfg.tailMs });
+}
+
+/**
+ * 舞台气泡：在 config.ts 的旧结构上加分类与合并计数，分类沿用统一通知模型。
+ * 作者：孙文龙 sun
+ */
+type Bubble = {
+  id: number;
+  text: string;
+  kind: 'ok' | 'error' | 'info';
+  category: NoticeCategory;
+  count: number;
+  at: number;
+};
+
+/** 只读弹窗的动作说明：按最近一条消息的分类选对应文案。作者：孙文龙 sun */
+const ACTION_HINT_KEY: Record<NoticeCategory, TKey> = {
+  state: 'pet.info.actionHint.state',
+  result: 'pet.info.actionHint.result',
+  interaction: 'pet.info.actionHint.interaction',
+  idle: 'pet.info.actionHint.idle',
 };
 
 // 姿势清单唯一真相源：src/assets/pet/manifest.json（经生成器产出 TS）。
@@ -60,13 +104,15 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const [hopKey, setHopKey] = useState(0);
   const [petted, setPetted] = useState(false);
   const [idlePose, setIdlePose] = useState<PetPose | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  // 只读信息弹窗：双击立绘或独立菜单发来的事件打开，不承载任何写操作 / 对话。
+  const [infoOpen, setInfoOpen] = useState(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const figureRef = useRef<HTMLDivElement>(null);
   const petStateRef = useRef<PetState>('offline');
   const snapOnUp = useRef(cfg.pet_snap !== false);
   const quietRef = useRef(Boolean(cfg.pet_quiet));
+  // 菜单在另一扇窗里。这里保持 false，视线钩子不会因为菜单把透明区解开。
   const menuOpenRef = useRef(false);
 
   const baseline = useRef<{
@@ -84,6 +130,12 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const activeNow = useRef(0);
   const wasActive = useRef(false);
   const prevVisual = useRef<PetState>('offline');
+  // 气泡合并、最近消息与长请求起点都由 ref 维护，避免 render 期副作用。
+  // 作者：孙文龙 sun
+  const bubbleRef = useRef<Bubble | null>(null);
+  const lastNotice = useRef<{ text: string; category: NoticeCategory } | null>(null);
+  const requestSince = useRef(0);
+  const lastStateEmit = useRef(0);
 
   const lastUserTouch = useRef(Date.now());
   const lastWake = useRef(0);
@@ -94,21 +146,47 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   const pokeResetTimer = useRef(0);
   const idlePoseTimer = useRef(0);
   const wakeTimer = useRef(0);
+  // 待落地的单击：多个并存，保证慢速三连击不会被后来的一次点击取消；双击到达时整体清空。
+  const pendingClicks = useRef<number[]>([]);
 
   petStateRef.current = petState;
 
-  // 所有差分姿共用一个定时器：新动作会顶掉旧动作，不会叠出多重人影
+  // 自动表演共用一条租约，播完才许下一段。这里只负责把已经获准的姿势播完。
   const playIdlePose = useCallback((pose: PetPose, ms: number) => {
     window.clearTimeout(idlePoseTimer.current);
     setIdlePose(pose);
     idlePoseTimer.current = window.setTimeout(() => setIdlePose(null), ms);
   }, []);
+  const clearIdlePose = useCallback(() => {
+    window.clearTimeout(idlePoseTimer.current);
+    setIdlePose(null);
+  }, []);
+  const preemptRef = useRef<(ms?: number) => void>(() => {});
 
-  // 视线/闲置/走动/轻碰都会推气泡，免打扰在这里统一收口
-  const pushBubble = useCallback((text: string, kind: Bubble['kind']) => {
+  // 视线/闲置/走动/轻碰都会推气泡，免打扰在这里统一收口。
+  // 第三参 category 可选，旧的两参调用完全兼容；同文案短窗口内合并计数而非新增一条。
+  // 作者：孙文龙 sun
+  const pushBubble = useCallback((
+    text: string,
+    kind: Bubble['kind'],
+    category: NoticeCategory = 'interaction',
+  ) => {
     if (quietRef.current) return;
+    const now = Date.now();
+    lastNotice.current = { text, category };
+    const prev = bubbleRef.current;
+    if (prev && prev.text === text && now - prev.at < DEDUPE_WINDOW_MS) {
+      const merged: Bubble = { ...prev, count: prev.count + 1, at: now };
+      bubbleRef.current = merged;
+      setBubble(merged);
+      return;
+    }
     bubbleSeq.current += 1;
-    setBubble({ id: bubbleSeq.current, text, kind });
+    const next: Bubble = {
+      id: bubbleSeq.current, text, kind, category, count: 1, at: now,
+    };
+    bubbleRef.current = next;
+    setBubble(next);
   }, []);
 
   // 配置快照：只在 cfg 变化时刷新，避免 render 期副作用
@@ -118,20 +196,13 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   }, [cfg.pet_snap, cfg.pet_quiet]);
 
   useEffect(() => {
-    menuOpenRef.current = menuOpen;
-  }, [menuOpen]);
-
-  // Esc 关菜单；光标离开立绘+菜单由 usePetGaze 回调关闭（不整窗解穿透）
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
+    const un = listen('sugt://pet-show-info', () => setInfoOpen(true));
+    return () => {
+      un.then((fn) => fn()).catch(() => undefined);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [menuOpen]);
+  }, []);
 
-  const dismissMenu = useCallback(() => setMenuOpen(false), []);
+  const dismissMenu = useCallback(() => undefined, []);
 
   const onNearTouch = useCallback(() => {
     lastUserTouch.current = Date.now();
@@ -142,8 +213,10 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     if (petStateRef.current === 'sleep' && Date.now() - lastWake.current > 20_000) {
       lastWake.current = Date.now();
       lastActivity.current = Date.now();
-      playIdlePose('peek', 1900);
-      pushBubble(t('pet.bubble.wake'), 'info');
+      const ms = poseHoldMs('peek');
+      preemptRef.current(ms);
+      playIdlePose('peek', ms);
+      pushBubble(t('pet.bubble.wake'), 'info', 'interaction');
     }
   }, [playIdlePose, pushBubble]);
 
@@ -173,7 +246,6 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     gazeEnabled,
     interactive,
     edit: cfg.edit,
-    clickThrough: Boolean(cfg.pet_click_through),
     figureRef,
     stageRef,
     dragActive,
@@ -183,19 +255,22 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     onMenuDismiss: dismissMenu,
   });
 
-  const { blinking, greeting, roaming, roamLanding, facing } = usePetBehaviors({
+  const { blinking, greeting, welcoming, roaming, roamLanding, facing, preemptAuto } = usePetBehaviors({
     blinkEnabled,
     roamEnabled,
     still,
+    cursorNear: nearListening,
     petState,
     petStateRef,
     dragActive,
     lastUserTouch,
     gazeRef,
     playIdlePose,
+    clearIdlePose,
     pushBubble,
     t,
   });
+  preemptRef.current = preemptAuto;
 
   // 窗口隐藏 / 系统要求减少动效时切静态海报，动画 WebP 不再解码播放。
   useEffect(() => {
@@ -214,7 +289,10 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
   useEffect(() => {
     if (!bubble) return;
     const timer = window.setTimeout(
-      () => setBubble(null),
+      () => {
+        setBubble(null);
+        bubbleRef.current = null;
+      },
       petBubbleMs(cfg.pet_bubble_ms),
     );
     return () => window.clearTimeout(timer);
@@ -255,25 +333,49 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     }
     const prev = baseline.current;
 
+    // 长请求状态消息：只由真实在途统计产生，短请求 / 冷却期 / 在途归零一律不发，杜绝虚报。
+    // 作者：孙文龙 sun
+    if (activeNow.current > 0) {
+      if (requestSince.current === 0) requestSince.current = now;
+      const since = now - requestSince.current;
+      if (canEmitStateNotice({
+        activeRequests: activeNow.current,
+        requestSinceMs: since,
+        nowMs: now,
+        lastEmitAt: lastStateEmit.current,
+      })) {
+        lastStateEmit.current = now;
+        pushBubble(
+          t('notice.longRequest', { n: Math.floor(since / 1000) }),
+          'info',
+          'state',
+        );
+      }
+    } else {
+      requestSince.current = 0;
+      lastStateEmit.current = 0;
+    }
+
     if (running !== prev.running) {
       pushBubble(
         running ? t('pet.bubble.gatewayUp') : t('pet.bubble.gatewayDown'),
         running ? 'ok' : 'info',
+        'state',
       );
       hold.current = { state: 'idle', until: 0 };
       typingUntil.current = 0;
       lastActivity.current = now;
     }
     if (running && failover && !prev.failover) {
-      pushBubble(t('pet.bubble.failover'), 'info');
+      pushBubble(t('pet.bubble.failover'), 'info', 'state');
       lastActivity.current = now;
     }
     if (failed > prev.failed) {
       if (now - lastFailNotice.current > 5 * 60 * 1000) {
-        pushBubble(t('pet.bubble.failed'), 'error');
+        pushBubble(t('pet.bubble.failed'), 'error', 'result');
         lastFailNotice.current = now;
       }
-      hold.current = { state: 'error', until: now + 6000 };
+      hold.current = { state: 'error', until: now + resultHoldMs('error') };
       lastActivity.current = now;
     }
     if (success > prev.success) {
@@ -287,7 +389,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         const count = doneBatch.current.count;
         doneBatch.current.count = 0;
         doneBatch.current.timer = 0;
-        if (count > 0) pushBubble(t('pet.bubble.done', { n: count }), 'ok');
+        if (count > 0) pushBubble(t('pet.bubble.done', { n: count }), 'ok', 'result');
       };
       doneBatch.current.timer = window.setTimeout(flushDone, 8000);
     }
@@ -296,7 +398,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
 
     const errorHeld = hold.current.state === 'error' && hold.current.until > now;
     if (wasActive.current && active === 0 && !errorHeld) {
-      hold.current = { state: 'done', until: now + 3500 };
+      hold.current = { state: 'done', until: now + resultHoldMs('done') };
     }
     wasActive.current = active > 0;
 
@@ -316,14 +418,14 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     if (shouldWake(prevVisual.current, reduced.state, { dragging: dragActive.current })) {
       window.clearTimeout(wakeTimer.current);
       setWaking(true);
-      wakeTimer.current = window.setTimeout(() => setWaking(false), AUTO.wake.holdMs);
+      wakeTimer.current = window.setTimeout(() => setWaking(false), autoHold('wake', AUTO.wake));
     }
     prevVisual.current = reduced.state;
     // error hold 尾段切「失落」姿：短暂、不惩罚、不扣资历（零负反馈）。
     setDisappointed(
       hold.current.state === 'error'
       && hold.current.until > now
-      && hold.current.until - now <= AUTO.disappointed.holdMs,
+      && hold.current.until - now <= autoHold('disappointed', AUTO.disappointed),
     );
     setPetState(reduced.state);
 
@@ -345,7 +447,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       return;
     }
     setCelebrating(true);
-    const timer = window.setTimeout(() => setCelebrating(false), AUTO.celebrate.holdMs);
+    const timer = window.setTimeout(() => setCelebrating(false), autoHold('celebrate', AUTO.celebrate));
     return () => window.clearTimeout(timer);
   }, [petState, hopKey]);
 
@@ -357,63 +459,98 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       window.clearTimeout(pettedTimer.current);
       window.clearTimeout(pokeResetTimer.current);
       window.clearTimeout(wakeTimer.current);
+      pendingClicks.current.forEach((timer) => window.clearTimeout(timer));
+      pendingClicks.current = [];
     },
     [],
   );
-
-  const patchConfig = useCallback((patch: Partial<OverlayConfigView>) => {
-    void invoke('set_overlay_config', { cfg: { ...cfg, ...patch } }).catch(() => undefined);
-  }, [cfg]);
 
   const openSettings = useCallback(() => {
     void invoke('open_settings_tab', { tab: 'pet' }).catch(() => undefined);
     void invoke('focus_main_window').catch(() => undefined);
   }, []);
 
+  const onFigurePointerDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    preemptRef.current();
+    clearIdlePose();
+    onFigureMouseDown(e);
+  };
+
+  const cancelPendingClicks = () => {
+    pendingClicks.current.forEach((timer) => window.clearTimeout(timer));
+    pendingClicks.current = [];
+  };
+
   const onFigureClick = (e: ReactMouseEvent<HTMLDivElement>) => {
     lastUserTouch.current = Date.now();
     if (!interactive || cfg.edit) return;
-    // 菜单开着时左键先关菜单，不抢轻碰
-    if (menuOpenRef.current) {
-      setMenuOpen(false);
-      return;
-    }
     // 本次按下发生过移动（或请求过原生拖动）就只算拖动，不抢主窗口焦点
     if (movedDuringDrag.current || dragRequested.current || Date.now() - draggedAt.current < 350) {
       movedDuringDrag.current = false;
       dragRequested.current = false;
       return;
     }
-    // 点头部 = 摸头（害羞 + 爱心），点身体 = 轻碰招手；1.2s 内连点三下 = 庆祝
-    const rect = figureRef.current?.getBoundingClientRect();
-    const head = rect ? e.clientY - rect.top < rect.height * 0.38 : false;
-    pokeCount.current += 1;
-    window.clearTimeout(pokeResetTimer.current);
-    pokeResetTimer.current = window.setTimeout(() => {
+    // 双击（浏览器 detail>=2）打开只读信息弹窗，不参与轻碰 / 三连计数，也不推 poke 气泡。
+    // 三连庆祝是 1.2s 内 3 次 detail=1 的单击，与双击天然区分、互不冲突。
+    // 作者：孙文龙 sun
+    if (e.detail >= 2) {
+      cancelPendingClicks();
+      window.clearTimeout(pokeResetTimer.current);
       pokeCount.current = 0;
-    }, 1200);
-    if (pokeCount.current >= 3) {
-      pokeCount.current = 0;
-      playIdlePose('celebrate', 1400);
-    } else {
-      setShyPose(head);
-      setPoked(!head);
-      window.clearTimeout(pokeTimer.current);
-      pokeTimer.current = window.setTimeout(() => {
-        setPoked(false);
-        setShyPose(false);
-      }, 1600);
+      setInfoOpen(true);
+      return;
     }
-    if (head) {
-      setPetted(true);
-      window.clearTimeout(pettedTimer.current);
-      pettedTimer.current = window.setTimeout(() => setPetted(false), 720);
-    }
-    if (Date.now() - lastPokeBubble.current > 8000) {
-      lastPokeBubble.current = Date.now();
-      pushBubble(t('pet.bubble.poke'), 'info');
-    }
-    void invoke('focus_main_window').catch(() => undefined);
+    // 单击先只登记、不落地：浏览器把双击拆成 detail=1 + detail=2 两次 click，
+    // 若首击立即执行，就会多播一个动作姿、可能推气泡并抢走主窗口焦点（QD-03）。
+    // 多个待落地单击并存，慢速三连击不会互相取消；卸载时统一清理。 —— 孙文龙 sun
+    const clientY = e.clientY;
+    const timer = window.setTimeout(() => {
+      pendingClicks.current = pendingClicks.current.filter((item) => item !== timer);
+      // 点头部 = 摸头（害羞 + 爱心），点身体 = 轻碰招手；1.2s 内连点三下 = 庆祝
+      const rect = figureRef.current?.getBoundingClientRect();
+      const head = rect ? clientY - rect.top < rect.height * 0.38 : false;
+      pokeCount.current += 1;
+      window.clearTimeout(pokeResetTimer.current);
+      pokeResetTimer.current = window.setTimeout(() => {
+        pokeCount.current = 0;
+      }, 1200);
+      const triple = pokeCount.current >= 3;
+      if (triple) {
+        pokeCount.current = 0;
+        const ms = autoHold('celebrate', AUTO.celebrate);
+        preemptRef.current(ms);
+        playIdlePose('celebrate', ms);
+      } else {
+        setShyPose(head);
+        setPoked(!head);
+        window.clearTimeout(pokeTimer.current);
+        // petted / poked 是无缝循环的「状态姿」（首尾同帧、幅度小），停留时长是交互节奏，
+        // 不属于「叙事动作播到一半」——所以这里保持短停留，允许下一次点击直接打断。
+        // 作者：孙文龙 sun
+        pokeTimer.current = window.setTimeout(() => {
+          setPoked(false);
+          setShyPose(false);
+        }, 1600);
+      }
+      if (head) {
+        setPetted(true);
+        window.clearTimeout(pettedTimer.current);
+        pettedTimer.current = window.setTimeout(() => setPetted(false), 720);
+      }
+      // 交互台词细分：摸头 / 身体轻碰 / 三连点各有专属文案，统一归 interaction。
+      // 作者：孙文龙 sun
+      const interactionKind = triple ? 'tripleTap' : head ? 'headPat' : 'poke';
+      if (Date.now() - lastPokeBubble.current > 8000) {
+        lastPokeBubble.current = Date.now();
+        pushBubble(
+          t(interactionMessageKeyFor(interactionKind) as TKey),
+          'info',
+          'interaction',
+        );
+      }
+      void invoke('focus_main_window').catch(() => undefined);
+    }, CLICK_SETTLE_MS);
+    pendingClicks.current.push(timer);
   };
 
   const onFigureContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
@@ -421,9 +558,8 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     e.stopPropagation();
     if (!interactive || cfg.edit) return;
     lastUserTouch.current = Date.now();
-    // 右键当下立刻解穿透，避免菜单刚开就因轮询滞后再次穿透点不中
-    void invoke('pet_set_clickable', { enabled: true }).catch(() => undefined);
-    setMenuOpen(true);
+    preemptRef.current();
+    void invoke('pet_open_menu').catch(() => undefined);
   };
 
   const activeFrame = resolvePetPose({
@@ -434,7 +570,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     walking: nearWalking,
     celebrating,
     greeting,
-    welcoming: greeting,
+    welcoming,
     idlePose,
     roaming,
     // 拖拽三段各有专属序列帧：按下被提起、松手落地、随后回基态。
@@ -463,6 +599,18 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
 
   const petOpacity = Math.min(1, Math.max(0.15, Number(cfg.opacity) || 1));
 
+  // 只读快照：全部取自真实统计与当前渲染态，弹窗内不做任何写操作。
+  // 作者：孙文龙 sun
+  const infoSnapshot: PetInfoSnapshot | null = status ? {
+    stateLabel: t(PET_LABEL[petState]),
+    active: activeNow.current,
+    success: status.traffic.success_count ?? 0,
+    failed: status.traffic.failed_count ?? 0,
+    pose: activeFrame,
+    actionHint: t(ACTION_HINT_KEY[lastNotice.current?.category ?? 'state']),
+    recent: lastNotice.current?.text ?? null,
+  } : null;
+
   return (
     <div
       ref={stageRef}
@@ -483,18 +631,24 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       }}
     >
       {/* 环境层：禁止底板；只留粒子与完成火花（零光晕 / 零地面阴影） */}
-      <div className="pet-ambient" aria-hidden="true">
-        {[1, 2, 3, 4, 5, 6].map((n) => <i key={n} className="pet-mote" />)}
-        <i className="pet-spark s1" />
-        <i className="pet-spark s2" />
-        <i className="pet-spark s3" />
-      </div>
+      <div className="pet-ambient" aria-hidden="true" />
 
       {/* 信息层：气泡在左上角自适应排版，状态胶囊移到角色脚底 */}
       <div className="pet-side">
         {bubble && (
-          <div key={bubble.id} className={`pet-bubble pet-bubble-${bubble.kind}`} role="status">
+          <div
+            key={bubble.id}
+            className={`pet-bubble pet-bubble-${bubble.kind}`}
+            data-category={bubble.category}
+            role="status"
+          >
+            <span className="pet-bubble-cat">
+              {t(`notice.category.${bubble.category}` as TKey)}
+            </span>
             {bubble.text}
+            {bubble.count > 1 && (
+              <span className="pet-bubble-count">{t('notice.count', { n: bubble.count })}</span>
+            )}
           </div>
         )}
         <div className="pet-status-bar" role="status">
@@ -514,7 +668,7 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
       <div
         ref={figureRef}
         className={`pet-figure${dragging ? ' dragging' : ''}${poked ? ' poked' : ''}`}
-        onMouseDown={onFigureMouseDown}
+        onMouseDown={onFigurePointerDown}
         onMouseMove={onFigureMouseMove}
         onContextMenu={onFigureContextMenu}
         onClick={onFigureClick}
@@ -539,23 +693,18 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
                   aria-hidden="true"
                 />
               </div>
-              {gazeEnabled && <span className="pet-gaze" aria-hidden="true" />}
+              <span className="pet-gaze" aria-hidden="true" />
             </div>
             {blinkEnabled && <span className="pet-blink" aria-hidden="true" />}
           </div>
         </div>
       </div>
 
-      {menuOpen && (
-        <PetContextMenu
-          cfg={cfg}
-          onSettings={openSettings}
-          onToggleQuiet={() => patchConfig({ pet_quiet: !cfg.pet_quiet })}
-          onToggleRoam={() => patchConfig({ pet_roam: cfg.pet_roam === false })}
-          onSize={(size) => patchConfig({ width: size.width, height: size.height, x: -1, y: -1 })}
-          onDock={() => patchConfig({ x: -1, y: -1 })}
-          onHide={() => patchConfig({ pet_enabled: false })}
-          onClose={() => setMenuOpen(false)}
+      {infoOpen && (
+        <PetInfoModal
+          snapshot={infoSnapshot}
+          onClose={() => setInfoOpen(false)}
+          onOpenSettings={openSettings}
         />
       )}
 

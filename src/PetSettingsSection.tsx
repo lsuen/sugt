@@ -4,8 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { t } from './i18n';
 import {
   PET_SIZES,
-  PET_SIZE_STORAGE_KEY,
-  readPetSize,
+  petEnabledPatch,
+  petSizePatch,
   type OverlayConfigView,
 } from './pet/config';
 
@@ -17,7 +17,7 @@ type Props = {
 };
 
 export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
-  const petOn = Boolean(overlay?.pet_enabled);
+  const petOn = Boolean(overlay?.enabled);
   // 互动：会话开关与「长期互动」合并展示，任一为真即视为开启
   const interactiveOn = Boolean(overlay?.pet_interactive || overlay?.pet_always_interactive);
   // 滑块本地草稿：松手 / 方向键再写入，避免拖动时每步打 IPC
@@ -40,59 +40,20 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
 
   const posText =
     !overlay || overlay.x < 0 || overlay.y < 0
-      ? t('set.overlayPos')
-      : t('set.overlayPosAt', { x: overlay.x, y: overlay.y });
+      ? t('set.petPos')
+      : t('set.petPosAt', { x: overlay.x, y: overlay.y });
 
-  const togglePet = (enabled: boolean) => {
-    const size = enabled ? readPetSize() : { width: 280, height: 108 };
-    onPatch({
-      pet_enabled: enabled,
-      // 开启精灵时一并启用悬浮窗；关闭时保留用户原先的 HUD 开关
-      enabled: enabled ? true : (overlay?.enabled ?? false),
-      width: size.width,
-      height: size.height,
-      x: -1,
-      y: -1,
-      layout: 'column',
-      ...(enabled
-        ? {
-            // 重新开启时默认拉齐全功能；立绘默认不透明，避免沿用 HUD 半透明底
-            pet_interactive: true,
-            pet_always_interactive: true,
-            pet_gaze: true,
-            pet_blink: true,
-            pet_snap: true,
-            pet_roam: true,
-            opacity: 1,
-          }
-        : { pet_interactive: false, pet_always_interactive: false }),
-    });
-  };
+  // 启用态只写 enabled：尺寸、落点、不透明度与行为开关各自独立持久化。
+  const togglePet = (enabled: boolean) => onPatch(petEnabledPatch(enabled));
 
-  const setPetSize = (size: (typeof PET_SIZES)[number]) => {
-    try {
-      window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
-    } catch {
-      // 隐私模式无 localStorage 时仍应用本次尺寸
-    }
-    onPatch({ width: size.width, height: size.height, x: -1, y: -1 });
-  };
+  const setPetSize = (size: (typeof PET_SIZES)[number]) => onPatch(petSizePatch(size));
 
   const setInteractive = (enabled: boolean) => {
-    // 合并写入：长期互动与会话互动同开同关，避免两套开关打架
+    // 合并写入：长期互动与会话互动同开同关，避免两套开关打架。
+    // 关着精灵时也只记录偏好，不再把精灵自动打开。
     onPatch({
       pet_interactive: enabled,
       pet_always_interactive: enabled,
-      ...(enabled && !petOn
-        ? {
-            pet_enabled: true,
-            enabled: true,
-            width: readPetSize().width,
-            height: readPetSize().height,
-            x: -1,
-            y: -1,
-          }
-        : {}),
     });
   };
 
@@ -123,14 +84,6 @@ export function PetSettingsSection({ overlay, defaults, onPatch }: Props) {
         </label>
         <p className="hint compact">{t('set.petInteractiveHint')}</p>
 
-        <label className="switch-line">
-          <span>{t('set.petClickThrough')}</span>
-          <input
-            type="checkbox"
-            checked={Boolean(cfg.pet_click_through)}
-            onChange={(e) => onPatch({ pet_click_through: e.target.checked })}
-          />
-        </label>
         <p className="hint compact">{t('set.petClickThroughHint')}</p>
 
         <div className="switch-line">

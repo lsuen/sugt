@@ -69,11 +69,19 @@ pub fn responses_to_chat_with_meta(
     body: &Bytes,
     upstream_model: &str,
 ) -> Result<(Bytes, ChatToolMeta)> {
-    let value: Value = if body.is_empty() {
-        json!({})
-    } else {
-        serde_json::from_slice(body)?
-    };
+    responses_to_chat_with_meta_with_default(body, upstream_model, Some(default_codex_max_tokens()))
+}
+
+/// 同 [`responses_to_chat_with_meta`]，但默认 max_tokens 可覆盖（请求改写规则）：
+/// `None` 表示请求未指定输出长度时不要自动填。
+pub fn responses_to_chat_with_meta_with_default(
+    body: &Bytes,
+    upstream_model: &str,
+    default_max: Option<u64>,
+) -> Result<(Bytes, ChatToolMeta)> {
+    // 允许尾随字节：严格 from_slice 会把「JSON + 垃圾」打成本网关错误，
+    // 用户只看到「上游拒绝」，实际是解析过严（对齐 cc-switch 宽松取首个值）。
+    let value: Value = crate::chat_tool_history::parse_json_value_lenient(body)?;
 
     let mut meta = ChatToolMeta::default();
     let chat_tools = collect_chat_tools_from_responses(&value, &mut meta);
@@ -102,6 +110,8 @@ pub fn responses_to_chat_with_meta(
     sanitize_chat_messages_tool_calls(&mut messages);
     // 历史回放里缺 function_call_output 时，Chat 上游会因孤儿 tool_calls 直接 400。
     repair_orphan_tool_calls(&mut messages);
+    // arguments 必须是合法 JSON 对象字符串；连续 assistant tool_calls 合并成一条。
+    crate::chat_tool_history::sanitize_chat_tool_history(&mut messages);
 
     let stream = value
         .get("stream")
@@ -139,10 +149,10 @@ pub fn responses_to_chat_with_meta(
                     .filter(|v| !v.is_null());
                 if let Some(v) = explicit_max {
                     out_obj.insert("max_tokens".to_string(), v.clone());
-                } else {
+                } else if let Some(default_max) = default_max {
                     // Codex 没指定任何输出长度限制时，给 Chat 上游一个安全默认，
                     // 避免上游用自己的小默认值（常 4096）截断 tool_call arguments。
-                    let default_max = default_codex_max_tokens();
+                    // 规则显式关闭（default_max = None）时保持不填。
                     out_obj.insert("max_tokens".to_string(), json!(default_max));
                     warn!(
                         default_max,
@@ -645,6 +655,7 @@ fn arguments_value_to_string(arguments: &Value) -> String {
     match arguments {
         Value::String(s) => s.clone(),
         Value::Null => "{}".to_string(),
+        // 对象/数组直接序列化；后续 canonicalize 会保证是对象字符串。
         other => other.to_string(),
     }
 }
@@ -735,9 +746,14 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                 let name = non_empty_name(item, &["name", "/function/name"]).unwrap_or("function");
                 let arguments = item
                     .get("arguments")
-                    .and_then(|a| a.as_str())
-                    .or_else(|| item.pointer("/function/arguments").and_then(|a| a.as_str()))
-                    .unwrap_or("{}");
+                    .map(arguments_value_to_string)
+                    .or_else(|| {
+                        item.pointer("/function/arguments")
+                            .map(arguments_value_to_string)
+                    })
+                    .unwrap_or_else(|| "{}".to_string());
+                let arguments =
+                    crate::chat_tool_history::canonicalize_tool_arguments(&arguments);
                 Some(json!({
                     "role": "assistant",
                     "content": Value::Null,
@@ -789,6 +805,8 @@ fn normalize_response_item(item: &Value) -> Option<Value> {
                         .or_else(|| item.get("input"))
                         .map(arguments_value_to_string)
                         .unwrap_or_else(|| "{}".to_string());
+                    let arguments =
+                        crate::chat_tool_history::canonicalize_tool_arguments(&arguments);
                     return Some(json!({
                         "role": "assistant",
                         "content": Value::Null,

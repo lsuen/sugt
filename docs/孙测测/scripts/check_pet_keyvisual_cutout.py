@@ -22,6 +22,15 @@
       [--mode auto|light|magenta] [--out /tmp/sugt-cutout] [--root .]
   需 Pillow（本地素材链路脚本，不进 CI）。auto 按四角中位色判底色。
 退出码约定：0 全部通过 / 1 存在验收不通过 / 2 参数、依赖或解析异常
+
+历史归档口径说明（v1.4 同步）：
+  本脚本是 v1.2 素材链路的历史定版校验器：脚本内沿用的一切判定常量、
+  阈值与判定项名（小窗尺寸、调色板色数、进包素材张数、总帧数与体积预算等）
+  均为当时的历史定版口径，一律保留原值，以免改写后失去历史归档意义。
+  现行（v1.4）口径为：进包画布 240×297（左右各补 30px 全透明、纯 paste
+  不缩放不裁切）、56 色 palette-lossless、49 张进包素材（24 poster +
+  24 loop + su-blink）、24 动作 / 1200 帧；生成画布仍 640×768、h_ref 仍
+  176.0px 不重算。落包验收以现行脚本为准，本脚本仅供历史复验。
 """
 import argparse
 import importlib.util
@@ -285,7 +294,7 @@ def checkerboard(size, cell=16):
 
 
 def build_compare(rgba, box, out_path):
-    """输出浅底 / 深底 / 棋盘 / 105×297 小窗四联对照，供人工复核。"""
+    """输出浅底 / 深底 / 棋盘 / 105×297 小窗四联对照（v1.2 历史小窗口径，现行 v1.4 为 240×297 / 56 色），供人工复核。"""
     width, height = rgba.size
     crop = rgba.crop((box[0], box[1], box[2] + 1, box[3] + 1))
     panels = []

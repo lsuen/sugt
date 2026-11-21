@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { ArrowLeft, Download, RefreshCw } from 'lucide-react';
 import { t } from './i18n';
 

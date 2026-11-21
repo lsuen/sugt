@@ -4,8 +4,15 @@
 // 本文件、PetStage.tsx、pet.css 一律零改动。
 // 网关态 + 交互/自动动作分开，避免轻碰抢掉真实 typing；纯 reducer 不读 Date.now。
 import {
+  eventActionFor,
+  IDLE_VARIANT_WEIGHTS,
+  weightedIdleVariant,
+  type PetEvent,
+} from '../notify/messageModel';
+import {
   PET_ACTIONS,
   PET_AUTO_ACTIONS,
+  PET_FRAME_MS,
   type PetPoseName,
 } from './petManifest.generated';
 
@@ -35,6 +42,77 @@ export function petBubbleMs(ms?: number | null): number {
 
 export const AUTO = PET_AUTO_ACTIONS;
 
+// ---- 动作时长派生（v1.5：不再手写毫秒，避免「动画没播完就切」）----
+//
+// 素材是自带逐帧时长的 WebP 动图，浏览器按文件内时长播放；只有把 PET_FRAME_MS
+// 求和，才知道一个动作真正播完需要多久。历史上 autoActions 里写死 2200ms，
+// 而闲置动作实际 3924~5018ms，于是每次只播一半就被 setIdlePose(null) 切回。
+// 这里改为「完整遍数 × 单遍时长 + 尾部停留」，换素材后自动跟随。
+// 作者：孙文龙 sun
+
+/** 单个姿势完整播放一遍的时长（毫秒）。 */
+export function poseDurationMs(pose: PetPose): number {
+  const frames = PET_FRAME_MS[pose as PetPoseName];
+  if (!frames || !frames.length) return 0;
+  return frames.reduce((sum, ms) => sum + ms, 0);
+}
+
+export type PoseHoldOptions = {
+  /** 完整播放遍数，默认 1；允许小数（0.5 = 只取前半段，非必要不用）。 */
+  cycles?: number;
+  /** 动作播完后的定格停留，默认 0。 */
+  tailMs?: number;
+  /** 显式覆盖（毫秒）：仅供确有「刻意短播」理由的调用点，需在调用处写明原因。 */
+  overrideMs?: number;
+};
+
+/** manifest.autoActions 里「播几遍 + 尾部停留」的槽位，毫秒由素材时长派生。 */
+export type AutoPoseSlot = {
+  pose: PetPose;
+  holdCycles?: number;
+  tailMs?: number;
+};
+
+export function autoPoseHold(slot: AutoPoseSlot): number {
+  return poseHoldMs(slot.pose, {
+    cycles: slot.holdCycles ?? 1,
+    tailMs: slot.tailMs ?? 0,
+  });
+}
+
+/**
+ * 派生一次动作的视觉停留时长。
+ * 期望：任何动作都至少完整播完 cycles 遍，再由调用方加尾部停留；
+ * 因为「播到一半切走」比停留久一点更伤观感。
+ */
+export function poseHoldMs(pose: PetPose, opts: PoseHoldOptions = {}): number {
+  const { cycles = 1, tailMs = 0, overrideMs } = opts;
+  if (typeof overrideMs === 'number' && Number.isFinite(overrideMs) && overrideMs > 0) {
+    return Math.round(overrideMs);
+  }
+  const single = poseDurationMs(pose);
+  if (!single) return 0;
+  const safeCycles = Math.max(0.1, cycles);
+  const safeTail = Math.max(0, tailMs);
+  return Math.round(single * safeCycles + safeTail);
+}
+
+/**
+ * 结果态（done / error）的完整停留窗口。
+ * 期望窗口覆盖「主结果动作 + 尾段动作」各自完整一遍，否则状态会先于动画结束，
+ * 表现为庆祝只播一半就回到闲置（历史上 done 窗口 3500ms < celebrate 4795ms）。
+ */
+export function resultHoldMs(state: PetState): number {
+  if (state === 'error') {
+    // error（抖动）完整一遍，接 disappointed（垂头）完整一遍。
+    return poseHoldMs('error') + poseHoldMs('disappointed');
+  }
+  if (state === 'done') {
+    return poseHoldMs('celebrate', { tailMs: AUTO.celebrate.tailMs });
+  }
+  return 0;
+}
+
 export type RhythmKind = 'blink' | 'facing' | 'idleVariant' | 'wander';
 
 /** 按 manifest 的 [minMs, maxMs] 取随机间隔；注入随机源即可单测。 */
@@ -55,6 +133,23 @@ export function nextFacingAt(
   return now + rhythmDelay('facing', random);
 }
 
+/** 一段自动表演的占用。指针交互可以打断；下一段闲置或漂移必须等它结束。 */
+export type PerformanceLease = { until: number };
+
+export function canBeginAuto(lease: PerformanceLease | null, now: number): boolean {
+  return !lease || now >= lease.until;
+}
+
+export function leaseFor(now: number, ms: number): PerformanceLease {
+  return { until: now + Math.max(0, ms) };
+}
+
+/** 自动表演还占着时，下一次尝试要等到租约结束再留一点空隙。 */
+export function autoWaitMs(lease: PerformanceLease | null, now: number, gapMs = 0): number {
+  if (!lease || lease.until <= now) return Math.max(0, gapMs);
+  return lease.until - now + Math.max(0, gapMs);
+}
+
 export function nextIdleVariantAt(
   { now, random = Math.random }: { now: number; random?: () => number },
 ): number {
@@ -73,6 +168,21 @@ export function pickIdleVariant(
 ): PetPose {
   const list = AUTO.idleVariant.poses as readonly PetPose[];
   return list.length ? list[Math.floor(random() * list.length)] : 'stretch';
+}
+
+/**
+ * 加权版闲置姿势选择：内部委托统一通知模型的 weightedIdleVariant，
+ * 支持注入权重 / 最近姿势历史 / 随机源；全部参数缺省时等价旧的行为契约。
+ * 原 pickIdleVariant 保持原签名与行为，供冒烟脚本继续依赖。
+ * 作者：孙文龙 sun
+ */
+export function pickIdleVariantWeighted(
+  poses: readonly string[] = AUTO.idleVariant.poses as readonly string[],
+  weights: Record<string, number> = IDLE_VARIANT_WEIGHTS,
+  history: readonly string[] = [],
+  rand: () => number = Math.random,
+): PetPose {
+  return weightedIdleVariant(poses, weights, history, rand) as PetPose;
 }
 
 /** 睡醒边沿：上一帧是 sleep、本帧离开 sleep，且不是拖拽/已有醒觉动作打断。 */
@@ -190,6 +300,21 @@ export function actionsInGroup(group: string): readonly PetPose[] {
     .map((rule) => rule.pose);
 }
 
+/** state 类动作（trigger === 'always'）由状态机独占，不能当事件 flag 置位，避免虚报状态。 */
+const STATE_ACTION_FLAGS = new Set(
+  PET_ACTION_TABLE.filter((rule) => rule.trigger === 'always').map((rule) => rule.id),
+);
+
+/**
+ * 业务事件 → 可直接置位的 flag（auto 动作 trigger 等于动作名，可当 flag 用）。
+ * 若事件动作属于 state 类（typing/error/done/sleep/offline）则返回 null，交回状态机。
+ * 作者：孙文龙 sun
+ */
+export function eventActionFlag(event: PetEvent): string | null {
+  const name = eventActionFor(event);
+  return STATE_ACTION_FLAGS.has(name) ? null : name;
+}
+
 // ---- v1.2 兼容包装：旧字段映射到新 flags ----
 
 export type PetPoseInput = {
@@ -209,6 +334,8 @@ export type PetPoseInput = {
   welcoming?: boolean;
   waiting?: boolean;
   disappointed?: boolean;
+  /** 业务事件动作名（auto 类），由 petActionFlags 展开成对应 flag。作者：孙文龙 sun */
+  eventActions?: string[];
 };
 
 /** 旧式布尔输入 → 注册表 flags；保留给渐进迁移与既有单测。 */
@@ -233,6 +360,11 @@ export function petActionFlags(input: PetPoseInput): Record<string, boolean> {
     // walk 只剩「鼠标靠近时的预备走」视线反馈；整屏漂移不再用它。
     walk: Boolean(input.walking),
   };
+  // 事件动作名只在 auto 类范围内置位；state 类动作由状态机独占，绝不虚报。
+  // 作者：孙文龙 sun
+  for (const name of input.eventActions ?? []) {
+    if (!STATE_ACTION_FLAGS.has(name)) flags[name] = true;
+  }
   if (input.idlePose) flags[input.idlePose] = true;
   return flags;
 }
@@ -283,7 +415,9 @@ export function reducePetState(input: PetReducerInput): PetReducerResult {
   const gateway = { ...input.gateway, now };
   const state = selectPetState(gateway);
   const pose = resolvePetPose({ ...DEFAULT_POSE, ...input.pose, state });
-  const holdMs = state === 'error' ? 6000 : state === 'done' ? 3500 : 0;
+  // 结果态窗口由素材时长派生：error 抖动一遍 + 失落一遍，done 庆祝一遍 + 尾部。
+  // 历史上写死 6000 / 3500，比动作本身短，会导致状态先切、动画跟着被截断。
+  const holdMs = resultHoldMs(state);
   return {
     state,
     pose,

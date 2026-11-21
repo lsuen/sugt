@@ -1,4 +1,4 @@
-use crate::store::paths::{remove_dir_if_exists, StorePaths};
+use crate::store::paths::{remove_dir_if_exists, validate_single_segment, StorePaths};
 use crate::store::process::{hidden_git, run_hidden};
 use crate::store::settings::{apply_github_proxy, load_settings};
 use anyhow::{anyhow, Context, Result};
@@ -656,6 +656,8 @@ pub fn update_repo(
 }
 
 pub fn remove_repo(store_paths: &StorePaths, repo_id: &str) -> Result<Vec<SkillRepo>> {
+    // repo_id 直接来自 IPC，并会被拼进 cache_dir 后递归删除：必须是单一路径段。
+    validate_single_segment(repo_id, "仓库 ID")?;
     let mut repos = load_repos(store_paths)?;
     repos.retain(|item| item.id != repo_id);
     save_repos(store_paths, &repos)?;
@@ -704,6 +706,33 @@ pub fn refresh_all_repos(store_paths: &StorePaths) -> Result<Vec<SkillRepo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_repo_rejects_traversal_ids_and_keeps_outside_dirs() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("sugt-rmrepo-{stamp}"));
+        let store = root.join("store");
+        let paths = StorePaths {
+            root: store.clone(),
+            skills_dir: store.join("skills"),
+            cache_dir: store.join("cache"),
+            repos_file: store.join("repos.toml"),
+            settings_file: store.join("settings.toml"),
+            staged_meta: store.join("staged.json"),
+            mounted_meta: store.join("mounted.json"),
+        };
+        paths.ensure_dirs().unwrap();
+        let victim = store.join("skills");
+        std::fs::write(victim.join("keep.txt"), "keep").unwrap();
+        for evil in ["../skills", "..", "", "a/../../skills", "..\\skills"] {
+            assert!(remove_repo(&paths, evil).is_err(), "应拒绝 {evil:?}");
+        }
+        assert!(victim.join("keep.txt").exists(), "cache 之外目录不应被删");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn repo_id_is_stable() {

@@ -1,10 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import {
-  Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen,
-  Play, Plus, ScrollText, ShieldCheck, Sparkles, Trash2, UserRound, Users, X, XCircle, Settings2,
+  invoke, emit, listen,
+  isBrowserMode, getSessionToken, setSessionToken,
+  AUTH_EXPIRED_EVENT,
+} from './transport';
+import {
+  Activity, Bot, CheckCircle2, CircleStop, Cpu, FolderOpen, Play, Plus,
+  ScrollText, Settings2, ShieldCheck, Sparkles, Trash2, Users, Wand2, X, XCircle,
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { ModalPortal } from './ModalPortal';
@@ -18,23 +21,196 @@ import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
 import { TakeoverProfilesSection } from './TakeoverProfilesSection';
 import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
-import { createPreviewMeApi, MePanel } from './MePanel';
+import { RequestRulesSection } from './RequestRulesSection';
+import { ModelListPanel } from './ModelListPanel';
+import { StrategyBoxPanel } from './StrategyBoxPanel';
+import { ApiKeyPoolPanel } from './ApiKeyPoolPanel';
+import { ClientKeyPanel } from './ClientKeyPanel';
+import { AccessInfoCard } from './AccessInfoCard';
+import { FreeChannelSettingsModal } from './FreeChannelSettingsModal';
+import { MePanel } from './MePanel';
 import type { ProviderForm } from './providerPresets';
-import { t } from './i18n';
+import { t, type TKey } from './i18n';
+import { useNoticeQueue } from './notify/useNoticeQueue';
+import type { Notice, NoticeInput } from './notify/messageModel';
 import { editionLabel } from './AboutSection';
 import { StatusBar } from './StatusBar';
 import { loadStatusBarEnabled, persistStatusBarEnabled } from './uiPrefs';
 
 bootstrapTheme();
 
-// 日志与关于已并入设置子页，主 Tab 从 9 个收敛为 7 个。
-type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
+// 左侧导航：门面层（控制台 / SOUL）在分割线之上，工具层（网关 / 规则 / 接入 / 技能 / 设置）在下。
+// 组内用横向子 Tab；当前组由当前叶子反推，避免「当前组」与「当前页」两套状态打架。
+type NavGroup = 'overview' | 'soul' | 'gateway' | 'rules' | 'access' | 'skills' | 'settings';
+type NavLeaf =
+  | 'dashboard' | 'me'
+  | 'models' | 'modelList' | 'strategyBox' | 'keyPool'
+  | 'rulesInject' | 'rulesRewrite'
+  | 'clients' | 'clientKeys' | 'skills'
+  | 'settings';
+
+type NavLeafDef = { id: NavLeaf; labelKey: TKey };
+type NavGroupDef = { id: NavGroup; icon: typeof Activity; labelKey: TKey; leaves: NavLeafDef[] };
+
+/** 门面层：分割线之上；其余组一律视为工具层。 */
+const FACADE_GROUP_IDS: ReadonlySet<NavGroup> = new Set(['overview', 'soul']);
+
+const NAV_GROUPS: NavGroupDef[] = [
+  {
+    id: 'overview',
+    icon: Activity,
+    labelKey: 'nav.group.overview',
+    leaves: [
+      { id: 'dashboard', labelKey: 'nav.dashboard' },
+    ],
+  },
+  {
+    id: 'soul',
+    icon: Sparkles,
+    labelKey: 'nav.me',
+    leaves: [
+      { id: 'me', labelKey: 'nav.me' },
+    ],
+  },
+  {
+    id: 'gateway',
+    icon: Bot,
+    labelKey: 'nav.group.gateway',
+    leaves: [
+      { id: 'models', labelKey: 'nav.models' },
+      { id: 'modelList', labelKey: 'nav.modelList' },
+      { id: 'strategyBox', labelKey: 'nav.strategyBox' },
+      { id: 'keyPool', labelKey: 'nav.keyPool' },
+    ],
+  },
+  {
+    id: 'rules',
+    icon: ScrollText,
+    labelKey: 'nav.group.rules',
+    leaves: [
+      { id: 'rulesInject', labelKey: 'nav.rulesInject' },
+      { id: 'rulesRewrite', labelKey: 'nav.rulesRewrite' },
+    ],
+  },
+  {
+    id: 'access',
+    icon: Users,
+    labelKey: 'nav.group.access',
+    leaves: [
+      { id: 'clients', labelKey: 'nav.clients' },
+      { id: 'clientKeys', labelKey: 'nav.clientKeys' },
+    ],
+  },
+  {
+    id: 'skills',
+    icon: Wand2,
+    labelKey: 'nav.group.skills',
+    leaves: [
+      { id: 'skills', labelKey: 'nav.skills' },
+    ],
+  },
+  {
+    id: 'settings',
+    icon: Settings2,
+    labelKey: 'nav.group.settings',
+    leaves: [
+      { id: 'settings', labelKey: 'nav.settings' },
+    ],
+  },
+];
+
+const NAV_GROUP_STORAGE_KEY = 'sugt_nav_group';
+const NAV_LEAF_STORAGE_PREFIX = 'sugt_nav_leaf_';
+
+const NAV_DEFAULT_LEAF: Record<NavGroup, NavLeaf> = {
+  overview: 'dashboard',
+  soul: 'me',
+  gateway: 'models',
+  rules: 'rulesInject',
+  access: 'clients',
+  skills: 'skills',
+  settings: 'settings',
+};
+
+function navGroupOf(leaf: NavLeaf): NavGroup {
+  const found = NAV_GROUPS.find((group) => group.leaves.some((item) => item.id === leaf));
+  return found ? found.id : 'overview';
+}
+
+function isNavGroup(value: string | null): value is NavGroup {
+  return NAV_GROUPS.some((group) => group.id === value);
+}
+
+/** 读取某组上次停留的叶子；取值必须属于该组，非法一律回退默认叶子。 */
+function storedLeafFor(group: NavGroup): NavLeaf {
+  const def = NAV_GROUPS.find((item) => item.id === group);
+  try {
+    const raw = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}${group}`);
+    if (raw && def?.leaves.some((item) => item.id === raw)) return raw as NavLeaf;
+  } catch {
+    /* localStorage 不可用（隐私模式）时按默认叶子启动 */
+  }
+  return NAV_DEFAULT_LEAF[group];
+}
+
+/**
+ * 旧版：SOUL 在「总览」叶子、技能在「接入」叶子。
+ * 升为一级主 Tab 后迁到 soul / skills 组，避免旧 localStorage 指到空页。
+ */
+function migrateNavStorage() {
+  try {
+    const overviewLeaf = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}overview`);
+    if (overviewLeaf === 'me') {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, 'soul');
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}soul`, 'me');
+      localStorage.removeItem(`${NAV_LEAF_STORAGE_PREFIX}overview`);
+    }
+    const accessLeaf = localStorage.getItem(`${NAV_LEAF_STORAGE_PREFIX}access`);
+    if (accessLeaf === 'skills') {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, 'skills');
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}skills`, 'skills');
+      localStorage.removeItem(`${NAV_LEAF_STORAGE_PREFIX}access`);
+    }
+  } catch {
+    /* 隐私模式无持久化，跳过迁移 */
+  }
+}
+
+function initialLeaf(): NavLeaf {
+  migrateNavStorage();
+  try {
+    const raw = localStorage.getItem(NAV_GROUP_STORAGE_KEY);
+    return storedLeafFor(isNavGroup(raw) ? raw : 'overview');
+  } catch {
+    return NAV_DEFAULT_LEAF.overview;
+  }
+}
+
 type ProviderStatus = 'Unknown' | 'Available' | 'Unavailable';
 type ProviderProtocol = 'openai' | 'anthropic';
+
+/** 与 src-tauri/src/probe.rs 的 ProbeReport 对齐（camelCase） */
+type ProbeReport = {
+  ok: boolean;
+  reply: string | null;
+  latencyMs: number;
+  tokensPerSec: number;
+  completionTokens: number;
+  estimated: boolean;
+  error: string | null;
+};
+
+/** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐 */
+type ProviderTestOutcome = {
+  status: ProviderStatus;
+  report: ProbeReport;
+};
 
 type RuntimeStatus = {
   running: boolean;
   listen_url: string;
+  preferred_port?: number;
+  listen_port?: number;
   openai_base_url?: string;
   anthropic_base_url?: string;
   gateway_client_api_key?: string;
@@ -106,6 +282,8 @@ type AppConfig = {
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
   port_fallback_ports?: number[];
+  upstream_retry_budget_ms?: number | null;
+  upstream_retry_single_ms?: number | null;
   providers: unknown[];
   overlay?: OverlayConfigView;
   workspace_rules?: WorkspaceRulesView;
@@ -143,10 +321,6 @@ const emptyForm: ProviderForm = {
   tool_text_retry_extra: '',
 };
 
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
 function formatInvokeError(error: unknown): string {
   const text = String(error);
   const marker = 'gateway_not_running:';
@@ -155,30 +329,65 @@ function formatInvokeError(error: unknown): string {
   return text;
 }
 
-function isErrorLike(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes('error') || text.includes('失败') || lower.includes('invalid') || text.includes('不可用');
-}
-
+// 对外 pushToast 的 kind 取值保持不变；内部颜色/定级统一交给 messageModel.guessSeverity。 —— 孙文龙 sun
 type ToastKind = 'ok' | 'error' | 'info';
 
-type ToastItem = {
-  id: number;
-  text: string;
-  kind: ToastKind;
-};
-
-function ToastHost({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: number) => void }) {
-  if (!toasts.length) return null;
+// 主窗口 Toast 宿主：渲染通知队列的可视切片，支持分类/级别、合并计数、轻量动作与被挤出计数。 —— 孙文龙 sun
+function ToastHost({
+  notices, hidden, onDismiss, onAction, onPauseChange,
+}: {
+  notices: Notice[];
+  hidden: number;
+  onDismiss: (id: number) => void;
+  onAction: (notice: Notice) => void;
+  onPauseChange: (paused: boolean) => void;
+}) {
+  if (!notices.length) return null;
+  // 存在 error/warn 时容器用 assertive，其余用 polite；单条紧急项另带 role="alert"。 —— 孙文龙 sun
+  const urgent = notices.some((n) => n.severity === 'error' || n.severity === 'warn');
   return (
     <ModalPortal>
-      <div className="toast-host" aria-live="polite">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast toast-${toast.kind}`} role="status">
-            <span className="toast-text">{toast.text}</span>
-            <button type="button" className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={t('common.close')}>×</button>
-          </div>
-        ))}
+      <div
+        className="toast-host"
+        aria-live={urgent ? 'assertive' : 'polite'}
+        onMouseEnter={() => onPauseChange(true)}
+        onMouseLeave={() => onPauseChange(false)}
+      >
+        {notices.map((notice) => {
+          const alert = notice.severity === 'error' || notice.severity === 'warn';
+          return (
+            <div
+              key={notice.id}
+              className="toast"
+              data-category={notice.category}
+              data-severity={notice.severity}
+              role={alert ? 'alert' : 'status'}
+            >
+              <span className="toast-cat">{t(`notice.category.${notice.category}` as TKey)}</span>
+              <div className="toast-text">
+                {notice.title ? <strong className="toast-title">{notice.title}</strong> : null}
+                <span>{notice.text}</span>
+              </div>
+              {notice.count > 1 ? (
+                <span className="toast-count">{t('notice.count', { n: notice.count })}</span>
+              ) : null}
+              {notice.action ? (
+                <button type="button" className="toast-action" onClick={() => onAction(notice)}>
+                  {t(notice.action.label as TKey)}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="toast-close"
+                onClick={() => onDismiss(notice.id)}
+                aria-label={t('common.close')}
+              >×</button>
+            </div>
+          );
+        })}
+        {hidden > 0 ? (
+          <div className="toast-more">{t('notice.suppressed', { n: hidden })}</div>
+        ) : null}
       </div>
     </ModalPortal>
   );
@@ -221,8 +430,20 @@ function Modal({
   );
 }
 
-function App() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+function AppMain() {
+  const [tab, setTabState] = useState<NavLeaf>(initialLeaf);
+  // 当前组由当前叶子反推；切叶子时把组与组内位置都写回 localStorage，切组能回到上次那一页。
+  const group = navGroupOf(tab);
+  const setTab = useCallback((leaf: NavLeaf) => {
+    setTabState(leaf);
+    const nextGroup = navGroupOf(leaf);
+    try {
+      localStorage.setItem(NAV_GROUP_STORAGE_KEY, nextGroup);
+      localStorage.setItem(`${NAV_LEAF_STORAGE_PREFIX}${nextGroup}`, leaf);
+    } catch {
+      /* 隐私模式下只丢「上次位置」记忆，不影响当前导航 */
+    }
+  }, []);
   // 设置子页状态提升到 App：状态栏「打开日志页」等外部入口可精确跳转，切主 Tab 不丢位置。
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('overview');
   /** SOUL `[[SUGT_ROUTE]]preview`：切到 Clients 后由 TakeoverProfilesSection 自动打开影响预览 */
@@ -234,10 +455,18 @@ function App() {
   const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-  const toastSeq = useRef(0);
+  // 主窗口 Toast 统一接入通知队列：去重合并 / 优先级截取 / TTL 清理 / 悬停暂停。 —— 孙文龙 sun
+  const {
+    visible: visibleNotices,
+    hidden: hiddenNotices,
+    push,
+    dismiss,
+    setPaused,
+  } = useNoticeQueue({ surface: 'toast' });
   const [providerModal, setProviderModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ProviderView | null>(null);
+  const [freeSettingsOpen, setFreeSettingsOpen] = useState(false);
+  const [freeSettingsRequireAccept, setFreeSettingsRequireAccept] = useState(false);
   const [skillsAgentFilter, setSkillsAgentFilter] = useState('');
   const [trialDetail, setTrialDetail] = useState(false);
   const versionClicks = useRef(0);
@@ -258,20 +487,21 @@ function App() {
 
   const activeProviderId = config?.active_provider_id ?? providers[0]?.id;
 
+  // 对外签名保持 pushToast(text, kind?) 不变：所有子面板经 props 调用，调用点零改动。 —— 孙文龙 sun
   const pushToast = useCallback((text: string, kind?: ToastKind) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const resolved = kind ?? (isErrorLike(trimmed) ? 'error' : 'ok');
-    const id = ++toastSeq.current;
-    setToasts((prev) => [...prev.slice(-2), { id, text: trimmed, kind: resolved }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((item) => item.id !== id));
-    }, 4200);
-  }, []);
+    if (kind) {
+      // 显式 kind：作为 severity，统一归入 result 分类。
+      push({ text, category: 'result', severity: kind });
+    } else {
+      // 缺省 kind：交由 messageModel.guessSeverity 依据文案自动定级。
+      push(text);
+    }
+  }, [push]);
 
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+  // 预留结构化入口：后续可直接推送带分类 / 标题 / 动作的完整通知。 —— 孙文龙 sun
+  const pushNotice = useCallback((input: NoticeInput) => {
+    push(input);
+  }, [push]);
 
   // 隐藏入口：连续点击版本号卡片 10 次，或 Ctrl+Alt+Shift+V，查看有效期详情
   const onVersionCardClick = useCallback(() => {
@@ -315,6 +545,16 @@ function App() {
     return () => {
       un.then((fn) => fn()).catch(() => undefined);
     };
+  }, [setTab]);
+
+  // Toast 轻量动作：复用桌面精灵「打开设置子页」的既有事件，由上方 listen('sugt://navigate-settings')
+  // 统一完成 setTab/setSettingsTab；此处只发事件、仅跳转，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
+  const onNoticeAction = useCallback((notice: Notice) => {
+    const act = notice.action;
+    if (!act || act.kind !== 'navigate') return;
+    // target 形如 'settings/logs' → 取子页 'logs'，交给既有监听器映射。
+    const sub = act.target?.split('/').pop() || 'overview';
+    emit('sugt://navigate-settings', sub).catch(() => undefined);
   }, []);
 
   const refreshCore = useCallback(async () => {
@@ -367,7 +607,13 @@ function App() {
       if (ok) pushToast(ok, 'ok');
       await refresh();
     } catch (error) {
-      pushToast(formatInvokeError(error), 'error');
+      // 失败 Toast 附轻量动作：仅跳转到「设置-日志」子页，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
+      pushNotice({
+        text: formatInvokeError(error),
+        category: 'result',
+        severity: 'error',
+        action: { label: 'notice.action.viewLogs', kind: 'navigate', target: 'settings/logs' },
+      });
     } finally {
       setBusy(false);
     }
@@ -439,21 +685,96 @@ function App() {
   };
 
   const setProviderEnabled = async (provider: ProviderView, enabled: boolean) => {
-    await run(() => invoke('set_provider_enabled', { id: provider.id, enabled }), enabled ? t('models.toastEnabled') : t('models.toastDisabled'));
+    if (enabled && provider.experimental) {
+      try {
+        const cfg = await invoke<{ experimental_free_disclaimer_accepted?: boolean }>('get_config');
+        if (!cfg.experimental_free_disclaimer_accepted) {
+          setFreeSettingsRequireAccept(true);
+          setFreeSettingsOpen(true);
+          pushToast(t('freeSettings.needAcceptFirst'), 'info');
+          return;
+        }
+      } catch {
+        /* 读配置失败时仍走后端门禁 */
+      }
+    }
+    await run(
+      () => invoke('set_provider_enabled', { id: provider.id, enabled }),
+      enabled ? t('models.toastEnabled') : t('models.toastDisabled'),
+    );
+  };
+
+  /** 探测报告 → toast；文案复用模型配置弹窗的 pm.* key，保持两处口径一致。 */
+  const probeToast = (report: ProbeReport) => {
+    if (!report.ok) {
+      pushToast(t('pm.probeFail', { error: report.error ?? '—' }), 'error');
+      return;
+    }
+    const estimated = report.estimated ? t('pm.probeEstimated') : '';
+    pushToast(
+      report.tokensPerSec > 0
+        ? t('pm.probeOk', {
+          latency: report.latencyMs,
+          speed: report.tokensPerSec.toFixed(1),
+          estimated,
+        })
+        : t('pm.probeOkNoSpeed', { latency: report.latencyMs }),
+      'ok',
+    );
+  };
+
+  const testSingleProvider = async (provider: ProviderView) => {
+    setBusy(true);
+    try {
+      const outcome = await invoke<ProviderTestOutcome>('test_provider', { id: provider.id });
+      probeToast(outcome.report);
+      await refresh();
+    } catch (error) {
+      pushNotice({
+        text: formatInvokeError(error),
+        category: 'result',
+        severity: 'error',
+        action: { label: 'notice.action.viewLogs', kind: 'navigate', target: 'settings/logs' },
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const testAllProviders = async () => {
     setBusy(true);
     let available = 0;
     let unavailable = 0;
+    let latencySum = 0;
+    let speedSum = 0;
+    let okCount = 0;
+    // 探测是真实对话（单次最长 30s）：限 3 个一批并发，既不等串行长队，也不一次打满上游。
+    const batchSize = 3;
 
     try {
-      for (const provider of providers) {
-        const result = await invoke<ProviderStatus>('test_provider', { id: provider.id });
-        if (result === 'Available') available += 1;
-        if (result === 'Unavailable') unavailable += 1;
+      for (let index = 0; index < providers.length; index += batchSize) {
+        const batch = providers.slice(index, index + batchSize);
+        const outcomes = await Promise.all(
+          batch.map((provider) => invoke<ProviderTestOutcome>('test_provider', { id: provider.id })),
+        );
+        outcomes.forEach((outcome) => {
+          if (outcome.status === 'Available') available += 1;
+          if (outcome.status === 'Unavailable') unavailable += 1;
+          if (outcome.report.ok) {
+            latencySum += outcome.report.latencyMs;
+            speedSum += outcome.report.tokensPerSec;
+            okCount += 1;
+          }
+        });
       }
-      pushToast(t('models.toastTestAll', { a: available, b: unavailable }), unavailable > 0 ? 'info' : 'ok');
+      const summary = t('models.toastTestAll', { a: available, b: unavailable });
+      const metrics = okCount > 0
+        ? t('models.toastTestAllProbe', {
+          latency: Math.round(latencySum / okCount),
+          speed: (speedSum / okCount).toFixed(1),
+        })
+        : '';
+      pushToast(`${summary}${metrics}`, unavailable > 0 ? 'info' : 'ok');
       await refresh();
     } catch (error) {
       pushToast(String(error), 'error');
@@ -467,66 +788,37 @@ function App() {
     return status.running ? <span className="badge ok">{t('common.running')}</span> : <span className="badge stop">{t('common.stopped')}</span>;
   }, [status]);
 
-  const tabTitle = {
+  const tabTitle: Record<NavLeaf, string> = {
     dashboard: t('tab.dashboard.title'),
+    me: t('tab.me.title'),
     models: t('tab.models.title'),
+    modelList: t('tab.modelList.title'),
+    strategyBox: t('tab.strategyBox.title'),
+    keyPool: t('tab.keyPool.title'),
+    rulesInject: t('tab.rulesInject.title'),
+    rulesRewrite: t('tab.rulesRewrite.title'),
     clients: t('tab.clients.title'),
     skills: t('tab.skills.title'),
-    me: t('tab.me.title'),
-    rules: t('tab.rules.title'),
+    clientKeys: t('tab.clientKeys.title'),
     settings: t('tab.settings.title'),
-  }[tab];
+  };
 
-  const tabDesc = {
+  const tabDesc: Record<NavLeaf, string> = {
     dashboard: t('tab.dashboard.desc'),
+    me: t('tab.me.desc'),
     models: t('tab.models.desc'),
+    modelList: t('tab.modelList.desc'),
+    strategyBox: t('tab.strategyBox.desc'),
+    keyPool: t('tab.keyPool.desc'),
+    rulesInject: t('tab.rulesInject.desc'),
+    rulesRewrite: t('tab.rulesRewrite.desc'),
     clients: t('tab.clients.desc'),
     skills: t('tab.skills.desc'),
-    me: t('tab.me.desc'),
-    rules: t('tab.rules.desc'),
+    clientKeys: t('tab.clientKeys.desc'),
     settings: t('tab.settings.desc'),
-  }[tab];
+  };
 
-  const devPreview = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
-  const previewApi = useMemo(() => (devPreview ? createPreviewMeApi() : null), [devPreview]);
-
-  if (!isTauriRuntime()) {
-    if (devPreview && previewApi) {
-      return (
-        <main className="app-shell">
-          <aside className="sidebar">
-            <div className="brand">
-              <BrandMark size="md" />
-              <div className="brand-text">
-                <h1>SUTAI</h1>
-                <span>{t('brand.tagline')}</span>
-              </div>
-            </div>
-            <button className="nav active" type="button"><UserRound size={18} />{t('nav.me')}</button>
-          </aside>
-          <section className="content">
-            <header className="topbar">
-              <div>
-                <h2>{t('tab.me.title')}</h2>
-              </div>
-            </header>
-            <div className="tab-body me-tab">
-              <MePanel api={previewApi} onOpenClients={() => undefined} onOpenModels={() => undefined} onOpenSkills={() => undefined} />
-            </div>
-          </section>
-        </main>
-      );
-    }
-    return (
-      <main className="browser-only">
-        <h2>{t('browser.title')}</h2>
-        <p>{t('browser.desc')}</p>
-        <p>{t('browser.root')}</p>
-        <pre>npm run tauri dev</pre>
-        <p className="hint">{t('browser.hint')}</p>
-      </main>
-    );
-  }
+  const activeGroup = NAV_GROUPS.find((item) => item.id === group) ?? NAV_GROUPS[0];
 
   return (
     <main className="app-shell">
@@ -539,16 +831,31 @@ function App() {
           </div>
         </div>
         <div className="nav-scroll">
-        {/* 门面层：控制台（默认首屏，给普通用户专业感）+ SOUL（所有人的未来入口，提权至第二顺位） */}
-        <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}><Activity size={18} />{t('nav.dashboard')}</button>
-        <button className={tab === 'me' ? 'nav active nav--soul' : 'nav nav--soul'} onClick={() => setTab('me')}><UserRound size={18} />{t('nav.me')}</button>
-        <div className="nav-divider" role="separator" aria-hidden="true" />
-        {/* 工具层：专业用户的可控能力，普通用户可暂不触碰 */}
-        <button className={tab === 'models' ? 'nav active' : 'nav'} onClick={() => setTab('models')}><Bot size={18} />{t('nav.models')}</button>
-        <button className={tab === 'clients' ? 'nav active' : 'nav'} onClick={() => setTab('clients')}><Users size={18} />{t('nav.clients')}</button>
-        <button className={tab === 'skills' ? 'nav active' : 'nav'} onClick={() => setTab('skills')}><Sparkles size={18} />{t('nav.skills')}</button>
-        <button className={tab === 'rules' ? 'nav active' : 'nav'} onClick={() => setTab('rules')}><ScrollText size={18} />{t('nav.rules')}</button>
-        <button className={tab === 'settings' ? 'nav active' : 'nav'} onClick={() => setTab('settings')}><Settings2 size={18} />{t('nav.settings')}</button>
+        {/* 门面：总览 → SOUL；分割线；工具：网关 / 规则 / 接入 / 设置 */}
+        {NAV_GROUPS.map((item, index) => {
+          const Icon = item.icon;
+          const active = group === item.id;
+          const prev = index > 0 ? NAV_GROUPS[index - 1] : null;
+          const showDivider = Boolean(
+            prev && FACADE_GROUP_IDS.has(prev.id) && !FACADE_GROUP_IDS.has(item.id),
+          );
+          const className = [
+            'nav',
+            active ? 'active' : '',
+            item.id === 'soul' ? 'nav--soul' : '',
+          ].filter(Boolean).join(' ');
+          return (
+            <React.Fragment key={item.id}>
+              {showDivider ? <div className="nav-divider" role="separator" aria-hidden="true" /> : null}
+              <button
+                className={className}
+                onClick={() => setTab(storedLeafFor(item.id))}
+              >
+                <Icon size={18} />{t(item.labelKey)}
+              </button>
+            </React.Fragment>
+          );
+        })}
         </div>
         <div className="sidebar-footer">
           <ShieldCheck size={18} />
@@ -564,10 +871,28 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <h2>{tabTitle}</h2>
-            {tabDesc ? <p>{tabDesc}</p> : null}
+            <h2>{tabTitle[tab]}</h2>
+            {tabDesc[tab] ? <p>{tabDesc[tab]}</p> : null}
           </div>
         </header>
+
+        {/* 组内横向子 Tab：只有多叶子且非设置组（设置自带子 Tab 栏）时才出现 */}
+        {activeGroup.leaves.length > 1 && activeGroup.id !== 'settings' ? (
+          <div className="group-tabs" role="tablist" aria-label={t('nav.groupTabs')}>
+            {activeGroup.leaves.map((leaf) => (
+              <button
+                key={leaf.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === leaf.id}
+                className={tab === leaf.id ? 'ghost tiny-btn active' : 'ghost tiny-btn'}
+                onClick={() => setTab(leaf.id)}
+              >
+                {t(leaf.labelKey)}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {tab === 'dashboard' && (
           <div className="tab-body dashboard-body">
@@ -579,6 +904,16 @@ function App() {
                   <div>
                     <h3>{t('dash.service')}</h3>
                     <p>{status?.listen_url ?? 'http://127.0.0.1:8787'}</p>
+                    {status?.preferred_port != null
+                      && status?.listen_port != null
+                      && status.preferred_port !== status.listen_port ? (
+                      <p className="hint compact">
+                        {t('dash.portDrift', {
+                          preferred: String(status.preferred_port),
+                          listen: String(status.listen_port),
+                        })}
+                      </p>
+                    ) : null}
                   </div>
                   {statusBadge}
                 </div>
@@ -647,7 +982,7 @@ function App() {
           </div>
         )}
 
-        {tab === 'rules' && (
+        {tab === 'rulesInject' && (
           <div className="tab-body">
             <WorkspaceRulesPanel
               rules={config?.workspace_rules}
@@ -660,13 +995,19 @@ function App() {
           </div>
         )}
 
+        {tab === 'rulesRewrite' && (
+          <div className="tab-body">
+            <RequestRulesSection pushToast={pushToast} run={run} />
+          </div>
+        )}
+
         {tab === 'settings' && (
           <div className="tab-body">
           <SettingsPanel
             config={config}
             statusListenUrl={status?.listen_url ?? 'http://127.0.0.1:8787'}
             run={run}
-            onNavigate={setTab}
+            onNavigate={(next) => setTab(next === 'rules' ? 'rulesInject' : next)}
             pushToast={pushToast}
             formatInvokeError={formatInvokeError}
             themeId={themeId}
@@ -741,7 +1082,7 @@ function App() {
                       </div>
                       <span className="provider-sub">{protocolLabel(normalizeProtocol(provider.protocol))} · {provider.model_name}</span>
                       {provider.experimental ? (
-                        <span className="hint compact">{t('models.restoreZenHint')}</span>
+                        <span className="hint compact">{t('models.freeRowHint')}</span>
                       ) : (
                         <code className="provider-url" title={provider.base_url}>{provider.base_url}</code>
                       )}
@@ -749,9 +1090,21 @@ function App() {
                     </div>
                     <div className="provider-actions">
                       {provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
+                      {provider.experimental && (
+                        <button
+                          className="tiny"
+                          disabled={busy}
+                          onClick={() => {
+                            setFreeSettingsRequireAccept(false);
+                            setFreeSettingsOpen(true);
+                          }}
+                        >
+                          {t('freeSettings.open')}
+                        </button>
+                      )}
                       <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
                       <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
-                      <button className="tiny" disabled={busy} onClick={() => run(() => invoke('test_provider', { id: provider.id }), t('models.toastTested'))}>{t('common.test')}</button>
+                      <button className="tiny" disabled={busy} onClick={() => void testSingleProvider(provider)}>{t('common.test')}</button>
                       <button className="tiny danger-link" disabled={busy} onClick={() => setDeleteTarget(provider)}><Trash2 size={14} /></button>
                     </div>
                   </div>
@@ -759,6 +1112,37 @@ function App() {
               })}
             </div>
           </section>
+          </div>
+        )}
+
+        {tab === 'modelList' && (
+          <div className="tab-body">
+            <AccessInfoCard pushToast={pushToast} />
+            <ModelListPanel
+              providers={providers}
+              pushToast={pushToast}
+              run={run}
+            />
+          </div>
+        )}
+
+        {tab === 'strategyBox' && (
+          <div className="tab-body">
+            <StrategyBoxPanel
+              providers={providers}
+              pushToast={pushToast}
+              run={run}
+            />
+          </div>
+        )}
+
+        {tab === 'keyPool' && (
+          <div className="tab-body">
+            <ApiKeyPoolPanel
+              providers={providers}
+              pushToast={pushToast}
+              run={run}
+            />
           </div>
         )}
 
@@ -796,6 +1180,12 @@ function App() {
           </div>
         )}
 
+        {tab === 'clientKeys' && (
+          <div className="tab-body">
+            <ClientKeyPanel pushToast={pushToast} />
+          </div>
+        )}
+
       </section>
 
       {providerModal && (
@@ -823,6 +1213,22 @@ function App() {
           </div>
         </Modal>
       )}
+
+      <FreeChannelSettingsModal
+        open={freeSettingsOpen}
+        busy={busy}
+        requireAccept={freeSettingsRequireAccept}
+        currentRoute={providers.find((p) => p.experimental)?.model_name}
+        onClose={() => {
+          setFreeSettingsOpen(false);
+          setFreeSettingsRequireAccept(false);
+        }}
+        onSaved={() => {
+          void refresh();
+        }}
+        run={run}
+        pushToast={pushToast}
+      />
 
       {trialDetail && (
         <Modal title={t('about.trialDetail')} onClose={() => setTrialDetail(false)} closeOnOverlay>
@@ -860,9 +1266,97 @@ function App() {
         />
       ) : null}
 
-      <ToastHost toasts={toasts} onDismiss={dismissToast} />
+      <ToastHost
+        notices={visibleNotices}
+        hidden={hiddenNotices}
+        onDismiss={dismiss}
+        onAction={onNoticeAction}
+        onPauseChange={setPaused}
+      />
     </main>
   );
+}
+
+// 浏览器模式登录门控：桌面端直接渲染管理界面，浏览器端需先用 gateway_client_api_key 换 token。
+function App() {
+  const [ready, setReady] = useState(() => !isBrowserMode() || Boolean(getSessionToken()));
+  const [error, setError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [keyDraft, setKeyDraft] = useState('');
+
+  const login = useCallback(async (key: string) => {
+    const trimmed = key.trim();
+    if (!trimmed) {
+      setError(t('webui.keyRequired'));
+      return;
+    }
+    setLoggingIn(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: trimmed }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { token?: string; error?: string };
+      if (!data.token) throw new Error(data.error || t('webui.loginFailed'));
+      setSessionToken(data.token);
+      // 令牌已换到 sessionStorage，输入框里的明文 key 立即清掉。
+      setKeyDraft('');
+      setReady(true);
+    } catch (e) {
+      setError(`${t('webui.loginFailed')}：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoggingIn(false);
+    }
+  }, []);
+
+  // invoke 收到 401 会清 token 并抛此事件：回到登录态（仅浏览器模式）。
+  useEffect(() => {
+    if (!isBrowserMode()) return undefined;
+    const off = listen(AUTH_EXPIRED_EVENT, () => {
+      setError(t('webui.authExpired'));
+      setReady(false);
+    });
+    return () => {
+      void off.then((fn) => fn()).catch(() => undefined);
+    };
+  }, []);
+
+  if (!ready) {
+    return (
+      <main className="browser-only webui-login">
+        <h2>{t('webui.loginTitle')}</h2>
+        <p>{t('webui.loginDesc')}</p>
+        <form
+          className="webui-login-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void login(keyDraft);
+          }}
+        >
+          <input
+            type="password"
+            autoFocus
+            autoComplete="current-password"
+            aria-label={t('webui.keyPlaceholder')}
+            placeholder={t('webui.keyPlaceholder')}
+            value={keyDraft}
+            onChange={(event) => setKeyDraft(event.target.value)}
+            disabled={loggingIn}
+          />
+          <button type="submit" disabled={loggingIn}>
+            {loggingIn ? t('webui.loggingIn') : error ? t('webui.retryButton') : t('webui.loginButton')}
+          </button>
+        </form>
+        {error ? <p className="error">{error}</p> : null}
+        <p className="hint">{t('webui.tip')}</p>
+      </main>
+    );
+  }
+
+  return <AppMain />;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

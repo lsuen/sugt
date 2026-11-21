@@ -1,6 +1,6 @@
 [package]
 name = "sugt"
-version = "1.1.10"
+version = "1.2.0"
 description = "SUGT - su gateway"
 authors = ["孙文龙"]
 edition = "2021"
@@ -38,14 +38,19 @@ tauri = { version = "2.9.1", features = ["tray-icon", "image-png", "macos-privat
 tauri-plugin-shell = "2.3.1"
 thiserror = "1.0"
 tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal", "sync", "net"] }
-toml = "0.8"
-toml_edit = "0.20"
+toml = "1"
+toml_edit = "0.25"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+include_dir = "0.7"
+base64 = "0.22"
+hmac = "0.12"
+subtle = "2.6"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
+if-addrs = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_Foundation"] }

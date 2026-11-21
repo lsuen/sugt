@@ -1,6 +1,6 @@
 {
   "name": "sugt",
-  "version": "1.1.10",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "dev:app": "tauri dev",
     "dev:app:store": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SUGT_PRODUCT='store'; npm run tauri dev\"",
     "build": "tsc && vite build",
+    "build:web": "vite build --mode web",
     "tauri": "tauri",
     "tauri:build": "tauri build",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Variant self",
@@ -30,8 +31,11 @@
     "test:theme-pack": "node tests/theme-pack-smoke.mjs",
     "test:pet-state": "node tests/pet-state-smoke.mjs",
     "test:pet-manifest": "node tests/pet-manifest-smoke.mjs",
+    "test:notice-model": "node tests/notice-model-smoke.mjs",
+    "test:notice-queue": "node tests/notice-queue-smoke.mjs",
+    "test:css": "node tests/css-guard.mjs",
     "pet:check-generated": "python3 docs/孙测测/scripts/gen_pet_from_manifest.py --check",
-    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run test:pet-manifest && npm run check",
+    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run test:pet-manifest && npm run test:notice-model && npm run test:notice-queue && npm run test:css && npm run check",
     "clean:cache": "cd src-tauri && cargo clean && echo target cleared",
     "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
     "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"

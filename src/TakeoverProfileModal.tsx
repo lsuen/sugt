@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { FileSearch, Plus, X } from 'lucide-react';
 import type { TakeoverProfileView } from './TakeoverProfilesSection';
 import { t } from './i18n';

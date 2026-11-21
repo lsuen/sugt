@@ -154,7 +154,7 @@ def validate_action_registry(data: dict, poses: list[dict]) -> None:
     # 自动交互槽位的 pose 必须指向同名专属动作，杜绝「拖拽复用走路」这类语义错配。
     auto = data.get("autoActions") or {}
     names = {p["name"] for p in poses}
-    for slot in ("wake", "welcome", "celebrate", "disappointed", "wait"):
+    for slot in ("wake", "welcome", "greeting", "celebrate", "disappointed", "wait"):
         pose_name = (auto.get(slot) or {}).get("pose")
         if pose_name is not None and pose_name not in names:
             raise ValueError(f"autoActions.{slot}.pose={pose_name} 不在动作注册表中")

@@ -4,8 +4,12 @@
 作用用途：从 src/pet/pet.css 抽取桌面精灵样式，内联真实 WebP 素材（含带 alpha 的
          动画 WebP），生成可点、可鼠标交互的离线演示页；同时校验关键选择器齐全，
          避免演示页与产品样式漂移。
-适用项目：SUGT（桌面精灵 小su）v1.0
-创建日期：2026-11-08（v0.7 于同日重写；2026-11-09 同步 v0.9 十动作 / v1.0 互动层）
+适用项目：SUGT（桌面精灵 小su）v1.5（演示页脚本自 v1.0 起，口径以 v1.5 为准；v1.4 为历史）
+创建日期：2026-11-08（v0.7 于同日重写；2026-11-09 同步 v0.9 十动作 / v1.0 互动层，均为历史沿革）
+v1.5 口径：25 动作 / 1250 帧（v1.4 为 24 动作 / 1200 帧）；进包画布由历史 180×297 扩边到 240×297（左右各补 30px
+          全透明、纯 paste 不缩放不裁切）；三档窗口 160×136 / 198×168 / 240×204
+          （height 不变，靠窗口加宽满足「高度主导不变式」，人物屏幕像素高不变）；
+          生成画布仍 640×768、h_ref 仍 176.0px 不重算、56 色 palette-lossless 不变。
 复用方式：python3 docs/孙测测/scripts/build_pet_preview.py [--root 项目根] [--out 输出HTML]；
           每次修改精灵 CSS 或素材后重跑即可，无需手工维护演示页。
 退出码约定：0 通过 / 1 校验不通过 / 2 读取或解析失败
@@ -73,7 +77,9 @@ button:hover{color:var(--text);border-color:var(--accent)}
 button.on{color:#0E1220;background:var(--accent);border-color:var(--accent);font-weight:600}
 .hint{font-size:11.5px;color:var(--dim);margin:10px 0 0;line-height:1.6}
 .now{margin-top:14px;padding:9px 11px;border:1px solid rgba(93,217,168,.35);border-radius:9px;background:rgba(93,217,168,.08);font-size:12.5px;color:var(--accent)}
-/* 580px：最小档 120×136 放大 4.0× 后高 544px。棋盘格=模拟壁纸，不是产品窗背景。 */
+/* 演示区高 580px：v1.4 三档窗口 160×136 / 198×168 / 240×204（height 不变），
+   放大倍数按新宽度比例调为 3.0 / 2.4 / 1.9，放大后宽约 480 / 475 / 456 px，
+   均不溢出演示区；棋盘格=模拟壁纸，不是产品窗背景。 */
 .desktop{background-color:#1a2030;background-image:linear-gradient(45deg,#243044 25%,transparent 25%),linear-gradient(-45deg,#243044 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#243044 75%),linear-gradient(-45deg,transparent 75%,#243044 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0;border:1px solid var(--border);border-radius:14px;height:580px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
 .desktop.light{background-color:#c5d0de;background-image:linear-gradient(45deg,#b0bec9 25%,transparent 25%),linear-gradient(-45deg,#b0bec9 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#b0bec9 75%),linear-gradient(-45deg,transparent 75%,#b0bec9 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}
 .desktop::before{content:"棋盘格=模拟壁纸 · 虚线框内产品窗必须全透明（零底色）";position:absolute;left:14px;top:12px;font-size:11px;color:#8494AE;z-index:2}
@@ -92,7 +98,7 @@ __PET_CSS_RAW__
 </head>
 <body>
 <div class="wrap">
-<h1>小su 桌面精灵 v1.3 · 动作注册表互动演示（20 动作 / 1000 帧）</h1>
+<h1>小su 桌面精灵 v1.5 · 动作注册表互动演示（25 动作 / 1250 帧）</h1>
 <p class="lead">样式与素材直接取自 <code>src/pet/pet.css</code>。产品窗<strong>写死零底色</strong>（无光晕底板、无地面投影、无面板铺底）；右侧棋盘格只是演示用模拟壁纸，虚线框内必须能看穿。静态海报 + 带 alpha 的逐帧动画 WebP 全部内联。同文档渲染，互动按钮点一次播 1.5~2.6s 后复位。</p>
 <span class="badge">生成时间 __GENERATED_AT__</span>
 <span class="badge">源 CSS sha256 __CSS_HASH__</span>
@@ -144,6 +150,16 @@ __PET_CSS_RAW__
       </div>
     </div>
     <div class="group">
+      <label>闲置新增动作（v1.4 四个 + v1.5 打哈欠；共 25 动作 / 1250 帧）</label>
+      <div class="btnrow">
+        <button type="button" data-action="squatDraw">蹲下画画</button>
+        <button type="button" data-action="wiggleDance">扭扭跳舞</button>
+        <button type="button" data-action="kickflip">滑板翻板</button>
+        <button type="button" data-action="miniGame">掌机小游戏</button>
+        <button type="button" data-action="yawn">困了打哈欠</button>
+      </div>
+    </div>
+    <div class="group">
       <label>批量</label>
       <div class="btnrow">
         <button type="button" id="demoBtn">▶ 自动演示全部</button>
@@ -190,7 +206,7 @@ __PET_LOOP_NODES__
 <table>
 <tr><th>v1.1 互动</th><th>演示中可验证</th></tr>
 <tr><td>触发式动作</td><td>每个按钮点一次播 1.5~2.6s：换姿势 + 气泡 + 脚底状态文字 + 一次性动效，播完自动复位；再点可重播，不会「闪一下就没了」</td></tr>
-<tr><td>素材与尺寸</td><td>v1.1 画布由 240×360 裁到 105×297（人物占比 38% → 87%）；v1.3.1 画布加宽到 180×297，按逐动作代表框尺度归一 + 全局幅度安全边统一坐标系；20 动作 × 50 帧均为独立位图；三档窗口整体下移，新增更小的「小」档</td></tr>
+<tr><td>素材与尺寸</td><td>历史沿革：v1.1 画布由 240×360 裁到 105×297（人物占比 38% → 87%）、v1.3.1 再加宽画布；v1.4 进包画布由历史 180×297 扩边到 240×297（左右各补 30px 全透明、纯 paste 不缩放不裁切），按逐动作代表框尺度归一 + 全局幅度安全边统一坐标系；24 动作 × 50 帧均为独立位图；三档窗口 160×136 / 198×168 / 240×204（height 不变，靠窗口加宽满足「高度主导不变式」，人物屏幕像素高不变）</td></tr>
 <tr><td>自动交互动作</td><td>请求完成庆祝、失败失落尾段、睡醒过渡、等待批准、拖拽中、闲置差分、转身张望；间隔/姿势池来自 manifest.autoActions，零负反馈</td></tr>
 <tr><td>鼠标穿透</td><td>产品侧默认关闭（整窗可交互，可拖动/右键）；开启后按立绘 alpha 命中框动态穿透，本预览页不模拟 OS 层穿透</td></tr>
 <tr><td>自动演示</td><td>「▶ 自动演示全部」依次播放招呼 → 轻碰 → 庆祝 → 失落 → 睡醒 → 等待 → 转身 → 闲置 → 拖拽 → 散步，无需逐个点</td></tr>
@@ -200,7 +216,8 @@ __PET_LOOP_NODES__
 <tr><td>自主走动</td><td>演示里窗口真的左右位移并播 walk 逐帧动画；产品侧只在 idle 且久无操作时小范围缓动，后端按当前显示器硬夹边</td></tr>
 <tr><td>请求级思考云</td><td>typing 时只有三个装饰点、不吐文案；状态仍以后端真实在途请求为准，结果级事件才出泡</td></tr>
 <tr><td>单层背景红线</td><td>__POSE_COUNT__ 个动作各只挂一张动画 WebP + 一张静态海报，带 alpha 的透明区域不会露出第二层立绘</td></tr>
-<tr><td>v1.3 动作注册表</td><td>__POSE_COUNT__ 个动作 × 50 帧 = 1000 张独立位图；每个动作有专属语义、专属素材、专属 trigger 与 priority，新增动作只在 manifest 追加一条，前端按 priority 降序查表、代码零改动</td></tr>
+<tr><td>v1.3 动作注册表（历史沿革标签）</td><td>__POSE_COUNT__ 个动作 × 50 帧；v1.4 历史为 24 动作 / 1200 帧 / 49 张；每个动作有专属语义、专属素材、专属 trigger 与 priority</td></tr>
+<tr><td>v1.5 现行动作注册表</td><td>__POSE_COUNT__ 个动作 × 50 帧 = 1250 张独立位图；进包素材 51 张 = 25 poster + 25 loop + su-blink；新增动作只在 manifest 追加一条，前端按 priority 降序查表、代码零改动（v1.5 新增闲置动作 yawn，本地 ComfyUI 生成）</td></tr>
 <tr><td>v1.3 拖拽三段</td><td>按住 → <code>lifted</code>（双脚离地、头发与双腿垂摆、整只上移 10px）；松手 → <code>landing</code>（落地缓冲）；随后回 <code>idle</code>。三段各有专属 50 帧序列，不再复用走路姿</td></tr>
 </table>
 
@@ -208,7 +225,7 @@ __PET_LOOP_NODES__
 </div>
 
 <script>
-// v1.3：状态与动作清单全部取自 manifest 注册表（20 动作 / 1000 帧），
+// 状态与动作清单全部取自 manifest 注册表（v1.5 口径：25 动作 / 1250 帧），
 // 这里只列演示入口，第三项必须是注册表里真实存在的动作名。
 const STATES = [
   ['idle', '待机中', 'idle'], ['typing', '处理中', 'typing'], ['done', '已完成', 'done'],
@@ -220,8 +237,9 @@ const STATES = [
   ['wait', '等待批准', 'wait'], ['stretch', '伸懒腰', 'stretch'],
   ['lookAround', '转头张望', 'lookAround'], ['walk', '走近', 'walk'],
 ];
-// v1.1 三档：旧大档废弃、档位整体下移；素材已裁掉透明边，同档人物视觉不缩小。
-const SIZES = { small: [120, 136, 4.0], medium: [148, 168, 3.2], large: [180, 204, 2.6] };
+// v1.4 三档：宽 160/198/240、高 136/168/204 不变；靠窗口加宽满足「高度主导不变式」，
+// 人物屏幕像素高不变。放大倍数按新宽度比例调小，避免溢出 580px 演示区。
+const SIZES = { small: [160, 136, 3.0], medium: [198, 168, 2.4], large: [240, 204, 1.9] };
 const BUBBLES = {
   idle: ['网关已就绪', 'ok'], typing: ['上游已切换', 'info'], done: ['完成 3 次请求', 'ok'],
   error: ['有请求失败', 'error'], sleep: ['小su 只播报真实状态', 'info'], offline: ['网关未运行', 'info'],
@@ -237,8 +255,12 @@ const BUBBLES = {
 };
 // 每个动作都是「一段可观察的表演」，不是常驻开关：pose / 气泡 / 状态文字 / CSS 反馈类
 // / 持续时间 / 是否真的移动窗口。pose 为 null 表示沿用当前状态的立绘。
+// 演示停留时长按素材真实时长取：最长动作 squatDraw 5018ms，统一用 5200ms 兜住，
+// 让预览页也能看到「播完整」的效果（旧值 1600~2600ms 会把动作切掉一半）。
+// 作者：孙文龙 sun
+const FULL_ACTION_MS = 5200;
 const ACTIONS = {
-  hello: { label: '挥手打招呼', pose: 'welcome', bubble: 'hello', ms: 2200 },
+  hello: { label: '挥手打招呼', pose: 'welcome', bubble: 'hello', ms: FULL_ACTION_MS },
   pat:   { label: '被摸头啦', pose: 'petted', bubble: 'pat', cls: 'petted', ms: 2000 },
   poke:  { label: '轻碰回应', pose: 'poked', bubble: 'poke', fig: 'poked', ms: 1800 },
   blink: { label: '眨了下眼', pose: null, bubble: null, cls: 'blinking', ms: 320 },
@@ -248,15 +270,22 @@ const ACTIONS = {
   drag:  { label: '按住提起', pose: 'lifted', bubble: 'drag', cls: 'dragging',
            phase: 'lifted', ms: 1800 },
   land:  { label: '松手放下', pose: 'landing', bubble: 'land', cls: 'pet-landed',
-           phase: 'landing', ms: 1500 },
+           phase: 'landing', ms: FULL_ACTION_MS },
   // v1.1 自动交互动作（参考 whale-girl）：事件反馈 / 陪伴 / 用户互动，零负反馈。
-  cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: 2600 },
-  wake:  { label: '睡醒伸懒腰', pose: 'wake', bubble: 'wake', ms: 1600 },
-  failed:{ label: '失败失落尾段', pose: 'disappointed', bubble: 'disappointed', ms: 2200 },
+  cheer: { label: '请求完成庆祝', pose: 'celebrate', bubble: 'celebrate', ms: FULL_ACTION_MS },
+  wake:  { label: '睡醒伸懒腰', pose: 'wake', bubble: 'wake', ms: FULL_ACTION_MS },
+  failed:{ label: '失败失落尾段', pose: 'disappointed', bubble: 'disappointed', ms: FULL_ACTION_MS },
   wait:  { label: '等待批准', pose: 'wait', bubble: 'wait', cls: 'pet-walking', ms: 2000 },
-  idle:  { label: '闲置伸懒腰', pose: 'stretch', bubble: 'idleVariant', ms: 2200 },
-  turn:  { label: '转身张望', pose: 'lookAround', bubble: 'turn', cls: 'pet-listening', ms: 1800 },
-  greet: { label: '点头打招呼', pose: 'greeting', bubble: 'hello', ms: 1800 },
+  idle:  { label: '闲置伸懒腰', pose: 'stretch', bubble: 'idleVariant', ms: FULL_ACTION_MS },
+  turn:  { label: '转身张望', pose: 'lookAround', bubble: 'turn', cls: 'pet-listening', ms: FULL_ACTION_MS },
+  greet: { label: '点头打招呼', pose: 'greeting', bubble: 'hello', ms: FULL_ACTION_MS },
+  // v1.4 新增 4 个动作演示入口（manifest 注册表名）。
+  squatDraw:   { label: '蹲下画画', pose: 'squatDraw', bubble: 'think', ms: FULL_ACTION_MS },
+  wiggleDance: { label: '扭扭跳舞', pose: 'wiggleDance', bubble: 'cheer', ms: FULL_ACTION_MS },
+  kickflip:    { label: '滑板翻板', pose: 'kickflip', bubble: 'hello', ms: FULL_ACTION_MS },
+  miniGame:    { label: '掌机小游戏', pose: 'miniGame', bubble: 'idleVariant', ms: FULL_ACTION_MS },
+  // v1.5 新增：打哈欠（本地 ComfyUI 生成，锁定 h_ref 归一化落包）。
+  yawn:        { label: '困了打哈欠', pose: 'yawn', bubble: 'idleVariant', ms: FULL_ACTION_MS },
 };
 
 let currentState = 'idle';
@@ -321,7 +350,7 @@ function setBubble(key) {
 function updateNow(text) {
   const [w, h, s] = SIZES[currentSize];
   now.textContent = text || ('当前：' + stateEntry()[1]);
-  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 180×297（v1.3.1 尺度统一 + 四边安全边）@2x';
+  readout.textContent = '窗口 ' + w + ' × ' + h + ' px　预览放大 ' + s + '×　素材 240×297（v1.4 左右各补 30px 全透明 + 四边安全边）@2x';
 }
 
 function syncButtons() {
@@ -620,6 +649,10 @@ def build_preview(root: Path, out: Path) -> dict:
         nonlocal total_kb
         name = match.group(1)
         path = pet_dir / f"{name}.webp"
+        # v1.4：新动作尚未落包的中间态给出可读错误，而不是裸 FileNotFoundError
+        if not path.is_file():
+            raise ValueError(
+                "预览页内联素材缺失：%s.webp（v1.4 新动作落包后再重跑本脚本）" % name)
         data = path.read_bytes()
         replaced.append(f"{name}.webp ({len(data)} B)")
         total_kb += len(data) / 1024

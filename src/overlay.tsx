@@ -1,18 +1,13 @@
-// 流量悬浮窗 / 桌面精灵（小酥）：置顶 + 半透明 + 鼠标穿透。
-// 数据与仪表盘「请求统计」同源（get_status.traffic + last_proxy_*），无假数据。
-// 精灵模式渲染 src/pet/PetStage，原流量 HUD 在关闭精灵时回退，两者并存。
+// 桌面精灵（小酥）透明窗入口：置顶 + 透明 + 元素级鼠标穿透。
+// 流量 HUD 悬浮窗已废弃，本入口只渲染 PetStage，不再有模式切换与 HUD 分支。
+// 窗口 label / 命令名 / 事件名沿用历史标识，保证拖动、右键、视线、光标链路零改动。
 import { useEffect, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, listen, getCurrentWindow } from './transport';
 import './overlay.css';
-import { t } from './i18n';
 import { PetStage } from './pet/PetStage';
 import type { OverlayConfigView, OverlayStatus } from './pet/config';
-
-const fmt = (n: number) => (n >= 10000 ? `${(n / 10000).toFixed(1)}w` : n.toLocaleString());
 
 function Overlay() {
   const [cfg, setCfg] = useState<OverlayConfigView | null>(null);
@@ -30,6 +25,7 @@ function Overlay() {
   }, []);
 
   useEffect(() => {
+    // 精灵状态只认真实在途请求；轮询本身不产生任何状态通知。
     const poll = () => invoke<OverlayStatus>('get_status').then(setStatus).catch(() => undefined);
     poll();
     const timer = window.setInterval(poll, 2000);
@@ -41,7 +37,8 @@ function Overlay() {
     setBusy(true);
     try {
       const pos = await getCurrentWindow().outerPosition();
-      await invoke('set_overlay_config', { cfg: { ...cfg, x: pos.x, y: pos.y, edit: false } });
+      // 只发本次改动的字段，不覆盖设置页 / 菜单里的其它配置。
+      await invoke('patch_overlay_config', { patch: { x: pos.x, y: pos.y, edit: false } });
     } catch {
       // 窗口被关闭等场景：静默即可
     } finally {
@@ -54,116 +51,15 @@ function Overlay() {
     void invoke('overlay_start_drag').catch(() => undefined);
   };
 
-  // 精灵模式与原 HUD 完全并存：关掉开关即回到今天的流量悬浮窗，可回退
-  if (cfg?.pet_enabled) {
-    return (
-      <PetStage
-        cfg={cfg}
-        status={status}
-        busy={busy}
-        onSave={() => void savePos()}
-        onDrag={startDrag}
-      />
-    );
-  }
-
-  const traffic = status?.traffic;
-  const running = status?.running ?? false;
-  const today = traffic?.today_requests ?? 0;
-  const total = traffic?.total_requests ?? 0;
-  const okRate =
-    total > 0 && traffic
-      ? Math.round((traffic.success_count / total) * 100)
-      : 100;
-  const client = status?.last_proxy_client?.trim() || '';
-  const channel = status?.last_proxy_provider?.trim() || '';
-  const isRow = cfg?.layout === 'row';
-  const showReq = cfg?.show_requests !== false;
-  const showTok = cfg?.show_tokens !== false;
-  const showClient = cfg?.show_client !== false;
-  const showChannel = cfg?.show_channel !== false;
-  const empty = today === 0 && !client && !channel;
-
+  if (!cfg) return null;
   return (
-    <div
-      className={cfg?.edit ? 'overlay-box editing' : 'overlay-box'}
-      style={{ background: `rgba(7, 11, 20, ${cfg?.opacity ?? 0.7})` }}
-    >
-      {cfg?.edit && (
-        <div className="overlay-edit-bar">
-          <button
-            type="button"
-            className="overlay-save"
-            onClick={() => void savePos()}
-            disabled={busy}
-          >
-            {busy ? '…' : t('overlay.save')}
-          </button>
-          <span
-            className="overlay-grip"
-            onMouseDown={startDrag}
-            title={t('overlay.drag')}
-            aria-label={t('overlay.drag')}
-          />
-        </div>
-      )}
-
-      <div className={isRow ? 'overlay-body row' : 'overlay-body'}>
-        {!running ? (
-          <div className="overlay-idle">{t('overlay.off')}</div>
-        ) : empty ? (
-          <div className="overlay-idle">{t('overlay.idle')}</div>
-        ) : (
-          <>
-            {(showReq || showTok) && (
-              <div className="overlay-block">
-                {showReq && (
-                  <div className="overlay-line">
-                    <span className="overlay-k">{t('overlay.today')}</span>
-                    <span className="overlay-v">{fmt(today)}</span>
-                    {total > 0 && (
-                      <span className={okRate < 90 ? 'overlay-fail' : 'overlay-ok'}>
-                        {okRate}%
-                      </span>
-                    )}
-                  </div>
-                )}
-                {showTok && traffic && (
-                  <div className="overlay-line">
-                    <span className="overlay-k">{t('overlay.flow')}</span>
-                    <span className="overlay-v tabular">
-                      ↑{fmt(traffic.today_input_tokens)}
-                      <span className="overlay-dim">/</span>
-                      ↓{fmt(traffic.today_output_tokens)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-            {(showClient || showChannel) && (
-              <div className="overlay-block">
-                {showClient && (
-                  <div className="overlay-line">
-                    <span className="overlay-k">{t('overlay.source')}</span>
-                    <span className="overlay-v trunc" title={client || '—'}>
-                      {client || '—'}
-                    </span>
-                  </div>
-                )}
-                {showChannel && (
-                  <div className="overlay-line">
-                    <span className="overlay-k">{t('overlay.channel')}</span>
-                    <span className="overlay-v trunc" title={channel || '—'}>
-                      {channel || '—'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+    <PetStage
+      cfg={cfg}
+      status={status}
+      busy={busy}
+      onSave={() => void savePos()}
+      onDrag={startDrag}
+    />
   );
 }
 

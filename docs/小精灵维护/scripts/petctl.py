@@ -4,18 +4,21 @@
 
 编写人员：孙测测
 作用用途：
-  把 v1.3 定版生产链、验收链、环境自检、副本同步、一键回归收敛成一条命令。
-  本目录 scripts/ 下的 10 个脚本是 docs/孙测测/scripts/ 定版脚本的只读副本，
-  两者目录层级同为 docs/<目录>/scripts/，因此脚本内按 __file__ 推导的项目根、
-  留痕目录、master 路径全部保持一致，副本可直接执行。
-  doctor 会逐项核对副本与原件 sha256，防止出现「两份脚本不同步」的隐形分叉。
-适用项目：SUGT 桌面精灵 v1.3.1（20 动作 / 1000 帧 / 180×297 / 56 色）
+  把 v1.3 定版生产链、验收链、人物尺度量测、环境自检、副本同步、一键回归
+  收敛成一条命令。本目录 scripts/ 下的 13 个脚本是 docs/孙测测/scripts/ 定版
+  脚本的只读副本（v1.3 链路 10 个 + v1.4 扩边 / 落包桥接 2 个 + v1.5 人物
+  尺度量测 1 个），两者目录层级同为 docs/<目录>/scripts/，因此脚本内按
+  __file__ 推导的项目根、留痕目录、master 路径全部保持一致，副本可直接执行。
+  doctor 会逐项核对副本与原件 sha256，防止出现「两份脚本不同步」的隐形分叉；
+  并核对归一化基准里的身高素材指纹，防止素材变了却没重跑量测。
+适用项目：SUGT 桌面精灵 v1.5（25 动作 / 1250 帧 / 240×297 / 56 色）
 创建日期：2026-11-10
 复用方式：
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py doctor
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py all
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py produce --phase keys --action lifted
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py gen --check
+  /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py metrics --plan
   /usr/local/bin/python3.13 docs/小精灵维护/scripts/petctl.py sync
   除 doctor / sync / snapshot / all 外，其余子命令的额外参数原样透传给对应脚本。
 退出码约定：0 全部成功 / 1 存在检查或执行不通过 / 2 环境、读取或解析失败
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -40,7 +44,8 @@ _MASTER = _ROOT / "docs" / "孙测测" / "traces" / "assets" / "su-cel-good-fixe
 _PET_ASSETS = _ROOT / "src" / "assets" / "pet"
 _FINAL_SNAPSHOT = _HERE.parent / "assets" / "final"
 
-# 定版脚本白名单：只收录 v1.3 最终链路，试片 / 废弃脚本一律不进维护目录。
+# 定版脚本白名单：v1.3 最终链路 + v1.4 扩边/落包桥接 + v1.5 人物尺度量测；
+# 试片 / 废弃脚本一律不进维护目录。
 FINAL_SCRIPTS = (
     "comfyui_curl_http.py",
     "comfyui_pet_action_series.py",
@@ -52,6 +57,9 @@ FINAL_SCRIPTS = (
     "check_pet_pose_series.py",
     "check_pet_keyvisual_cutout.py",
     "check_pet_cutout_asset.py",
+    "pet_v14_pad_canvas.py",
+    "pet_v14_finalize_assets.py",
+    "pet_metrics.py",
 )
 
 # 子命令 → 定版脚本。透传型命令的参数由调用方追加。
@@ -66,6 +74,7 @@ COMMANDS = {
     "cutout": "check_pet_keyvisual_cutout.py",
     "asset": "check_pet_cutout_asset.py",
     "produce": "comfyui_pet_action_series.py",
+    "metrics": "pet_metrics.py",
 }
 
 # 一键回归顺序：gate 依赖 dist 产物，必须排在 npm run build 之后。
@@ -73,7 +82,9 @@ ALL_STEPS = (
     ("生成 manifest 派生常量", ("gen",)),
     ("生成 v1.3 互动预览页", ("preview",)),
     ("产物契约自检", ("check", "--check")),
-    ("落包 1000 帧逐帧验收", ("frames",)),
+    ("落包逐帧验收（帧数由 manifest 推导）", ("frames",)),
+    ("人物尺度量测与基线对照", ("metrics", "--quiet", "--compare",
+                          "docs/小精灵维护/config/normalize-baseline.json")),
     ("前端单测", ("@npm", "test")),
     ("生产构建", ("@npm", "run", "build")),
     ("全链路契约门禁", ("gate",)),
@@ -83,6 +94,16 @@ ALL_STEPS = (
 def sha256(path: Path) -> str:
     """返回文件 sha256；用于副本与原件的一致性核对。"""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def assets_fingerprint() -> str:
+    """与 SCR-024 同式的素材指纹；素材一变，身高基线即应重跑。"""
+    digest = hashlib.sha256()
+    files = sorted(_PET_ASSETS.glob("*.webp"))
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return "%s:%d" % (digest.hexdigest(), len(files))
 
 
 def run_script(name: str, extra: list[str]) -> int:
@@ -120,7 +141,7 @@ def do_sync() -> int:
 
 
 def do_snapshot() -> int:
-    """把当前进包的 41 张 WebP 复制到维护目录存档，不影响唯一进包路径。"""
+    """把当前进包 WebP 复制到维护目录存档，不影响唯一进包路径。"""
     files = sorted(_PET_ASSETS.glob("*.webp"))
     if not files:
         print("[失败] src/assets/pet/ 无 WebP 素材", file=sys.stderr)
@@ -180,16 +201,38 @@ def do_doctor() -> int:
 
     files = sorted(_PET_ASSETS.glob("*.webp"))
     total = sum(path.stat().st_size for path in files)
-    line(len(files) == 41, "进包素材 41 张", "实际 %d 张" % len(files))
+    # 期望张数由 manifest 推导：每动作 poster + loop，再加 extraFrames。
+    # 新增动作时只改真相源，用 doctor 的「进包素材 N 张」与落包复核验证。
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    expected = 2 * len(data["poses"]) + len(data.get("extraFrames", []))
+    line(len(files) == expected, "进包素材 %d 张" % expected,
+         "实际 %d 张" % len(files))
     line(total <= 8 * 1024 * 1024, "整包 ≤ 8 MB",
          "%d B = %.3f MB" % (total, total / 1e6))
     line(bool(shutil.which("npm")), "npm 可用（前端单测 / 构建）")
+
+    # 归一化基准与身高素材指纹：素材换了却不重跑量测，会让身高基线变成过期证据。
+    fingerprint = assets_fingerprint()
+    normalize_baseline = _HERE.parent / "config" / "normalize-baseline.json"
+    line(normalize_baseline.is_file(), "归一化基准存在",
+         str(normalize_baseline))
+    if normalize_baseline.is_file():
+        try:
+            nb = json.loads(normalize_baseline.read_text(encoding="utf-8"))
+            line(all(key in nb for key in ("hRef", "footY", "limits", "metrics")),
+                 "归一化基准字段齐全")
+            expected_fp = nb.get("metrics", {}).get("assetsSha256")
+            line(expected_fp == fingerprint, "身高基线素材指纹与现行一致",
+                 "基线 %s / 实测 %s（不一致时重跑 metrics 并更新基线）"
+                 % (expected_fp, fingerprint))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            line(False, "归一化基准可解析", str(exc))
 
     work = os.environ.get("SUGT_PET_WORK")
     if work:
         line(Path(work).is_dir(), "生产工作目录 SUGT_PET_WORK 存在", work)
     else:
-        print("[提示] 未设置 SUGT_PET_WORK；重生成 1000 帧前请指向生产工作目录")
+        print("[提示] 未设置 SUGT_PET_WORK；重生成素材前请指向生产工作目录")
     base = os.environ.get("SUGT_COMFYUI_BASE", "http://192.168.31.84:8188")
     print("[提示] ComfyUI 地址：%s（仅 produce 需要，doctor 不探测服务）" % base)
 
@@ -218,10 +261,10 @@ def do_all(extra: list[str]) -> int:
 def main() -> int:
     """解析子命令并调度；未知参数透传给被调脚本。"""
     parser = argparse.ArgumentParser(
-        description="小精灵 v1.3 维护统一入口",
+        description="小精灵 v1.5 维护统一入口",
         usage="petctl.py <命令> [原脚本参数 ...]",
         epilog="命令：doctor / gen / preview / reencode / check / frames / gate / "
-               "series / cutout / asset / produce / sync / snapshot / all",
+               "series / cutout / asset / produce / metrics / sync / snapshot / all",
     )
     parser.add_argument("command", help="子命令")
     args, extra = parser.parse_known_args()

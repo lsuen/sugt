@@ -1,5 +1,7 @@
 // 桌面精灵（小酥）前端共享类型、默认值与工具函数。
-// SettingsPanel / overlay / PetStage 统一从这里取，避免与后端 model.rs 的 OverlayConfig 三处重复。
+// 流量 HUD 悬浮窗已废弃：本文件只描述精灵一个功能域，不再有模式切换与回退尺寸。
+// 物理标识（窗口 label / overlay.html / get|set_overlay_config）保持不动，
+// 让拖动、右键、视线、光标等既有 IPC 链路零改动。
 import type { TKey } from '../i18n';
 import { PET_IMAGE_SIZE } from './petManifest.generated';
 
@@ -7,17 +9,11 @@ export type OverlayConfigView = {
   enabled: boolean;
   opacity: number;
   edit: boolean;
-  show_tokens: boolean;
-  show_client: boolean;
-  show_channel: boolean;
-  show_requests: boolean;
   x: number;
   y: number;
-  layout: 'column' | 'row';
   width: number;
   height: number;
-  // 桌面精灵模式：与后端 OverlayConfig 对应
-  pet_enabled: boolean;
+  // 桌面精灵行为开关：与后端 model.rs::OverlayConfig 对应
   pet_interactive: boolean;
   pet_snap: boolean;
   pet_sleep_after_secs: number;
@@ -31,23 +27,17 @@ export type OverlayConfigView = {
   pet_click_through: boolean;
 };
 
-// -1 表示「未定位」，由后端 overlay::apply 创建时按模式落点（精灵右下角）
-// 产品默认：开悬浮窗 + 开小酥 + 全功能互动 + 不穿透
+// -1 表示「未定位」，由后端 overlay::apply 创建时落到主屏右下角
+// 产品默认：开小酥 + 全功能互动 + 不穿透
 export const DEFAULT_OVERLAY: OverlayConfigView = {
   enabled: true,
-  // 精灵默认不透明；关精灵回退 HUD 时仍可读此字段，HUD 可再调低
+  // 精灵默认不透明；该字段只作用于立绘，不再有 HUD 底板
   opacity: 1,
   edit: false,
-  show_tokens: true,
-  show_client: true,
-  show_channel: true,
-  show_requests: true,
   x: -1,
   y: -1,
-  layout: 'column',
-  width: 148,
+  width: 198,
   height: 168,
-  pet_enabled: true,
   pet_interactive: true,
   pet_snap: true,
   pet_sleep_after_secs: 300,
@@ -83,11 +73,12 @@ export type OverlayStatus = {
 export type Bubble = { id: number; text: string; kind: 'ok' | 'error' | 'info' };
 
 // v1.1 三档：旧「大」(220×250) 废弃，旧中降为新大、旧小降为新中，新增更小的小档。
-// 素材已裁掉透明边（v1.3 为 160×297），同档下人物视觉反而更大，屏幕占用矩形更小。
+// v1.4 画布 240×297（左右各补 30px 全透明）；三档窗口按 4/3 加宽保持 contain 高度主导，
+// 人物屏幕像素高不变，宽出的部分全是透明边、不挡点击。
 export const PET_SIZES = [
-  { key: 'small', label: 'set.petSizeSmall' as TKey, width: 120, height: 136 },
-  { key: 'medium', label: 'set.petSizeMedium' as TKey, width: 148, height: 168 },
-  { key: 'large', label: 'set.petSizeLarge' as TKey, width: 180, height: 204 },
+  { key: 'small', label: 'set.petSizeSmall' as TKey, width: 160, height: 136 },
+  { key: 'medium', label: 'set.petSizeMedium' as TKey, width: 198, height: 168 },
+  { key: 'large', label: 'set.petSizeLarge' as TKey, width: 240, height: 204 },
 ] as const;
 
 // 沿用 v2 key：老存档 medium/large 自然落到「新中/新大」，正好是档位整体下移。
@@ -104,6 +95,31 @@ export const readPetSize = (): (typeof PET_SIZES)[number] => {
     return DEFAULT_PET_SIZE;
   }
 };
+
+export type PetSizePreset = (typeof PET_SIZES)[number];
+
+export function writePetSize(size: PetSizePreset): void {
+  try {
+    window.localStorage.setItem(PET_SIZE_STORAGE_KEY, size.key);
+  } catch {
+    // 隐私模式无 localStorage 时仍应用本次尺寸
+  }
+}
+
+/** 只改立绘档位。停靠才动坐标。 */
+export function petSizePatch(size: PetSizePreset): Pick<OverlayConfigView, 'width' | 'height'> {
+  writePetSize(size);
+  return { width: size.width, height: size.height };
+}
+
+/**
+ * 精灵启用开关只写 `{ enabled }`：窗口尺寸、落点、不透明度与行为开关
+ * 全部留给用户在各自设置项里独立维护，切换启用态不再连带改写。
+ * HUD 废弃前的模式补丁会连带强改这些字段，已随之删除。
+ */
+export const petEnabledPatch = (enabled: boolean): Pick<OverlayConfigView, 'enabled'> => ({
+  enabled,
+});
 
 export const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));

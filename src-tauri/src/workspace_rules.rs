@@ -124,18 +124,11 @@ pub fn inject_into_request_body(
         return body;
     };
     let nudge = request_nudge(rules);
-    let mut nudged = false;
-    match shape {
-        RequestShape::OpenAiChat => {
-            nudged = inject_openai_chat(&mut value, &text, nudge.as_deref());
-        }
-        RequestShape::AnthropicMessages => {
-            nudged = inject_anthropic(&mut value, &text, nudge.as_deref());
-        }
-        RequestShape::OpenAiResponses => {
-            nudged = inject_responses(&mut value, &text, nudge.as_deref());
-        }
-    }
+    let nudged = match shape {
+        RequestShape::OpenAiChat => inject_openai_chat(&mut value, &text, nudge.as_deref()),
+        RequestShape::AnthropicMessages => inject_anthropic(&mut value, &text, nudge.as_deref()),
+        RequestShape::OpenAiResponses => inject_responses(&mut value, &text, nudge.as_deref()),
+    };
     info!(
         shape = ?shape,
         inject_chars = text.len(),

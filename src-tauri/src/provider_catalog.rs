@@ -46,6 +46,21 @@ pub fn models_list_base_for_vendor(entry: &VendorCatalogEntry) -> Option<&'stati
     }
 }
 
+/// 套餐型端点（Agent/Coding Plan 等）没有公开的 /models 列表接口。
+/// 实测（2026-11-20 ark-178 排查）：/api/plan/v3/chat/completions 200 可用，
+/// 但 /api/plan/v3/models 404、/api/v3/models 用套餐 key 401——
+/// 提前返回明确引导，避免发注定失败的请求让用户只看到 404。
+pub fn models_discovery_unsupported_reason(base_url: &str) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    if base.contains("/api/plan/") || base.ends_with("/plan/v3") {
+        return Some(
+            "该接入点为套餐（Agent/Coding Plan）端点，无公开模型列表接口，请手动填写 Model Name"
+                .to_string(),
+        );
+    }
+    None
+}
+
 pub static VENDORS: [VendorCatalogEntry; 12] = [
     VendorCatalogEntry {
         id: "modelscope",
@@ -147,6 +162,21 @@ mod tests {
     fn resolves_volcengine_v3_models_url() {
         let url = resolve_models_list_url("https://ark.cn-beijing.volces.com/api/v3");
         assert_eq!(url, "https://ark.cn-beijing.volces.com/api/v3/models");
+    }
+
+    #[test]
+    fn plan_endpoint_is_marked_unsupported() {
+        // ark-178 实际配置形态
+        let reason = models_discovery_unsupported_reason(
+            "https://ark.cn-beijing.volces.com/api/plan/v3",
+        );
+        assert!(reason.is_some());
+        // 标准端点不受影响
+        assert!(models_discovery_unsupported_reason(
+            "https://ark.cn-beijing.volces.com/api/v3"
+        )
+        .is_none());
+        assert!(models_discovery_unsupported_reason("https://api.deepseek.com/v1").is_none());
     }
 
     #[test]

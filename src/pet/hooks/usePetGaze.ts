@@ -1,14 +1,11 @@
-// 桌面精灵视线跟随 + 可选元素级鼠标穿透。
-// 穿透模式下 WebView 收不到 pointermove，因此统一轮询后端 pet_global_cursor；
-// 视线与「光标是否落在立绘/菜单上」共用同一份光标样本，避免重复 IPC。
+// 桌面精灵视线跟随。透明区始终穿透，WebView 收不到 pointermove，
+// 因此统一轮询后端 pet_global_cursor；视线与命中共用同一份光标样本。
 //
-// 默认（pet_click_through=false）整窗常驻可交互：拖拽、右键菜单都不受阻。
-// 显式开启穿透后，铁律是只有立绘 / 右键菜单 / 拖动中才 pet_set_clickable(true)；
-// 绝不能因 menuOpen 就把整窗解穿透——那会把侧栏空白与透明边距变成「透明墙」。
+// 透明区始终穿透：只有立绘命中框、打开的菜单、拖动中才 pet_set_clickable(true)。
+// 靠近、menuOpen 本身都不能把整窗解开，否则侧栏空白和透明边会变成点击墙。
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject, RefObject } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke, getCurrentWindow } from '../../transport';
 import { clamp, figureHitRect, FULL_HITBOX, pointInsideFigure } from '../config';
 import {
   PET_AUTO_ACTIONS,
@@ -25,8 +22,6 @@ type Props = {
   gazeEnabled: boolean;
   interactive: boolean;
   edit: boolean;
-  /** 鼠标穿透设置项：默认 false，整窗可交互；true 时启用元素级动态穿透 */
-  clickThrough: boolean;
   figureRef: RefObject<HTMLDivElement>;
   stageRef: RefObject<HTMLDivElement>;
   dragActive: MutableRefObject<boolean>;
@@ -41,7 +36,6 @@ export function usePetGaze({
   gazeEnabled,
   interactive,
   edit,
-  clickThrough,
   figureRef,
   stageRef,
   dragActive,
@@ -61,17 +55,17 @@ export function usePetGaze({
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    // 穿透是设置项且默认关闭：关闭时整窗常驻可交互，拖拽/右键菜单不受影响；
-    // 只有显式开启时才切回「按立绘 alpha 命中框」的元素级穿透。
-    const passthrough = clickThrough && interactive && !edit;
+    // 透明区始终穿透。编辑态要能点保存和拖柄，才整窗可点。
+    const passthrough = interactive && !edit;
 
     const setClickable = (next: boolean) => {
       if (clickableRef.current === next) return;
       clickableRef.current = next;
       void invoke('pet_set_clickable', { enabled: next }).catch(() => undefined);
     };
-    if (!passthrough) setClickable(true);
-    // 视线与穿透都关闭时无需轮询，整窗保持可交互。
+    if (!passthrough) setClickable(edit);
+    else setClickable(false);
+    // 视线与互动都关闭时不再轮询。
     if (!gazeEnabled && !interactive) return;
 
     if (!gazeEnabled) {
@@ -165,20 +159,14 @@ export function usePetGaze({
     };
 
     const hitMenu = (clientX: number, clientY: number) => {
-      const menu = stage!.querySelector('.pet-menu');
+      const menu = document.querySelector('.pet-menu');
       if (!menu) return false;
       return pointInsideFigure(clientX, clientY, menu.getBoundingClientRect());
     };
 
     const updateClickThrough = (clientX: number, clientY: number) => {
-      // 默认不穿透：整窗常驻可交互，无需再做立绘命中框判定。
       if (!passthrough) {
-        setClickable(true);
-        return;
-      }
-      // 编辑态始终可点击（保存按钮 / 拖柄不在立绘命中框内）
-      if (edit) {
-        setClickable(true);
+        setClickable(edit);
         return;
       }
       if (!interactive) {
@@ -200,9 +188,7 @@ export function usePetGaze({
         ? pointInsideFigure(clientX, clientY, figureBox)
         : false;
       const overMenu = hitMenu(clientX, clientY);
-      // 贴脸时提前解穿透，否则右键按下瞬间窗口还是穿透，contextmenu 进不来
-      const approaching = !menuOpen.current && gazeRef.current.near > 0.4;
-      const next = overFigure || overMenu || dragActive.current || approaching;
+      const next = overFigure || overMenu || dragActive.current;
       setClickable(next);
 
       // 菜单打开后离开立绘+菜单才关；给 450ms 宽限，避免移向菜单项途中被关掉
@@ -214,7 +200,7 @@ export function usePetGaze({
           menuLeaveTimer = window.setTimeout(() => {
             menuLeaveTimer = 0;
             if (!cancelled) onMenuDismissRef.current?.();
-          }, 450);
+          }, 800);
         }
       }
     };
@@ -237,13 +223,15 @@ export function usePetGaze({
 
     const pollGlobal = () => {
       if (cancelled) return;
-      if (document.hidden || Date.now() - lastLocalMove < 80) {
+      // 窗口正在穿透时收不到 pointermove，必须继续问全局光标，否则身体永远点不中。
+      if (document.hidden || (clickableRef.current && Date.now() - lastLocalMove < 80)) {
         schedulePoll();
         return;
       }
       void invoke<[number, number]>('pet_global_cursor')
         .then((cursor) => {
-          if (cancelled) return;
+          // 请求发出后窗口可能已隐藏；丢弃这次迟到样本，不再改视线或发穿透 IPC（QD-04）。
+          if (cancelled || document.hidden) return;
           const factor = window.devicePixelRatio > 0 ? window.devicePixelRatio : scale;
           const clientX = cursor[0] / factor;
           const clientY = cursor[1] / factor;
@@ -264,8 +252,6 @@ export function usePetGaze({
     const onLeave = () => {
       if (gazeEnabled && Date.now() - lastLocalMove < 120) return;
       if (gazeEnabled) aim(0, 0, 0);
-      if (passthrough && !dragActive.current) setClickable(false);
-      if (menuOpen.current) onMenuDismissRef.current?.();
     };
 
     const scan = () => {
@@ -293,9 +279,9 @@ export function usePetGaze({
       window.clearTimeout(resetTimer);
       window.clearTimeout(menuLeaveTimer);
       stage.classList.remove('nearby', 'pet-listening', 'pet-walking');
-      setClickable(!passthrough);
+      setClickable(false);
     };
-  }, [gazeEnabled, interactive, edit, clickThrough, figureRef, stageRef,
+  }, [gazeEnabled, interactive, edit, figureRef, stageRef,
       dragActive, menuOpen, onNearTouch, onNear]);
 
   return { gazeRef, nearListening, nearWalking };

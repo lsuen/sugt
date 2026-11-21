@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { FileSearch, FolderOpen, Pencil, Plus, PlugZap, Search, Settings2, ShieldCheck, Trash2, Unplug, Wrench } from 'lucide-react';
 import { TakeoverProfileModal } from './TakeoverProfileModal';
 import { TakeoverPreviewModal } from './TakeoverPreviewModal';
 import { AgentDiscoverModal } from './AgentDiscoverModal';
 import { AgentAdvancedPanel } from './AgentAdvancedPanel';
+import { ConfirmModal } from './ConfirmModal';
 import { t } from './i18n';
 import { ModalPortal } from './ModalPortal';
 
@@ -75,6 +76,8 @@ export function TakeoverProfilesSection({
   const [previewTarget, setPreviewTarget] = useState<TakeoverProfileView | null>(null);
   const [envPathDraft, setEnvPathDraft] = useState('');
   const [envSaving, setEnvSaving] = useState(false);
+  // 删除接管档案：用 state 驱动应用内确认框，替换原生 window.confirm。
+  const [deleteTarget, setDeleteTarget] = useState<TakeoverProfileView | null>(null);
 
   const reload = () =>
     invoke<TakeoverProfileView[]>('list_takeover_profiles').then(setProfiles).catch(() => undefined);
@@ -127,8 +130,14 @@ export function TakeoverProfilesSection({
       await reload();
     }, t('client.toastReleased', { name }));
 
-  const remove = (p: TakeoverProfileView) => {
-    if (!window.confirm(t('client.confirmDelete', { name: p.name }))) return;
+  // 点击删除只打开确认框；取消仅关闭、无副作用。
+  const requestRemove = (p: TakeoverProfileView) => setDeleteTarget(p);
+
+  // 确认后沿用原有的 delete_takeover_profile → reload() → toastDeleted 行为。
+  const confirmRemove = () => {
+    const p = deleteTarget;
+    if (!p) return;
+    setDeleteTarget(null);
     run(async () => {
       await invoke('delete_takeover_profile', { profileId: p.id });
       await reload();
@@ -226,7 +235,7 @@ export function TakeoverProfilesSection({
             busy={busy}
             onRelease={() => release(p.id, p.name)}
             onEdit={() => openEdit(p)}
-            onDelete={() => remove(p)}
+            onDelete={() => requestRemove(p)}
             onEnv={() => openEnv(p)}
             onAdvanced={() => setAdvancedId(p.id)}
             onPreview={() => setPreviewTarget(p)}
@@ -359,6 +368,17 @@ export function TakeoverProfilesSection({
           pushToast={pushToast}
         />
       )}
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title={deleteTarget ? t('client.confirmDelete', { name: deleteTarget.name }) : t('common.confirmTitle')}
+        body={t('client.confirmDeleteBody')}
+        danger
+        busy={busy}
+        confirmLabel={t('common.confirmOk')}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={confirmRemove}
+      />
     </div>
   );
 }

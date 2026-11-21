@@ -92,6 +92,7 @@ impl ProviderConfig {
         mask_secret(&self.api_key)
     }
 
+    /// Agent 看到的模型名。没填别名时固定为 `sutai`，不跟随上游模型名。
     pub fn public_model_id(&self) -> String {
         self.model_alias
             .as_ref()
@@ -173,6 +174,57 @@ pub struct AppConfig {
     /// 单次等待上限（毫秒）。空表示 60 秒。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_retry_single_ms: Option<u64>,
+    /// 日志自动清理保留天数；0 表示不自动清理。默认 7，上限 90。
+    #[serde(default = "default_log_retention_days")]
+    pub log_retention_days: u32,
+    /// 是否启用局域网 WebUI 管理面板。默认关闭，关闭时不监听、不占内存。
+    #[serde(default)]
+    pub webui_enabled: bool,
+    /// WebUI 监听端口，默认 8788（与网关 8787 分离）。
+    #[serde(default = "default_webui_port")]
+    pub webui_port: u16,
+    /// 免费通道获取模型列表后是否逐路由真实测速（默认开启）。
+    #[serde(default = "default_free_models_fetch_and_test")]
+    pub free_models_fetch_and_test: bool,
+    /// 自定义通道获取模型后是否逐模型真实测试（默认关闭）。
+    #[serde(default)]
+    pub custom_models_fetch_and_test: bool,
+    /// 用户已确认实验·免费通道免责声明。
+    #[serde(default)]
+    pub experimental_free_disclaimer_accepted: bool,
+    /// 闲时自动对免费通道路由池测速（默认关；会打公开源）。
+    #[serde(default)]
+    pub experimental_free_idle_probe_enabled: bool,
+    /// 闲时探测间隔（秒）。默认 1800；下限 300。
+    #[serde(default = "default_experimental_free_idle_probe_interval_secs")]
+    pub experimental_free_idle_probe_interval_secs: u64,
+    /// 闲时/手动测速后按 t/s（其次延迟）自动切到当前最优路由。
+    #[serde(default)]
+    pub experimental_free_auto_rotate: bool,
+}
+
+fn default_webui_port() -> u16 {
+    8788
+}
+
+fn default_free_models_fetch_and_test() -> bool {
+    true
+}
+
+fn default_experimental_free_idle_probe_interval_secs() -> u64 {
+    1800
+}
+
+/// 闲时探测间隔下限（秒）。
+pub const MIN_EXPERIMENTAL_FREE_IDLE_PROBE_INTERVAL_SECS: u64 = 300;
+
+/// 日志保留期默认值（天）。
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 7;
+/// 日志保留期上限（天）；设置页输入会被夹在这个范围内。
+pub const MAX_LOG_RETENTION_DAYS: u32 = 90;
+
+fn default_log_retention_days() -> u32 {
+    DEFAULT_LOG_RETENTION_DAYS
 }
 
 /// 走网关的 agent 共享纪律：规则文本注入模型上下文；webhook 仅留本地代发。
@@ -323,40 +375,28 @@ impl WorkspaceRules {
     }
 }
 
-/// 流量悬浮窗配置：置顶 + 半透明 + 鼠标穿透，实时显示请求统计同源数据
+/// 桌面精灵（小酥）窗口配置：置顶 + 透明 + 元素级穿透。
+/// 流量 HUD 悬浮窗已废弃，本结构只服务精灵一个功能域；旧配置里的
+/// `show_*` / `layout` / `pet_enabled` 由 serde 忽略，升级时不会丢弃其它设置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayConfig {
-    /// 默认开启：产品默认就是桌面精灵全功能
+    /// 启用桌面精灵：整窗唯一开关（旧配置的同名语义为「整窗」）
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 窗口整体不透明度 0.1~1.0
+    /// 立绘不透明度 0.1~1.0
     #[serde(default = "default_overlay_opacity")]
     pub opacity: f64,
-    /// 编辑模式：关闭鼠标穿透以便拖动窗口（会话性，异常退出后下次启动仍可交互）
+    /// 编辑模式：关闭鼠标穿透以便拖动窗口 / 点保存（会话性）
     #[serde(default)]
     pub edit: bool,
-    #[serde(default = "default_true")]
-    pub show_tokens: bool,
-    #[serde(default = "default_true")]
-    pub show_client: bool,
-    #[serde(default = "default_true")]
-    pub show_channel: bool,
-    #[serde(default = "default_true")]
-    pub show_requests: bool,
     #[serde(default = "default_overlay_x")]
     pub x: i32,
     #[serde(default = "default_overlay_y")]
     pub y: i32,
-    /// 布局方向：row（横排）/ column（竖排）
-    #[serde(default = "default_overlay_layout")]
-    pub layout: String,
     #[serde(default = "default_overlay_width")]
     pub width: f64,
     #[serde(default = "default_overlay_height")]
     pub height: f64,
-    /// 桌面精灵模式：默认开启；关闭时回退流量 HUD
-    #[serde(default = "default_true")]
-    pub pet_enabled: bool,
     /// 精灵互动：悬停/点击/拖动；默认开启（全功能）
     #[serde(default = "default_true")]
     pub pet_interactive: bool,
@@ -395,18 +435,12 @@ impl Default for OverlayConfig {
             enabled: true,
             opacity: default_overlay_opacity(),
             edit: false,
-            show_tokens: default_true(),
-            show_client: default_true(),
-            show_channel: default_true(),
-            show_requests: default_true(),
-            // -1 表示「未定位」，由 overlay::apply 创建窗口时按模式落点（精灵右下角）
+            // -1 表示「未定位」，由 overlay::apply 创建窗口时落到主屏右下角
             x: -1,
             y: -1,
-            layout: default_overlay_layout(),
             // 精灵默认紧凑窗：贴合立绘，减少透明命中框
             width: default_pet_width(),
             height: default_pet_height(),
-            pet_enabled: true,
             pet_interactive: true,
             pet_snap: true,
             pet_sleep_after_secs: default_pet_sleep_after_secs(),
@@ -418,6 +452,50 @@ impl Default for OverlayConfig {
             pet_roam: true,
             pet_click_through: false,
         }
+    }
+}
+
+/// 按域增量补丁：只携带本次真正改动的字段。
+/// 多窗口（设置页 / 精灵菜单 / 透明窗保存位置）并发写入时，全量快照会互相覆盖；
+/// 后端以当前配置为基准 merge，保证任一写入点都不会抹掉别人的改动。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayConfigPatch {
+    pub enabled: Option<bool>,
+    pub opacity: Option<f64>,
+    pub edit: Option<bool>,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub pet_interactive: Option<bool>,
+    pub pet_snap: Option<bool>,
+    pub pet_sleep_after_secs: Option<u32>,
+    pub pet_bubble_ms: Option<u32>,
+    pub pet_gaze: Option<bool>,
+    pub pet_blink: Option<bool>,
+    pub pet_quiet: Option<bool>,
+    pub pet_always_interactive: Option<bool>,
+    pub pet_roam: Option<bool>,
+    pub pet_click_through: Option<bool>,
+}
+
+impl OverlayConfigPatch {
+    /// 把非空字段写进目标配置；未携带的字段保持原值。
+    pub fn apply_to(&self, cfg: &mut OverlayConfig) {
+        macro_rules! merge {
+            ($($field:ident),+ $(,)?) => {
+                $(if let Some(value) = self.$field {
+                    cfg.$field = value;
+                })+
+            };
+        }
+        merge!(
+            enabled, opacity, edit, x, y, width, height,
+            pet_interactive, pet_snap, pet_sleep_after_secs, pet_bubble_ms,
+            pet_gaze, pet_blink, pet_quiet, pet_always_interactive,
+            pet_roam, pet_click_through,
+        );
     }
 }
 
@@ -437,12 +515,8 @@ fn default_overlay_y() -> i32 {
     -1
 }
 
-fn default_overlay_layout() -> String {
-    "column".to_string()
-}
-
 fn default_overlay_width() -> f64 {
-    // 缺省即精灵紧凑窗（流量 HUD 开启时由前端切回 280×108）
+    // 缺省即精灵紧凑窗；HUD 已废弃，不再有第二种窗口形状。
     default_pet_width()
 }
 
@@ -451,8 +525,8 @@ fn default_overlay_height() -> f64 {
 }
 
 fn default_pet_width() -> f64 {
-    // 产品默认中档（148×168）；小 120×136 / 大 180×204 仍可由设置切换。
-    148.0
+    // v1.4 产品默认中档（198×168）；小 160×136 / 大 240×204 仍可由设置切换。
+    198.0
 }
 
 fn default_pet_height() -> f64 {
@@ -471,7 +545,7 @@ fn default_gateway_client_api_key() -> String {
     "sugt-local-key".to_string()
 }
 
-fn is_loopback_bind_host(host: &str) -> bool {
+pub(crate) fn is_loopback_bind_host(host: &str) -> bool {
     matches!(
         host.trim().to_ascii_lowercase().as_str(),
         "" | "127.0.0.1" | "::1" | "localhost"
@@ -572,6 +646,16 @@ impl Default for AppConfig {
             workspace_rules: WorkspaceRules::default(),
             upstream_retry_budget_ms: None,
             upstream_retry_single_ms: None,
+            log_retention_days: default_log_retention_days(),
+            webui_enabled: false,
+            webui_port: default_webui_port(),
+            free_models_fetch_and_test: default_free_models_fetch_and_test(),
+            custom_models_fetch_and_test: false,
+            experimental_free_disclaimer_accepted: false,
+            experimental_free_idle_probe_enabled: false,
+            experimental_free_idle_probe_interval_secs:
+                default_experimental_free_idle_probe_interval_secs(),
+            experimental_free_auto_rotate: false,
         }
     }
 }
@@ -597,6 +681,10 @@ pub struct ProxyHit {
 pub struct RuntimeStatus {
     pub running: bool,
     pub listen_url: String,
+    /// 用户配置的首选监听口（`config.toml` 的 `port`，不被回退绑定改写）。
+    pub preferred_port: u16,
+    /// 本次实际可达的监听口（回退绑定时可与 preferred 不同）。
+    pub listen_port: u16,
     pub openai_base_url: String,
     pub anthropic_base_url: String,
     pub gateway_client_api_key: String,
@@ -918,5 +1006,46 @@ mod tests {
             &ProviderProtocol::Anthropic,
         );
         assert_eq!(url, "https://api-inference.modelscope.cn");
+    }
+
+    #[test]
+    fn overlay_patch_only_touches_carried_fields() {
+        let mut cfg = OverlayConfig::default();
+        let original_width = cfg.width;
+        let original_gaze = cfg.pet_gaze;
+        let patch = OverlayConfigPatch {
+            enabled: Some(false),
+            x: Some(320),
+            ..OverlayConfigPatch::default()
+        };
+        patch.apply_to(&mut cfg);
+        assert!(!cfg.enabled, "携带的 enabled 应生效");
+        assert_eq!(cfg.x, 320, "携带的 x 应生效");
+        assert_eq!(cfg.width, original_width, "未携带的 width 不得被重置");
+        assert_eq!(cfg.pet_gaze, original_gaze, "未携带的行为开关不得被重置");
+    }
+
+    #[test]
+    fn overlay_deserialize_ignores_legacy_hud_fields() {
+        // 老配置里 HUD 专属字段与 pet_enabled 已废弃，反序列化必须忽略而不是报错，
+        // 且精灵字段要按原值恢复。
+        let raw = r#"{
+            "enabled": true,
+            "pet_enabled": false,
+            "show_tokens": false,
+            "show_requests": false,
+            "layout": "row",
+            "width": 240.0,
+            "height": 204.0,
+            "pet_quiet": true,
+            "opacity": 0.8
+        }"#;
+        let cfg: OverlayConfig = serde_json::from_str(raw).expect("旧配置应可解析");
+        assert!(cfg.enabled);
+        assert_eq!(cfg.width, 240.0);
+        assert_eq!(cfg.height, 204.0);
+        assert!(cfg.pet_quiet);
+        assert_eq!(cfg.opacity, 0.8);
+        assert!(cfg.pet_interactive, "缺省的精灵开关应走 default_true");
     }
 }

@@ -13,6 +13,19 @@ use uuid::Uuid;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 pub fn anthropic_to_openai(body: Bytes, model_name: &str) -> Result<Bytes> {
+    anthropic_to_openai_with_default(
+        body,
+        model_name,
+        Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
+    )
+}
+
+/// 同 [`anthropic_to_openai`]，但默认 max_tokens 可覆盖：`None` 表示请求未指定时不要自动填。
+pub fn anthropic_to_openai_with_default(
+    body: Bytes,
+    model_name: &str,
+    default_max: Option<u64>,
+) -> Result<Bytes> {
     let value: Value = serde_json::from_slice(&body).context("Anthropic 请求体不是合法 JSON")?;
     let messages = value
         .get("messages")
@@ -72,8 +85,8 @@ pub fn anthropic_to_openai(body: Bytes, model_name: &str) -> Result<Bytes> {
         .filter(|value| !value.is_null())
     {
         payload["max_tokens"] = max_tokens.clone();
-    } else {
-        payload["max_tokens"] = json!(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS);
+    } else if let Some(default_max) = default_max {
+        payload["max_tokens"] = json!(default_max);
     }
     // 跳过 null 字段：部分 Anthropic 客户端会显式发送 null，直接透传会被部分 OpenAI 服务商拒绝
     if let Some(temperature) = value.get("temperature") {

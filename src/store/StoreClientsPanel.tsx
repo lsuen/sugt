@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { TakeoverProfilesSection } from '../TakeoverProfilesSection';
 import { TakeoverPreviewModal } from '../TakeoverPreviewModal';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../transport';
 import {
   ArrowLeft, BookOpen, FolderOpen, Globe, Package, PlugZap, Play, RefreshCw,
   Search, ShieldCheck, Sparkles, Terminal, Wrench,

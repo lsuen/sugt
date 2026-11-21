@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import {
   ArrowLeft, ChevronDown, Download, FolderOpen, MoreHorizontal, Plus, PlugZap, RefreshCw, Search, Settings2, Trash2, Unplug,
 } from 'lucide-react';
@@ -7,6 +7,7 @@ import { GithubProxyModal } from './store/GithubProxyModal';
 import type { ParsedGitRepo, SkillCatalogItem, SkillRepoView, StoreSettings } from './store/types';
 import { t } from './i18n';
 import { ModalPortal } from './ModalPortal';
+import { ConfirmModal } from './ConfirmModal';
 
 export type MountedAgentRef = { id: string; name: string };
 
@@ -81,6 +82,8 @@ export function SkillsPanel({
   const [repoTestHint, setRepoTestHint] = useState<string | null>(null);
   const [parsedPreview, setParsedPreview] = useState<ParsedGitRepo | null>(null);
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
+  // 删除本地技能：用 state 驱动应用内确认框，替换原生 window.confirm。
+  const [deleteLocalTarget, setDeleteLocalTarget] = useState<LocalSkillView | null>(null);
 
   const run = async (task: () => Promise<void>, okMessage?: string) => {
     setBusy(true);
@@ -705,7 +708,7 @@ export function SkillsPanel({
                             onClick={(e) => {
                               e.preventDefault();
                               setMenuSkillId(null);
-                              if (window.confirm(t('skill.confirmDeleteLocal', { name: skill.name }))) uninstallSkill(skill.id);
+                              setDeleteLocalTarget(skill);
                             }}
                           >
                             <Trash2 size={14} />{t('common.delete')}
@@ -948,6 +951,22 @@ export function SkillsPanel({
           </div>
         </ModalPortal>
       )}
+
+      <ConfirmModal
+        open={Boolean(deleteLocalTarget)}
+        title={deleteLocalTarget ? t('skill.confirmDeleteLocal', { name: deleteLocalTarget.name }) : t('common.confirmTitle')}
+        body={t('skill.confirmDeleteLocalBody')}
+        danger
+        busy={busy}
+        confirmLabel={t('common.confirmOk')}
+        onCancel={() => setDeleteLocalTarget(null)}
+        onConfirm={() => {
+          const target = deleteLocalTarget;
+          if (!target) return;
+          setDeleteLocalTarget(null);
+          uninstallSkill(target.id);
+        }}
+      />
     </div>
   );
 }

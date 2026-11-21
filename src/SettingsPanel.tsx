@@ -2,7 +2,7 @@
 // 作用：设置面板。横向子 Tab（概览/通用/外观/高级/精灵/日志/关于），子页状态由上层受控，
 // 保证状态栏「打开日志页」等外部入口可以精确跳转，切换主 Tab 后也不丢子页位置。
 import React, { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isBrowserMode } from './transport';
 import { CircleAlert, Copy } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { GithubProxyModal } from './store/GithubProxyModal';
@@ -13,6 +13,7 @@ import { LogsSection } from './LogsSection';
 import { AboutSection } from './AboutSection';
 import { SettingsOverview, type OverviewStatus } from './SettingsOverview';
 import { PetSettingsSection } from './PetSettingsSection';
+import { MaintenanceSection } from './MaintenanceSection';
 import { DEFAULT_OVERLAY, type OverlayConfigView } from './pet/config';
 export type { OverlayConfigView };
 
@@ -27,22 +28,28 @@ export type LanShareInfo = {
   copy_text: string;
 };
 
-type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
-
-// 切换布局方向时同步的推荐尺寸（前端只控制方向，尺寸仍可手动调节）
-const LAYOUT_SIZE: Record<'column' | 'row', { width: number; height: number }> = {
-  column: { width: 280, height: 108 },
-  row: { width: 520, height: 72 },
+type WebUiSettingsView = {
+  enabled: boolean;
+  port: number;
+  lan_addresses: string[];
 };
+
+type QuitBehavior = 'exit_only' | 'stop_gateway' | 'stop_all';
 
 type AppConfigView = {
   autostart?: boolean;
   failover_enabled?: boolean;
   autostart_gateway?: boolean;
   quit_behavior?: QuitBehavior;
+  port?: number;
   port_fallback_enabled?: boolean;
+  port_fallback_ports?: number[];
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
+  custom_models_fetch_and_test?: boolean;
+  upstream_retry_budget_ms?: number | null;
+  upstream_retry_single_ms?: number | null;
+  log_retention_days?: number;
   overlay?: OverlayConfigView;
 };
 
@@ -117,12 +124,15 @@ export function SettingsPanel({
 }: Props) {
   const [proxyOpen, setProxyOpen] = useState(false);
   const [proxyPrefix, setProxyPrefix] = useState('');
-  const [opacity, setOpacity] = useState(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
-  const [width, setWidth] = useState(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
-  const [height, setHeight] = useState(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
   const [internalTab, setInternalTab] = useState<SettingsTab>('overview');
   const [lanOpen, setLanOpen] = useState(false);
   const [lanInfo, setLanInfo] = useState<LanShareInfo | null>(null);
+  const [webui, setWebui] = useState<WebUiSettingsView | null>(null);
+  const [webuiPortDraft, setWebuiPortDraft] = useState('8788');
+  const [gatewayPortDraft, setGatewayPortDraft] = useState('8787');
+  const [fallbackPortsDraft, setFallbackPortsDraft] = useState('9878, 18887, 28887');
+  const [retryBudgetDraft, setRetryBudgetDraft] = useState('');
+  const [retrySingleDraft, setRetrySingleDraft] = useState('');
 
   const tab = settingsTab ?? internalTab;
   const selectTab = (next: SettingsTab) => {
@@ -133,6 +143,108 @@ export function SettingsPanel({
   const toast = (message: string, type?: 'ok' | 'error' | 'info') =>
     (pushToast ?? (() => undefined))(message, type ?? 'ok');
   const formatError = formatInvokeError ?? ((error: unknown) => String(error));
+
+  useEffect(() => {
+    if (!config) return;
+    setGatewayPortDraft(String(config.port ?? 8787));
+    setFallbackPortsDraft((config.port_fallback_ports ?? [9878, 18887, 28887]).join(', '));
+    setRetryBudgetDraft(
+      config.upstream_retry_budget_ms == null ? '' : String(config.upstream_retry_budget_ms),
+    );
+    setRetrySingleDraft(
+      config.upstream_retry_single_ms == null ? '' : String(config.upstream_retry_single_ms),
+    );
+  }, [config]);
+
+  const saveGatewayPort = (raw: string) => {
+    const port = Number(raw);
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      toast(t('set.gatewayPortInvalid'), 'error');
+      setGatewayPortDraft(String(config?.port ?? 8787));
+      return;
+    }
+    if (port === (config?.port ?? 8787)) return;
+    run(
+      () => invoke('update_gateway_settings', { input: { port } }),
+      t('set.gatewayPortSaved'),
+    );
+  };
+
+  const saveFallbackPorts = (raw: string) => {
+    const ports = raw
+      .split(/[,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s));
+    if (ports.some((p) => !Number.isInteger(p) || p <= 0 || p > 65535)) {
+      toast(t('set.fallbackPortsInvalid'), 'error');
+      setFallbackPortsDraft((config?.port_fallback_ports ?? [9878, 18887, 28887]).join(', '));
+      return;
+    }
+    run(
+      () => invoke('update_gateway_settings', { input: { portFallbackPorts: ports } }),
+      t('common.update'),
+    );
+  };
+
+  const saveRetryBudgets = () => {
+    const parseOptional = (raw: string): number | null | undefined => {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || n <= 0) return undefined;
+      return Math.floor(n);
+    };
+    const budget = parseOptional(retryBudgetDraft);
+    const single = parseOptional(retrySingleDraft);
+    if (budget === undefined || single === undefined) {
+      toast(t('set.retryBudgetInvalid'), 'error');
+      return;
+    }
+    run(
+      () =>
+        invoke('update_gateway_settings', {
+          input: {
+            upstreamRetryBudgetMs: budget,
+            upstreamRetrySingleMs: single,
+          },
+        }),
+      t('common.update'),
+    );
+  };
+
+  // WebUI 设置只在桌面端可改：浏览器端走 WebUI 自带 RPC，未暴露这两个命令。
+  useEffect(() => {
+    if (tab !== 'general' || isBrowserMode()) return;
+    let cancelled = false;
+    void invoke<WebUiSettingsView>('get_webui_settings')
+      .then((view) => {
+        if (!cancelled) {
+          setWebui(view);
+          setWebuiPortDraft(String(view.port));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setWebui(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
+
+  const saveWebui = (enabled: boolean, port: number) => {
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+      toast(t('set.webuiPortInvalid'), 'error');
+      return;
+    }
+    run(async () => {
+      const view = await invoke<WebUiSettingsView>('set_webui_settings', {
+        input: { enabled, port },
+      });
+      setWebui(view);
+      setWebuiPortDraft(String(view.port));
+    }, t('common.update'));
+  };
 
   useEffect(() => {
     if (!lanOpen) return;
@@ -172,8 +284,9 @@ export function SettingsPanel({
     }
   };
 
-  // 悬浮窗配置更新：合并当前配置 + 增量，持久化并即时应用
-  // 本地草稿：父级 config 由 3s 轮询刷新，快速连点两个开关时不能各自拿旧 base 覆盖
+  // 精灵配置按域增量写入：合并当前快照 + 增量，持久化并即时应用。
+  // 本地草稿：父级 config 由 3s 轮询刷新，快速连点两个开关时不能各自拿旧 base 覆盖。
+  // 后端只 merge 补丁字段，菜单窗 / 透明窗的并发写入不会互相抹掉。
   const overlayDraft = useRef<OverlayConfigView | null>(null);
   const pendingWrites = useRef(0);
   useEffect(() => {
@@ -182,47 +295,15 @@ export function SettingsPanel({
 
   const setOverlay = (patch: Partial<OverlayConfigView>) => {
     const base = overlayDraft.current ?? config?.overlay ?? DEFAULT_OVERLAY;
-    const next = { ...base, ...patch };
-    overlayDraft.current = next;
+    overlayDraft.current = { ...base, ...patch };
     pendingWrites.current += 1;
     run(async () => {
       try {
-        await invoke('set_overlay_config', { cfg: next });
+        await invoke('patch_overlay_config', { patch });
       } finally {
         pendingWrites.current -= 1;
       }
     }, t('common.update'));
-  };
-
-  // 外部配置刷新后同步滑块显示值
-  useEffect(() => {
-    setOpacity(config?.overlay?.opacity ?? DEFAULT_OVERLAY.opacity);
-    setWidth(config?.overlay?.width ?? DEFAULT_OVERLAY.width);
-    setHeight(config?.overlay?.height ?? DEFAULT_OVERLAY.height);
-  }, [config?.overlay?.opacity, config?.overlay?.width, config?.overlay?.height]);
-
-  // 切换横/竖排：同时应用对应推荐尺寸，让布局一眼可见
-  const switchOverlayLayout = (layout: 'column' | 'row') => {
-    const size = LAYOUT_SIZE[layout];
-    setWidth(size.width);
-    setHeight(size.height);
-    setOverlay({ layout, width: size.width, height: size.height });
-  };
-
-  // 恢复默认：重置位置、透明度、布局与尺寸（保留启用/显示项开关）
-  const resetOverlay = () => {
-    setWidth(DEFAULT_OVERLAY.width);
-    setHeight(DEFAULT_OVERLAY.height);
-    setOpacity(DEFAULT_OVERLAY.opacity);
-    setOverlay({
-      opacity: DEFAULT_OVERLAY.opacity,
-      x: DEFAULT_OVERLAY.x,
-      y: DEFAULT_OVERLAY.y,
-      layout: DEFAULT_OVERLAY.layout,
-      width: DEFAULT_OVERLAY.width,
-      height: DEFAULT_OVERLAY.height,
-      edit: false,
-    });
   };
 
   const openProxy = async () => {
@@ -235,16 +316,11 @@ export function SettingsPanel({
     }
   };
 
-  const posText = (cfg?: OverlayConfigView) =>
-    !cfg || cfg.x < 0 || cfg.y < 0
-      ? t('set.overlayPos')
-      : t('set.overlayPosAt', { x: cfg.x, y: cfg.y });
-
   return (
     <div className="settings-layout-wrap">
       {/* 冻结在滚动容器首行：子页再长也不会把 Tab 行顶出视野 */}
       <div className="settings-tabs" role="tablist" aria-label={t('set.tabsLabel')}>
-        {SETTINGS_TABS.map((item) => (
+        {SETTINGS_TABS.filter((item) => !(item.id === 'pet' && isBrowserMode())).map((item) => (
           <button
             key={item.id}
             type="button"
@@ -307,6 +383,22 @@ export function SettingsPanel({
           <div className="card settings-group switches">
             <h4>{t('set.gateway')}</h4>
             <p className="hint compact">{t('set.gatewayHint')}</p>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.gatewayPort')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  step={1}
+                  value={gatewayPortDraft}
+                  aria-label={t('set.gatewayPort')}
+                  onChange={(e) => setGatewayPortDraft(e.target.value)}
+                  onBlur={() => saveGatewayPort(gatewayPortDraft)}
+                />
+              </span>
+            </div>
+            <p className="hint compact">{t('set.gatewayPortHint')}</p>
             <label className="switch-line">
               <span>{t('set.failover')}</span>
               <input type="checkbox" checked={Boolean(config?.failover_enabled)} onChange={(e) => run(() => invoke('set_failover', { enabled: e.target.checked }), t('common.update'))} />
@@ -390,7 +482,15 @@ export function SettingsPanel({
                   const enabled = e.target.checked;
                   if (!enabled) setLanOpen(false);
                   run(
-                    () => invoke('update_gateway_settings', { input: { allowLanAccess: enabled } }),
+                    () =>
+                      invoke('update_gateway_settings', {
+                        input: { allowLanAccess: enabled },
+                      }).then(() =>
+                        // WebUI 绑定地址跟随该开关重启，地址列表要同步刷新。
+                        invoke<WebUiSettingsView>('get_webui_settings')
+                          .then(setWebui)
+                          .catch(() => undefined),
+                      ),
                     t('common.update'),
                   );
                 }}
@@ -408,6 +508,59 @@ export function SettingsPanel({
               </select>
             </label>
           </div>
+
+          {!isBrowserMode() && (
+            <div className="card settings-group switches">
+              <h4>{t('set.webui')}</h4>
+              <p className="hint compact">{t('set.webuiHint')}</p>
+              <label className="switch-line">
+                <span>{t('set.webuiEnable')}</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(webui?.enabled)}
+                  onChange={(e) =>
+                    saveWebui(
+                      e.target.checked,
+                      Number(webuiPortDraft) || webui?.port || 8788,
+                    )
+                  }
+                />
+              </label>
+              <div className="switch-line maintenance-row">
+                <span>{t('set.webuiPort')}</span>
+                <span className="maintenance-days">
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    value={webuiPortDraft}
+                    aria-label={t('set.webuiPort')}
+                    onChange={(e) => setWebuiPortDraft(e.target.value)}
+                    onBlur={() =>
+                      saveWebui(Boolean(webui?.enabled), Number(webuiPortDraft))
+                    }
+                  />
+                </span>
+              </div>
+              <div>
+                <span className="hint compact">{t('set.webuiLan')}</span>
+                {webui?.enabled && webui.lan_addresses.length > 0 ? (
+                  <ul className="lan-share-list">
+                    {webui.lan_addresses.map((addr) => (
+                      <li key={addr}><code>{addr}</code></li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="hint compact">
+                    {webui?.enabled ? t('set.webuiLanEmpty') : t('set.webuiLanDisabled')}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <MaintenanceSection config={config} pushToast={toast} />
         </div>
       )}
 
@@ -428,116 +581,10 @@ export function SettingsPanel({
             onStatusBarEnabled={onStatusBarEnabled}
           />
 
-          <div className="card settings-group switches">
-            <h4>{t('set.overlay')}</h4>
-            <p className="hint compact">{t('set.overlayHint')}</p>
-            <label className="switch-line">
-              <span>{t('set.overlayEnable')}</span>
-              <input type="checkbox" checked={Boolean(config?.overlay?.enabled)} onChange={(e) => setOverlay({ enabled: e.target.checked })} />
-            </label>
-            {config?.overlay?.enabled && !config?.overlay?.pet_enabled && (
-              <>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowRequests')}</span>
-                  <input type="checkbox" checked={config.overlay.show_requests !== false} onChange={(e) => setOverlay({ show_requests: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowTokens')}</span>
-                  <input type="checkbox" checked={config.overlay.show_tokens} onChange={(e) => setOverlay({ show_tokens: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowClient')}</span>
-                  <input type="checkbox" checked={config.overlay.show_client} onChange={(e) => setOverlay({ show_client: e.target.checked })} />
-                </label>
-                <label className="switch-line">
-                  <span>{t('set.overlayShowChannel')}</span>
-                  <input type="checkbox" checked={config.overlay.show_channel !== false} onChange={(e) => setOverlay({ show_channel: e.target.checked })} />
-                </label>
-                <div className="switch-line">
-                  <span>{t('set.overlayOpacity', { p: Math.round(config.overlay.opacity * 100) })}</span>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={1}
-                    step={0.05}
-                    value={opacity}
-                    onChange={(e) => setOpacity(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ opacity: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ opacity: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayLayout')}</span>
-                  <div className="overlay-layout-switch">
-                    <button
-                      type="button"
-                      className={`ghost tiny-btn${config.overlay.layout !== 'row' ? ' active' : ''}`}
-                      onClick={() => switchOverlayLayout('column')}
-                    >
-                      {t('set.overlayColumn')}
-                    </button>
-                    <button
-                      type="button"
-                      className={`ghost tiny-btn${config.overlay.layout === 'row' ? ' active' : ''}`}
-                      onClick={() => switchOverlayLayout('row')}
-                    >
-                      {t('set.overlayRow')}
-                    </button>
-                  </div>
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayWidth', { w: Math.round(width) })}</span>
-                  <input
-                    type="range"
-                    min={200}
-                    max={600}
-                    step={10}
-                    value={width}
-                    onChange={(e) => setWidth(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ width: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ width: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ width: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="switch-line">
-                  <span>{t('set.overlayHeight', { h: Math.round(height) })}</span>
-                  <input
-                    type="range"
-                    min={48}
-                    max={200}
-                    step={4}
-                    value={height}
-                    onChange={(e) => setHeight(Number(e.target.value))}
-                    onMouseUp={(e) => setOverlay({ height: Number(e.currentTarget.value) })}
-                    onTouchEnd={(e) => setOverlay({ height: Number(e.currentTarget.value) })}
-                    onKeyUp={(e) => {
-                      if (e.key.startsWith('Arrow')) setOverlay({ height: Number(e.currentTarget.value) });
-                    }}
-                  />
-                </div>
-                <div className="settings-actions-row">
-                  <button type="button" className="ghost tiny-btn" onClick={() => setOverlay({ edit: true })}>
-                    {t('set.overlayMove')}
-                  </button>
-                  <button type="button" className="ghost tiny-btn" onClick={resetOverlay}>
-                    {t('set.overlayReset')}
-                  </button>
-                  <span className="hint compact">
-                    {posText(config.overlay)} · {t('set.overlayMoveHint')}
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       )}
 
-      {tab === 'pet' && (
+      {tab === 'pet' && !isBrowserMode() && (
         <PetSettingsSection
           overlay={config?.overlay}
           defaults={DEFAULT_OVERLAY}
@@ -564,6 +611,86 @@ export function SettingsPanel({
               </button>
               <button type="button" className="ghost tiny-btn" onClick={() => onNavigate?.('models')}>
                 {t('set.goModels')}
+              </button>
+            </div>
+          </div>
+
+          <div className="card settings-group switches">
+            <h4>{t('set.advFetchMode')}</h4>
+            <p className="hint compact">{t('set.advFetchModeHintCustom')}</p>
+            <label className="switch-line select-line">
+              <span>{t('set.customChannel')}</span>
+              <select
+                value={String(Boolean(config?.custom_models_fetch_and_test ?? false))}
+                onChange={(e) => run(() => invoke('update_gateway_settings', { input: { customModelsFetchAndTest: e.target.value === 'true' } }), t('common.update'))}
+              >
+                <option value="false">{t('set.fetchOnly')}</option>
+                <option value="true">{t('set.fetchAndTest')}</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="card settings-group">
+            <h4>{t('set.advListen')}</h4>
+            <p className="hint compact">{t('set.advListenHint')}</p>
+            <label className="switch-line select-line">
+              <span>{t('set.fallbackPorts')}</span>
+              <input
+                type="text"
+                value={fallbackPortsDraft}
+                aria-label={t('set.fallbackPorts')}
+                onChange={(e) => setFallbackPortsDraft(e.target.value)}
+                onBlur={() => saveFallbackPorts(fallbackPortsDraft)}
+              />
+            </label>
+            <div className="settings-actions-row">
+              <button
+                type="button"
+                className="ghost tiny-btn"
+                onClick={() => {
+                  setFallbackPortsDraft('9878, 18887, 28887');
+                  saveFallbackPorts('9878, 18887, 28887');
+                }}
+              >
+                {t('set.fallbackPortsReset')}
+              </button>
+            </div>
+          </div>
+
+          <div className="card settings-group">
+            <h4>{t('set.advRetry')}</h4>
+            <p className="hint compact">{t('set.advRetryHint')}</p>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.retryBudgetMs')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={retryBudgetDraft}
+                  placeholder="480000"
+                  aria-label={t('set.retryBudgetMs')}
+                  onChange={(e) => setRetryBudgetDraft(e.target.value)}
+                />
+              </span>
+            </div>
+            <div className="switch-line maintenance-row">
+              <span>{t('set.retrySingleMs')}</span>
+              <span className="maintenance-days">
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={retrySingleDraft}
+                  placeholder="60000"
+                  aria-label={t('set.retrySingleMs')}
+                  onChange={(e) => setRetrySingleDraft(e.target.value)}
+                />
+              </span>
+            </div>
+            <div className="settings-actions-row">
+              <button type="button" className="ghost tiny-btn" onClick={() => saveRetryBudgets()}>
+                {t('common.save')}
               </button>
             </div>
           </div>

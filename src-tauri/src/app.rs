@@ -1,13 +1,15 @@
 use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, pet, store, tray, update};
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
     logging::init(&runtime.paths.log_file).expect("failed to initialize logging");
+    spawn_log_retention(&runtime);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(runtime)
+        .manage(commands::new_webui_handle())
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::start_gateway,
@@ -23,17 +25,45 @@ pub fn run() {
             commands::test_provider,
             commands::test_provider_draft,
             commands::list_provider_models,
+            commands::list_model_registry,
+            commands::set_model_enabled,
+            commands::probe_models,
+            commands::test_provider_models,
+            commands::list_strategy_boxes,
+            commands::save_strategy_box,
+            commands::delete_strategy_box,
+            commands::get_strategy_box_status,
+            commands::list_request_rules,
+            commands::save_request_rule,
+            commands::delete_request_rule,
+            commands::list_api_key_pools,
+            commands::save_api_key_pool,
+            commands::delete_api_key_pool,
+            commands::reset_key_usage,
+            commands::list_client_keys,
+            commands::create_client_key,
+            commands::update_client_key,
+            commands::delete_client_key,
+            commands::reset_client_key_usage,
             commands::set_failover,
             commands::update_gateway_settings,
+            commands::get_webui_settings,
+            commands::set_webui_settings,
             commands::get_lan_share_info,
+            commands::get_local_access_info,
+            commands::fetch_local_models,
             commands::set_autostart,
             commands::set_autostart_gateway,
             commands::set_auto_takeover,
             commands::set_quit_behavior,
             commands::read_logs,
+            commands::clear_cache,
+            commands::get_maintenance_settings,
+            commands::set_maintenance_settings,
             commands::get_config,
             commands::get_overlay_config,
             commands::set_overlay_config,
+            commands::patch_overlay_config,
             commands::set_workspace_rules,
             commands::set_workspace_inject_template,
             commands::default_workspace_inject_template,
@@ -44,6 +74,8 @@ pub fn run() {
             pet::pet_finish_drag,
             pet::pet_global_cursor,
             pet::pet_roam_to,
+            pet::pet_open_menu,
+            pet::pet_close_menu,
             pet::pet_set_clickable,
             pet::open_settings_tab,
             commands::open_config_dir,
@@ -116,9 +148,29 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Some(runtime) = handle.try_state::<AppRuntime>() {
-                    let watchdog_runtime = runtime.inner().clone();
-                    gateway_watchdog::spawn(std::sync::Arc::new(watchdog_runtime));
+                    let shared = std::sync::Arc::new(runtime.inner().clone());
+                    gateway_watchdog::spawn(shared.clone());
+                    crate::experimental_free_idle::spawn(shared);
                     commands::maybe_autostart_gateway(&runtime).await;
+                    // 按配置启动 WebUI（关闭时零占用）；句柄交给 state，进程退出时 stop。
+                    if let Some(slot) = handle
+                        .try_state::<commands::WebUiHandle>()
+                        .map(|state| state.inner().clone())
+                    {
+                        match crate::webui::start_if_enabled(runtime.inner()).await {
+                            Ok(Some(server)) => {
+                                tracing::info!(
+                                    addr = %server.addr,
+                                    "WebUI 已按配置启动，同网段可通过浏览器管理"
+                                );
+                                *slot.lock().await = Some(server);
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                tracing::warn!(error = %err, "按配置启动 WebUI 失败，GUI 主流程不受影响");
+                            }
+                        }
+                    }
                     // 启动后恢复流量悬浮窗（若上次开启过）
                     let mut overlay_cfg = runtime.config.read().await.overlay.clone();
                     if let Err(err) = crate::overlay::apply(&handle, &mut overlay_cfg).await {
@@ -160,10 +212,18 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
+                // 只有主窗口关到托盘。菜单和悬浮窗是临时窗，关闭请求必须放行。
+                if window.label() != "main" {
+                    return;
+                }
                 api.prevent_close();
                 tray::hide_main_window(window.app_handle());
             }
             WindowEvent::Resized(size) => {
+                // 尺寸记忆只属于主窗口。菜单开合也会触发 Resized，不能写进主窗口记录。
+                if window.label() != "main" {
+                    return;
+                }
                 // 记住用户手动调整后的尺寸；物理像素换算回逻辑像素再落盘。
                 if let Some(runtime) = window.app_handle().try_state::<AppRuntime>() {
                     let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
@@ -176,6 +236,37 @@ pub fn run() {
             }
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running SUGT");
+        .build(tauri::generate_context!())
+        .expect("error while building SUGT")
+        .run(|app_handle, event| {
+            // 主窗关到托盘不触发 Exit，WebUI 继续跑；仅真正退出进程时才停监听。
+            if let RunEvent::Exit = event {
+                if let Some(slot) = app_handle
+                    .try_state::<commands::WebUiHandle>()
+                    .map(|state| state.inner().clone())
+                {
+                    tauri::async_runtime::block_on(async move {
+                        if let Some(server) = slot.lock().await.take() {
+                            server.stop().await;
+                            tracing::info!("WebUI 已随进程退出停止");
+                        }
+                    });
+                }
+            }
+        });
+}
+
+/// 日志保留期清理：启动立即执行一次，之后每 24 小时一次。
+/// 保留期每次从实时配置读取，设置页改完即时生效；失败只告警。
+fn spawn_log_retention(runtime: &AppRuntime) {
+    let runtime = runtime.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let retention_days = runtime.config.read().await.log_retention_days;
+            if let Err(err) = logging::prune_logs(&runtime.paths.log_file, retention_days) {
+                tracing::warn!(error = %err, "清理过期日志失败");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        }
+    });
 }

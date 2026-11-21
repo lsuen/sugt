@@ -59,6 +59,56 @@ description = "Enables the list_provider_models command"
 commands.allow = ["list_provider_models"]
 
 [[permission]]
+identifier = "allow-list-model-registry"
+description = "Enables the list_model_registry command"
+commands.allow = ["list_model_registry"]
+
+[[permission]]
+identifier = "allow-set-model-enabled"
+description = "Enables the set_model_enabled command"
+commands.allow = ["set_model_enabled"]
+
+[[permission]]
+identifier = "allow-probe-models"
+description = "Enables the probe_models command"
+commands.allow = ["probe_models"]
+
+[[permission]]
+identifier = "allow-list-strategy-boxes"
+description = "Enables the list_strategy_boxes command"
+commands.allow = ["list_strategy_boxes"]
+
+[[permission]]
+identifier = "allow-save-strategy-box"
+description = "Enables the save_strategy_box command"
+commands.allow = ["save_strategy_box"]
+
+[[permission]]
+identifier = "allow-delete-strategy-box"
+description = "Enables the delete_strategy_box command"
+commands.allow = ["delete_strategy_box"]
+
+[[permission]]
+identifier = "allow-get-strategy-box-status"
+description = "Enables the get_strategy_box_status command"
+commands.allow = ["get_strategy_box_status"]
+
+[[permission]]
+identifier = "allow-list-request-rules"
+description = "Enables the list_request_rules command"
+commands.allow = ["list_request_rules"]
+
+[[permission]]
+identifier = "allow-save-request-rule"
+description = "Enables the save_request_rule command"
+commands.allow = ["save_request_rule"]
+
+[[permission]]
+identifier = "allow-delete-request-rule"
+description = "Enables the delete_request_rule command"
+commands.allow = ["delete_request_rule"]
+
+[[permission]]
 identifier = "allow-set-failover"
 description = "Enables the set_failover command"
 commands.allow = ["set_failover"]
@@ -87,6 +137,21 @@ commands.allow = ["set_quit_behavior"]
 identifier = "allow-read-logs"
 description = "Enables the read_logs command"
 commands.allow = ["read_logs"]
+
+[[permission]]
+identifier = "allow-clear-cache"
+description = "Enables the clear_cache command"
+commands.allow = ["clear_cache"]
+
+[[permission]]
+identifier = "allow-get-maintenance-settings"
+description = "Enables the get_maintenance_settings command"
+commands.allow = ["get_maintenance_settings"]
+
+[[permission]]
+identifier = "allow-set-maintenance-settings"
+description = "Enables the set_maintenance_settings command"
+commands.allow = ["set_maintenance_settings"]
 
 [[permission]]
 identifier = "allow-get-config"
@@ -129,9 +194,29 @@ description = "Enables the update_gateway_settings command"
 commands.allow = ["update_gateway_settings"]
 
 [[permission]]
+identifier = "allow-get-webui-settings"
+description = "Enables the get_webui_settings command"
+commands.allow = ["get_webui_settings"]
+
+[[permission]]
+identifier = "allow-set-webui-settings"
+description = "Enables the set_webui_settings command"
+commands.allow = ["set_webui_settings"]
+
+[[permission]]
 identifier = "allow-get-lan-share-info"
 description = "Enables the get_lan_share_info command"
 commands.allow = ["get_lan_share_info"]
+
+[[permission]]
+identifier = "allow-get-local-access-info"
+description = "Enables the get_local_access_info command"
+commands.allow = ["get_local_access_info"]
+
+[[permission]]
+identifier = "allow-fetch-local-models"
+description = "Enables the fetch_local_models command"
+commands.allow = ["fetch_local_models"]
 
 [[permission]]
 identifier = "allow-test-provider-draft"
@@ -160,8 +245,8 @@ commands.allow = [
 
 [[permission]]
 identifier = "allow-overlay-commands"
-description = "Enables traffic overlay commands"
-commands.allow = ["get_overlay_config", "set_overlay_config", "overlay_start_drag", "focus_main_window", "pet_finish_drag", "pet_global_cursor", "pet_roam_to", "pet_set_clickable", "open_settings_tab"]
+description = "Enables desktop companion (pet) window commands"
+commands.allow = ["get_overlay_config", "set_overlay_config", "patch_overlay_config", "overlay_start_drag", "focus_main_window", "pet_finish_drag", "pet_global_cursor", "pet_roam_to", "pet_open_menu", "pet_close_menu", "pet_set_clickable", "open_settings_tab"]
 
 [[permission]]
 identifier = "allow-takeover-commands"
@@ -236,4 +321,19 @@ commands.allow = [
   "get_agent_advanced",
   "import_agent_skill",
   "save_agent_advanced_path"
+]
+
+[[permission]]
+identifier = "allow-key-pool-commands"
+description = "Enables upstream key rotation and inbound client key commands"
+commands.allow = [
+  "list_api_key_pools",
+  "save_api_key_pool",
+  "delete_api_key_pool",
+  "reset_key_usage",
+  "list_client_keys",
+  "create_client_key",
+  "update_client_key",
+  "delete_client_key",
+  "reset_client_key_usage"
 ]

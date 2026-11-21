@@ -1,0 +1,184 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-11-12",
+  "source": "SCR-024 首次全量量测 + v1.3.3 归一化定版 state.json（h_ref/foot_y）",
+  "note": "本文件是精灵归一化参数、判据限值与身高实测基线的唯一真相源；脚本经 CLI 覆盖，技能基线只存校验锚点。",
+  "hRef": 176.04,
+  "footY": 237,
+  "canvas": [
+    240,
+    297
+  ],
+  "centerX": 120.0,
+  "safeX": 11,
+  "safeY": 18,
+  "unionPad": 12,
+  "alphaThreshold": 16,
+  "minEdgePx": 6,
+  "maxHiddenRatio": 0.02,
+  "limits": {
+    "heightSpreadMax": 0.08,
+    "frameHeightSpreadMax": 0.35,
+    "footLineTolerancePx": 2,
+    "centerTolerancePx": 12,
+    "posterHeightTolerancePx": 1,
+    "widthRatioSpreadMax": 1.0,
+    "headRatioSpreadMax": 0.1,
+    "footMarginRatio": 0.02,
+    "hitboxTolerance": 0.012,
+    "budgetBytes": 8388608,
+    "compareDeltaMax": 0.03
+  },
+  "metrics": {
+    "generatedAt": "2026-11-12 02:06:34",
+    "assetsSha256": "4f3e0ee4ed2dcef6ae77b9fe42bcd5a8af32aebee8e9e1dc996b8034cc2a060c:51",
+    "heightMinPx": 176.0,
+    "heightMaxPx": 178.0,
+    "heightSpread": 0.0114,
+    "headRatioSpread": 0.0147,
+    "minEdgePx": 30,
+    "footLineMedianSpreadPx": 1.0,
+    "centerSpreadPx": 8.5,
+    "posterHeightDeltaMaxPx": 0,
+    "observed": {
+      "frameHeightSpreadMax": 0.3025,
+      "frameHeightSpreadWorst": "greeting",
+      "footLineFrameSpreadPx": 24,
+      "widthRatioSpread": 0.9082,
+      "note": "鞠躬/落地/被提起/道具导致帧内身高、逐帧脚底、宽高比大幅波动，属动作语义；照常量出并留痕，不作默认放行判据。"
+    },
+    "actions": {
+      "lifted": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2784
+      },
+      "landing": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2791
+      },
+      "typing": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2809
+      },
+      "error": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "done": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "sleep": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2809
+      },
+      "offline": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "celebrate": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2791
+      },
+      "disappointed": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2793
+      },
+      "petted": {
+        "heightMedianPx": 178.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2802
+      },
+      "poked": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "wake": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.28
+      },
+      "welcome": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2816
+      },
+      "greeting": {
+        "heightMedianPx": 178.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2794
+      },
+      "wait": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2784
+      },
+      "stretch": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2802
+      },
+      "lookAround": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2784
+      },
+      "peek": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.28
+      },
+      "walk": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2793
+      },
+      "idle": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "squatDraw": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2784
+      },
+      "wiggleDance": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2809
+      },
+      "kickflip": {
+        "heightMedianPx": 176.0,
+        "headLengthMedianPx": 49.0,
+        "headRatio": 0.2793
+      },
+      "miniGame": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      },
+      "yawn": {
+        "heightMedianPx": 177.0,
+        "headLengthMedianPx": 50.0,
+        "headRatio": 0.2825
+      }
+    }
+  },
+  "notes": [
+    "hRef/footY 锁定自 v1.3.3 全量归一化，单动作重算会让人物忽高忽矮；新增动作走 P-02 锁定基准。",
+    "headLength 为 alpha 行宽剖面几何估计，不是语义分割；默认只作观察与对比。",
+    "heightSpreadMax=0.08 沿用 SCR-020 既有判据，未放宽；新增判据均基于本次实测。",
+    "新增 limits.compareDeltaMax=0.03：既有 8% 跨动作极差对单动作 5% 漂移不敏感；量测与基线逐动作对比时按 3% 判定，8% 原判据保持不变。"
+  ]
+}

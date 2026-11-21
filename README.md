@@ -1,257 +1,297 @@
-# SUGT — Local AI Gateway & LLM Skill Console
+# SUGT — 本机 AI 工作台（网关 · 技能 · Agent 中控）
 
-**SUGT (su gateway)** is a local AI gateway and skills control plane for your desktop. It centralizes API keys from multiple LLM providers (OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, DashScope, and self-hosted) behind a single OpenAI / Anthropic-compatible proxy, so Claude Code, Codex, OpenCode, and other AI coding clients all talk to one local endpoint — while you swap upstream models in a single panel. It also ships a Skills console for discovering, installing, and mounting Skills without losing your library.
+> English readers: see **[README.en.md](README.en.md)** for the English documentation.
 
-- **One key set, everywhere**: Base URLs and auth are consolidated into one local gateway.
-- **Swap upstreams freely**: OpenAI, Anthropic, ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, or your own models — no client-side reconfiguration.
-- **Skills that stick**: discover, install, and mount Skills; unmounting never loses your library.
+**SUGT**（su gateway）不只是一个本地代理端口——它是跑在你电脑上的 **AI 工作台**：把「上游模型怎么接」「编码 Agent 怎么进」「技能怎么管」「规则怎么注入」收成一块本机控制面。OpenAI / Anthropic / 魔搭 / 火山 / 硅基流动 / Kimi / DeepSeek / 自建模型统一进本机端点；Claude Code、Codex、OpenCode 等客户端一键接管；技能可发现、可安装、可挂载且卸下不丢库；另有策略盒子、改写规则、接入密钥、局域网 WebUI 与桌面伙伴小 su。
 
-|                |                                                                       |
-| -------------- | --------------------------------------------------------------------- |
-| Author         | Sun Wenlong · [异常设计](https://github.com/lsuen)                       |
-| Open source    | [Apache-2.0](LICENSE), fully open source                                |
-| Releases       | [GitHub Releases](https://github.com/lsuen/sugt/releases)                |
+适合谁：一个人同时用多个 Agent / 多个上游、想把 Key 与 Base URL 收拢到本机、又要技能与规则跟着走的开发者。
 
-中文文档：[README.zh.md](README.zh.md)
+- **一套本机入口**：客户端只认本机 Base URL + 接入密钥；换上游、换模型不必改每个 Agent。
+- **协议与韧性在网关侧处理**：Chat / Anthropic / Responses 互转，故障转移与免费通道换路，尽量保住 Agent 会话。
+- **技能与规则不散落**：技能库常驻；全局注入 + 请求改写；接入密钥与上游 Key 轮换分清职责。
+- **本机优先**：默认绑回环；局域网 / WebUI 显式开启；无账号系统、无云端中转。
 
-## License
-
-The release on [GitHub Releases](https://github.com/lsuen/sugt/releases) is the full product: local AI gateway, protocol translation, client takeover, Skills console, and the in-app SOUL companion. Source is Apache-2.0.
-
-## Why
-
-- **API keys scattered** across OpenAI, Anthropic, ModelScope, Volcengine, Moonshot Kimi, DeepSeek, local models...
-- **Every agent wants its own Base URL and auth setup** — re-editing configs in each client is tedious and error-prone
-- **Skills live in different folders** with no shared discover / mount / keep flow; switching machines means redoing everything
-
-SUGT is intentionally small: a compatible local gateway, one-click takeover for common agents, and a skill control plane you can actually keep.
-
-## Features
-
-### Console layout
-
-Seven main tabs: Dashboard, Models, Clients, Skills, SOUL, Rules, Settings. Logs and About moved **into Settings**, which now has six sticky horizontal sub-tabs — **Overview** (first), General, Appearance, Advanced, Logs, About. Overview is read-only and shows service state, LAN sharing status/URLs/key/model, active upstream, endpoints and build id, plus shortcuts into the relevant sub-tabs. Log polling only runs while the Logs sub-tab is visible.
-
-### Local AI Gateway
-
-- Axum HTTP server embedded in the Tauri process, speaking **OpenAI Chat Completions**, **Anthropic Messages**, and **OpenAI Responses**
-- **Protocol bridging**: bidirectional request / response conversion between Anthropic and OpenAI, including SSE streaming
-- **Multi-upstream failover**: automatically falls back to the next provider in your `failover` order; experimental free channel also failovers across candidate models on Chat and Responses paths
-- **Hot-reload config**: edit `config.toml` and the next request picks it up — no restart needed
-- **Port fallback**: if the configured port is taken, the gateway binds the next available one
-- **LAN share**: enable “Allow LAN connections” to bind `0.0.0.0` and copy LAN Base URL / API Key in one click
-- Built-in endpoints: `/health`, `/v1/models`, `/v1/_sugt/traffic`, `/v1/_sugt/workspace-rules`, `/v1/_sugt/notify`
-
-> Engineering follow-ups (not UI copy): request repair/retry (empty tool names, etc.), slim tools/instructions for weak upstreams, context compaction near window limits, stable prefixes for upstream prompt cache. SOUL and full agent clients share this gateway layer.
-
-### Model Management
-
-- Built-in catalog of Chinese providers (ModelScope, Volcengine, SiliconFlow, Moonshot Kimi, DeepSeek, and more) with standard Base URLs and model lists
-- Enable / disable providers, switch the default model, and test connectivity from one panel
-- Experimental free channels: auto-probe once when you open the console or select that upstream (no background polling); refresh manually anytime
-
-### One-Click Agent Takeover
-
-- A single catalog of 22 known clients (Chinese and global: Claude Code, Codex, CodeBuddy, Trae, Lingma, iFlow, Kimi CLI, Qoder, Comate, CodeGeeX, Windsurf, Cline, Copilot CLI, Kiro, Goose, Factory Droid, and more). Discovery lists the whole catalog even with an empty query, so a client does not need local traces before you can pick and take it over. Unconfirmed clients declare env-var capability only, never a fake config-file write
-- Claude Code / OpenCode: environment variables and launch scripts point at the local gateway; releasing the takeover cleans them up
-- **Codex (CLI / Desktop)**: writes `~/.codex/config.toml` with `model_providers.sugt` (`wire_api = "responses"`, `requires_openai_auth = false`, local compaction capabilities) and disables hosted `web_search` when the user has not configured it; `model` gets a `sugt-` alias so the client does not inherit the official `code_mode_only` / `use_responses_lite` tool protocol (disable with `SUGT_CODEX_MODEL_ALIAS=off`); `auth.json` only overrides the auth mode and gateway key, preserving existing login fields. When the upstream has no native Responses API, the gateway bridges to Chat Completions: flattening namespace tools and restoring their names on the way back, classifying function/custom tools by their declarations, preserving structured tool results and pairing orphan calls, and emitting the full SSE lifecycle events. Responses fields that cannot be forwarded are degraded observably; empty/invalid upstream bodies and 4xx replies produce Responses-shaped failure objects instead of fake empty successes; streaming tolerates late tool names, out-of-order indexes, malformed arguments and multibyte characters split across chunks. MCP servers remain owned by the client's own `[mcp_servers]` table; SUGT does not manage them
-
-### SOUL / su
-
-- A lightweight companion on the **SOUL** tab — the soul of the app, not a separate “gateway agent”
-- Chat, create small projects under the local projects folder, write files, and edit app or system config with confirm-before-write (macOS defaults to `~/Library/Application Support/sugt/projects/`, away from iCloud Documents)
-- Optional **auto-approve writes** for trusted sessions; after a write, su re-reads the file to verify
-- Long shell output is trimmed (head + tail kept) so context stays usable on larger projects
-- Reasons with **your** configured upstream model through the local gateway; paste screenshots when the model supports vision
-- Separate chat history per working place; stop a run mid-flight; hand heavier work to Claude Code or Codex
-- **Management intents are read-only routing**: su is given live facts (known clients, taken-over clients, installed skills, repos) and can suggest one of Clients / Skills / Takeover preview / Settings as a clickable card. It never writes client configs, clones repos or installs skills itself — takeover, install and mount stay on deterministic commands with an impact preview and your confirmation. All of this works with the model unavailable, minus the suggestions
-
-### Skills Console
-
-- Refresh skill indexes from Git repositories, Gitee, or custom sources
-- Paste a GitHub / Gitee / GitLab / Bitbucket / GitCode URL to install skills directly into Local Skills: host allowlist, shallow clone (proxy-aware, `main` → `master` fallback), `SKILL.md` scan, atomic landing, transactional rollback on failure, idempotent ids. The UI then guides you to Local Skills to mount them to an agent
-- Trigger words are read from `SKILL.md` frontmatter (`triggers` / `触发词` / `when_to_use`, comma-separated or YAML list) and shown as chips; the rule-based "optimization advice" dialog explains missing metadata and how to fix it. No invented triggers, no model required
-- Install, uninstall, mount, and unmount Skills — your library is always preserved
-- Mount the same Skill across multiple agents; Markdown-rendered skill panels
-
-### Traffic Overlay
-
-- Always-on-top, semi-transparent, mouse-through overlay showing today's token activity in real time
-- Landscape / portrait layout, resizable, with one-click restore to defaults
-- macOS: overlay position and mouse-through behave with the local desktop
-
-### Workspace Rules
-
-- A separate page with three independent switches: rules text, document habits, and webhook
-- Enabled rules and document habits are injected into OpenAI, Anthropic, and Responses requests that pass through the gateway. This is a soft prompt; it cannot force a client to read or write files
-- A fresh config includes a short general-purpose rules draft (switch off until you turn it on) and enables `AGENTS.md` plus `docs/MAP.md` by default. A non-empty purpose note is injected with that habit
-- Webhook stays off by default. The URL remains local and is relayed by `/v1/_sugt/notify`; it is never placed in the model context
-- Saved rules and checkboxes are left as you saved them. The same inject and relay path is used on Windows and macOS
-
-### Gateway Watchdog
-
-- Detects gateway unavailability every 20 seconds and restarts it automatically
-- Manages a detached `sugt-cli serve` process via PID file (no window, background-only)
-
-### Appearance / Themes
-
-- Built-in skins: Cyber Console, Street, Skate, Brickyard, Shan-shui, HIPHOP, Jazz Night, plus **Anime Boy** / **Anime Girl** (illustrated backdrops with frosted glass panels)
-- Themes are **one CSS file (or JSON pack) each** on a fixed ~40-token contract — background images, translucent surfaces, and `backdrop-filter` glass included
-- Settings → Appearance to switch; import a `theme.json`, a `.zip` or a whole folder; overlay a custom background without changing colors
-- Status bar is on by default and opens a solid log drawer; full logs live in Settings → Logs
-- Authoring guide: [docs/THEME_AUTHORING.md](docs/THEME_AUTHORING.md) · Agent rules: [AGENTS.md](AGENTS.md)
-
-## Screenshots
-
-Console — start/stop, traffic, agent endpoints.
-
-![Console](docs/images/english-client.png)
-
-Models — providers, default model, connectivity test.
-
-![Models](docs/images/english-client-llm.png)
-
-Clients — discover agents, take over or release.
-
-![Clients](docs/images/english-client-agents.png)
-
-Skills — local mount and repo discovery.
-
-![Local skills](docs/images/english-client-skills-local.png)
-
-Settings — Overview, language, gateway, appearance, and overlay options.
-
-![Settings](docs/images/english-settings.png)
-
-Settings → Logs — request and gateway activity.
-
-![Logs](docs/images/english-logs.png)
-
-## Internationalization
-
-SUGT ships with built-in **English / 中文** support. All UI text is rendered through a single dictionary layer with zero third-party dependencies.
-
-**Switching languages**: open **Settings → General → Language** and pick one of:
-
-| Option | Behavior |
+| | |
 | --- | --- |
-| Follow system | Uses the OS language: Chinese systems show 中文, everything else shows English (default) |
-| 中文 | Always shows Chinese |
-| English | Always shows English |
+| 作者 | 孙文龙 · [异常设计](https://github.com/lsuen) |
+| 近况 | 目前在看合适的全职 / 合作机会（2026-11-20）；有合适的介绍欢迎开 [Issue](https://github.com/lsuen/sugt/issues) 或邮件联系仓库主页 |
+| 开源 | [Apache-2.0](LICENSE)，全仓库开源 |
+| 下载 | [GitHub Releases](https://github.com/lsuen/sugt/releases) |
 
-The UI refreshes immediately after switching — every panel, dialog, toast, and the traffic overlay updates with no gaps. The choice is persisted locally and survives restarts.
+## 许可
 
-**Implementation notes**:
+[GitHub Releases](https://github.com/lsuen/sugt/releases) 安装包即完整产品：本机网关、协议互转、客户端接管、技能中控、规则 / 策略、接入密钥，以及 SOUL / 小 su。源码 Apache-2.0。
 
-- All copy lives in the `zh` / `en` dictionaries in `src/i18n.ts`; components read it via `t('namespace.key')`
-- `{variable}` interpolation is supported for dynamic text (token counts, provider names, paths)
-- The preference is stored in `localStorage`, consistent with theme and other UI preferences
-- Adding a new language is a dictionary extension — no component changes required
+## 为什么需要
 
-## Getting Started
+- **Key 与入口分散**：每个客户端各写一套 Base URL / Key，换模型就要改一圈。
+- **Agent 协议各异**：Chat、Anthropic Messages、Responses 混用，裸代理容易把工具循环打挂。
+- **技能与规则难复用**：换机器或换客户端就要重装、重配。
 
-### Install
+SUGT 的取舍是：把「接入面」做厚（接管、密钥、规则、技能、策略），网关本身保持可预期、可本地部署，而不是做成又一个云端聚合站。
 
-**Windows (winget)** — once the manifest merges upstream:
+SUGT 不把自己定位成「免费 token 聚合器」。免费额度适合试水与备用，稳定产出仍然需要付费模型；我们不做薅羊毛的生意，也不承诺「无限免费」。SUGT 解决的是「最后一公里」——让模型治理（接入、策略盒子、规则约束、技能生态）变得可控、可迁移、开箱即用。
+
+## 功能特性
+
+### 界面结构
+
+左侧导航分两层：**门面**是「控制台」「SOUL」，分割线下方是工具层「网关」「规则」「接入」「技能」「设置」。
+
+| 组 | 子页 |
+| --- | --- |
+| 控制台 | 启停、流量、接入点测试（真实 LLM 报告） |
+| SOUL | 只读编排伙伴 |
+| 网关 | 模型配置 · 模型列表 · 策略盒子 · 上游 Key 轮换 |
+| 规则 | 统一注入 · 改写规则 |
+| 接入 | 客户端 · **接入密钥** |
+| 技能 | 发现 / 安装 / 挂载（一级主 Tab，不挂在接入下） |
+| 设置 | 概览 / 常规 / 外观 / 高级 / 精灵 / 日志 / 关于 |
+
+设置「概览」只读展示服务状态、局域网共享与连接信息、当前上游、端点与版本。高频日志轮询仅在「日志」子页可见时运行。
+
+**两套 Key 不要混：**
+
+- **接入密钥**（接入 → 接入密钥）：客户端连本机网关时携带的入站 key；可多把、可停用、可看谁在用。其中**主密钥**同步到 `config.toml` 的 `gateway_client_api_key` 与接入信息卡——改 key 走这里，不要到设置页再造第二套编辑入口。
+- **上游 Key 轮换**（网关 → 上游 Key 轮换）：发往 OpenAI / 魔搭等服务商的多 key 轮换与配额，与入站鉴权无关。
+
+### 本地 AI 网关（Gateway）
+
+- 在 Tauri 进程内启动 Axum HTTP 服务器，同时支持 **OpenAI Chat Completions**、**Anthropic Messages**、**OpenAI Responses** 三种协议
+- **协议互转**：Anthropic 与 OpenAI 之间的请求 / 响应双向转换，含 SSE 流式
+- **多上游故障切换**：按 `failover` 配置顺序自动回退到下一个服务商；实验免费通道在 Chat / Responses 路径均会按候选模型 failover
+- **配置热加载**：修改 `config.toml` 后下一次请求即生效，无需重启
+- **端口兜底**：首选口在「设置 → 常规」可改；被占用时按备选口（默认 `9878/18887/28887`，高级页可编辑）试绑。实际监听口可与首选口不同，但**不会再写回覆盖首选口**；控制台在漂移时会提示「首选 / 实际」
+- **局域网共享**：设置中开启「允许局域网连接」后绑定 `0.0.0.0`，并可一键复制局域网 Base URL / API Key
+- 内置路由：`/health`、`/v1/models`、`/v1/_sugt/traffic`、`/v1/_sugt/workspace-rules`、`/v1/_sugt/notify`
+
+> 工程向后续（不进 UI 说教）：请求纠错重试（空 tool name 等）、弱上游 tools/instructions 瘦身、上下文边界压缩、稳定前缀以利上游 prompt cache。SOUL 与全功能 Agent 共用这套网关能力。
+
+### 模型管理
+
+- **模型配置**：内置国内服务商目录（魔搭、火山引擎、硅基流动、Moonshot Kimi、DeepSeek 等），启停、默认模型、连通性测试；与「模型列表」是两个页，不要合并
+- **模型列表**：注册表视图，隐藏已禁用模型；顶部展示本机接入信息（Base URL / Key）可复制
+- **策略盒子**：可选策略盒子参与选路，健康度回写控制台
+- 实验免费通道：打开控制台或选中该上游时自动探测；支持逐路由真实测速。「设置 → 高级」可分别开关免费通道 / 自定义通道的「获取并测试」行为
+
+### 客户端一键接管
+
+- 入口在 **接入 → 客户端**。单一目录收录 22 个国内外常见客户端（Claude Code、Codex、CodeBuddy、Trae、通义灵码、iFlow、Kimi CLI、Qoder、Comate、CodeGeeX、Windsurf、Cline、Copilot CLI、Kiro、Goose、Factory Droid 等）。空查询也会列出完整目录，不必等本机留下痕迹才能挑选并接管；官方技能目录未确认的客户端只声明环境变量能力，不虚报配置文件写入
+- Claude Code / OpenCode：写环境变量与启动脚本指向本机网关；解除接管时清理干净
+- **Codex（CLI / Desktop）**：写入 `~/.codex/config.toml` 的 `model_providers.sugt`（`wire_api = "responses"`、`requires_openai_auth = false`、本地压缩能力）并在需要时关闭 hosted `web_search`；`model` 使用 `sugt-` 前缀别名，避免客户端把上游模型当官方模型套用 `code_mode_only` / `use_responses_lite` 工具协议（可用 `SUGT_CODEX_MODEL_ALIAS=off` 关闭）；`auth.json` 只覆盖认证方式与网关 Key，保留原有登录态字段。上游若无原生 Responses，网关会做 Responses → Chat 回落：展平 namespace 工具并在回程还原名称、按声明判定 function/custom、结构化保留工具结果与孤儿调用配对、补齐 SSE 生命周期事件。网关对无法透传的 Responses 字段做可观测降级，对上游空/非法响应与 4xx 统一返回 Responses 形状的失败对象，不再伪装成空成功；流式分片容忍迟到工具名、乱序 index、非法参数与跨 chunk 多字节字符；历史 `tool_calls.arguments` 会规范化为 JSON 对象字符串，免费通道 400 换路而非熔断，熔断仅保留鉴权终态。MCP server 仍由客户端自己的 `[mcp_servers]` 管理，SUGT 不代管
+
+### SOUL / 小su
+
+- **SOUL** 页里的轻量伙伴——是这款软件的灵魂与本体，不是另起一套「网关代理」
+- 可聊天、在本地项目目录建小项目、写文件，以及改应用或系统配置（写入前会先确认；macOS 默认在 `~/Library/Application Support/sugt/projects/`，避开 iCloud 文稿）
+- 可选**自动同意写入**（信任会话时用）；写入后会再读一遍文件核对
+- 过长的终端输出会裁掉头尾保留，大项目里上下文更稳
+- 经本机网关，用**你配置的上游大模型**替小su思考；支持粘贴截图（需上游支持视觉）
+- 按工作目录分别保留对话；可中途停下；重活可交给 Claude Code 或 Codex
+- **管理类意图只做只读路由**：小su 会拿到本机事实（已知客户端、已接管客户端、已装技能、仓库目录），可给出「客户端 / 技能 / 接管影响 / 设置」建议卡片，点击只做页面跳转。它不会自己写客户端配置、克隆仓库或安装技能；接管、安装、挂载仍走确定性命令 + 后果预览 + 用户确认。模型不可用时这些功能照常可用，只是少了建议与解释
+
+### 技能中控台
+
+- 从 Git 仓库、Gitee、自定义源刷新技能索引
+- 粘贴 GitHub / Gitee / GitLab / Bitbucket / GitCode 地址即可把技能装进「本地技能」：host 白名单、浅克隆（复用 GitHub 代理，`main` 失败回落 `master`）、扫描 `SKILL.md`、原子落地、失败事务回滚、重复安装幂等；装完界面会引导去「技能 → 本地技能」勾选挂载到目标 Agent
+- 触发词从 `SKILL.md` frontmatter 读取（`triggers` / `触发词` / `when_to_use`，支持逗号、顿号与 YAML 列表），以 chips 展示；「优化建议」弹窗按规则给出缺 frontmatter、描述过短、无触发词、无分节等可操作建议。不编造触发词，也不依赖模型
+- 安装、卸载、挂载、取消挂载——技能库永远保留
+- 同一技能可挂载到多个 Agent；Markdown 渲染的技能面板
+
+### 局域网 WebUI 管理
+
+- 一台机器开着网关，同局域网内任意设备用浏览器即可管理——纯局域网、本地优先，不做互联网中转、不开账号系统
+- 覆盖 Provider、技能、客户端接入、接入密钥、上游 Key 轮换、日志、策略规则、接管配置，与桌面 GUI 同一套管理面
+- 登录口令即入站主密钥（`gateway_client_api_key`）；管理面绑定跟随「允许局域网连接」，默认不暴露到所有网卡
+- CLI：`sugt-cli serve --lan --webui`（仅本次运行生效，不写配置）；GUI：设置页开关（持久化，可改 WebUI 端口）
+- 详见 [局域网 WebUI 管理文档](docs/局域网WebUI管理.md)
+
+### 流量悬浮窗
+
+- 置顶 + 半透明 + 鼠标穿透，实时显示今日 Token 交互
+- 支持横竖排布局、尺寸调节与一键恢复默认
+- macOS：悬浮窗位置与鼠标穿透按本机桌面行为工作
+
+### 全局规则
+
+- **规则 → 统一注入**：规则正文、文档习惯、Webhook 三个开关互不影响；正文和已启用的文档习惯会注入到经网关的 OpenAI / Anthropic / Responses 请求（软约束）
+- 全新配置会放好一段通用规则（开关默认关闭），并默认勾选 `AGENTS.md` 与 `docs/MAP.md`
+- Webhook 默认关闭。地址只留在本机，由 `/v1/_sugt/notify` 代发，不会进入模型上下文
+- **规则 → 改写规则**：请求改写规则引擎（改 model / 头 / 体等），与统一注入并列，不互相替代
+
+### 网关守护
+
+- 看门狗每 20 秒检测网关可达性，不可达时自动拉起
+- 独立 `sugt-cli serve` 进程管理（PID 文件 + 无窗口后台进程）
+
+### 外观 / 主题皮肤
+
+- 内置：赛博控制台、街头粉笔、滑板场、嘻哈砖墙、山水墨、HIPHOP、爵士夜，以及带插画背景与毛玻璃的 **二次元男 / 二次元女**
+- 每个主题独立文件（或 JSON 主题包），固定约 40 个令牌契约；支持背景图、透明表面、毛玻璃
+- 设置 → 外观 切换；可导入 `theme.json`、`.zip` 或整个文件夹；自定义背景只叠插画、不改配色
+- 状态栏默认开启，点开是实体日志抽屉；完整日志在「设置 → 日志」子页
+- 制作说明：[docs/THEME_AUTHORING.zh.md](docs/THEME_AUTHORING.zh.md) · Agent 约定：[AGENTS.md](AGENTS.md)
+
+## 界面预览
+
+控制台：启停、流量、接入点。
+
+![控制台](docs/images/client.png)
+
+模型：多服务商、默认切换、测连通性。
+
+![模型配置](docs/images/client-llm.png)
+
+客户端：发现本机 Agent，一键接管 / 取消接管。
+
+![客户端接管](docs/images/client-agents.png)
+
+技能：本地挂载与仓库发现。
+
+![本地技能](docs/images/client-skills-local.png)
+
+设置：概览、语言、网关、外观与悬浮窗选项。
+
+![设置](docs/images/english-settings.png)
+
+设置 → 日志：请求与网关活动。
+
+![日志](docs/images/english-logs.png)
+
+## 国际化（Internationalization）
+
+SUGT 内置 **中文 / English** 双语支持，所有界面文本均通过统一的字典层渲染，不依赖任何第三方 i18n 库（零额外依赖）。
+
+**语言切换方式**：打开「设置」→「常规」→「语言」，在「跟随系统 / 中文 / English」三者间选择。
+
+| 选项 | 行为 |
+| --- | --- |
+| 跟随系统 | 检测系统语言，中文系统显示中文，其余显示英文（默认） |
+| 中文 | 固定显示中文 |
+| English | 固定显示英文 |
+
+切换后立即刷新界面，所有面板、弹窗、提示、悬浮窗文字实时生效，无遗漏。选择会持久化到本地，重启后保持。
+
+**实现要点**：
+
+- 文案集中在 `src/i18n.ts` 的 `zh` / `en` 两套字典中，组件内通过 `t('namespace.key')` 取值，便于统一维护与扩展
+- 支持 `{变量}` 占位插值，动态文本（如 Token 数、服务商名、路径）可安全拼装
+- 语言偏好存储在 `localStorage`，与主题等界面偏好一致
+- 新增语言只需扩展字典即可，无组件级改动
+
+## 快速开始
+
+### 下载安装
+
+**Windows（winget）**：manifest 合并上游后：
 
 ```bash
 winget install lsuen.SUGT
 ```
 
-**Windows (direct)** — from [GitHub Releases](https://github.com/lsuen/sugt/releases): `SUTAI-windows-x64-setup.exe` (NSIS installer) or `SUTAI-windows-x64.zip` (portable).
+**Windows（直装）**：前往 [GitHub Releases](https://github.com/lsuen/sugt/releases) 下载 `SUTAI-windows-x64-setup.exe`（NSIS 安装包）或 `SUTAI-windows-x64.zip`（便携包）。
 
-**macOS (Homebrew)** — rolling-release cask from the open-source tap:
+**macOS（Homebrew）**：开源 tap 的滚动发布 cask：
 
 ```bash
 brew tap lsuen/homebrew-sugt
-brew trust --cask lsuen/homebrew-sugt/sugt   # Homebrew 6.0+ requires explicit trust for third-party taps
+brew trust --cask lsuen/homebrew-sugt/sugt   # Homebrew 6.0+ 第三方 tap 需显式信任
 brew install --cask sugt
 
-# later: reinstall whatever is currently latest
+# 以后更新：重新装回当前最新版
 brew upgrade --cask --greedy sugt
 ```
 
-The cask uses `version :latest` with a fixed download URL, so a new SUGT release never needs a tap update. Skip `brew trust` on Homebrew < 6.0.
+cask 使用 `version :latest` + 固定下载地址，SUGT 发新版时 tap 无需改动。Homebrew < 6.0 可跳过 `brew trust`。
 
-Launch from Applications as **SUTAI**. The app is unsigned: on first launch, right-click → **Open**, or run `xattr -cr "/Applications/SUTAI.app"`.
+从「应用程序」打开 **SUTAI**。应用未签名：首次启动请右键 →「打开」，或执行 `xattr -cr "/Applications/SUTAI.app"`。
 
-**Linux (headless gateway / server)** — download `SUTAI-linux-x64.tar.gz` or `SUTAI-linux-arm64.tar.gz`. Each archive contains `sugt-cli` plus a systemd unit sample:
+**Linux（无头网关 / 服务器）**：下载 `SUTAI-linux-x64.tar.gz` 或 `SUTAI-linux-arm64.tar.gz`，解压后得到 `sugt-cli` 与 systemd 样例：
 
 ```bash
 tar -xzf SUTAI-linux-x64.tar.gz
-./sugt-cli serve --lan --port 8787   # LAN-reachable; omit --lan to stay on 127.0.0.1
+./sugt-cli serve --lan --port 8787   # 局域网可访问；默认仍是本机 127.0.0.1（去掉 --lan）
 ```
 
-Non-loopback binds **require** a client API key (`Authorization: Bearer …` or `x-api-key`). Change `gateway_client_api_key` in config before sharing on a network. See `sugt-gateway.service` in the tarball or [`deploy/sugt-gateway.service`](deploy/sugt-gateway.service). There is **no** Linux desktop GUI package yet.
+非回环绑定时网关**强制**校验客户端 API Key（`Authorization: Bearer …` 或 `x-api-key`）。请先在配置里把 `gateway_client_api_key` 改成强密钥，再对外共享。systemd 样例见包内 `sugt-gateway.service` 或仓库 [`deploy/sugt-gateway.service`](deploy/sugt-gateway.service)。当前 **不提供** Linux 桌面 GUI 安装包。
 
-**Release packages (stable names).** Asset filenames never carry a version number — only the git tag does:
+**发布包（固定文件名）**：release 资产名一律不带版本号，只有 git tag 带版本号。
 
-| Platform | Asset |
+| 平台 | 资产名 |
 | --- | --- |
-| Windows installer | `SUTAI-windows-x64-setup.exe` |
-| Windows portable | `SUTAI-windows-x64.zip` |
+| Windows 安装包 | `SUTAI-windows-x64-setup.exe` |
+| Windows 便携包 | `SUTAI-windows-x64.zip` |
 | macOS Apple Silicon | `SUTAI-macos-arm64.zip` |
 | macOS Intel | `SUTAI-macos-x64.zip` |
 | Linux CLI x86_64 | `SUTAI-linux-x64.tar.gz` |
 | Linux CLI arm64 | `SUTAI-linux-arm64.tar.gz` |
-| SHA256 list | `SUTAI-checksums.txt` |
+| SHA256 清单 | `SUTAI-checksums.txt` |
 
-`https://github.com/lsuen/sugt/releases/latest/download/<asset>` therefore always resolves to the newest build. The download site, the Homebrew cask and the in-app updater all read `/releases/latest`, so publishing a new version only replaces the same-named assets — no link or config changes anywhere. Tags stay semantic (`v1.1.9`) because the in-app updater compares the tag with the bundled `CARGO_PKG_VERSION`; a fixed `latest` tag would silently disable update checks. Windows, both macOS architectures and Linux CLI builds are produced by `.github/workflows/release.yml` on every `v*` tag push.
+因此 `https://github.com/lsuen/sugt/releases/latest/download/<资产名>` 永远指向最新构建。下载站、Homebrew cask 与应用内更新都读 `/releases/latest`，以后发新版**只需替换同名 release 资产**，两边仓库与配置都不用再动。tag 仍保持语义化（`v1.1.9`），因为应用内更新要用 tag 与内置的 `CARGO_PKG_VERSION` 比较；若固定成 `latest`，更新检查会永远不提示。Windows、macOS 双架构与 Linux CLI 由 `.github/workflows/release.yml` 在每次推送 `v*` tag 时自动构建。
 
-**In-app updates:** Settings → About → Check for Updates. Fallback order is direct GitHub → your configured GitHub proxy → built-in/remote mirrors. Windows can silent-install the NSIS package; macOS replaces the `.app` when writable, otherwise opens the download folder for a manual drag into Applications. Homebrew / winget remain install channels.
+**应用内更新**：打开「设置」→「关于」→「检查更新」。会按「直连 GitHub → 你配置的 GitHub 代理 → 内置/远端镜像」回退；Win 可静默安装 NSIS，macOS 在可写时自动替换 `.app`，否则打开下载目录供手动拖入「应用程序」。Homebrew / winget 仍可作为安装渠道。
 
-Config dir: Windows / Linux default to `Documents/.sugt/`; macOS defaults to `~/Library/Application Support/sugt/` (auto-migrates from legacy `Documents/.sugt` when Documents is iCloud-synced). Override with `SUGT_CONFIG_DIR`.
+配置目录：Windows / Linux 默认 `Documents/.sugt/`；macOS 默认 `~/Library/Application Support/sugt/`（若文稿已进 iCloud，会从旧的 `Documents/.sugt` 自动迁过去）。可用环境变量 `SUGT_CONFIG_DIR` 覆盖。
 
 ### CLI
 
 ```bash
 sugt-cli status
 sugt-cli serve --host 127.0.0.1 --port 8787
-sugt-cli serve --lan --port 8787          # LAN/server: bind 0.0.0.0, require client key
-sugt-cli env        # takeover management
-sugt-cli test       # connectivity test
+sugt-cli serve --lan --port 8787          # 局域网 / 服务器：绑定 0.0.0.0，强制客户端 Key
+sugt-cli serve --lan --webui              # 同时开 WebUI（端口 8788，仅本次运行生效）
+sugt-cli webui on --port 8788             # 持久化配置，GUI 启动时自动监听
+sugt-cli webui off | status               # 关闭 / 查看持久配置
+sugt-cli env        # 接管管理
+sugt-cli test       # 连通性测试
 ```
 
-> On macOS the CLI ships inside the app bundle at `SUTAI.app/Contents/MacOS/sugt-cli`. Linux releases ship the CLI only.
+`--webui` / `--webui-port` 和 `--port` 一样只影响本次运行，不写配置；要持久化请用 `webui` 子命令或 GUI 设置页开关。开启后浏览器访问 `http://<局域网IP>:8788`，用 `gateway_client_api_key` 登录。详见 [局域网 WebUI 管理文档](docs/局域网WebUI管理.md)。
 
-## Build from Source
+> macOS 上 CLI 内置于应用包：`SUTAI.app/Contents/MacOS/sugt-cli`。Linux Release 包只含 CLI。
 
-Requirements: Windows 10/11, Node 18+, Rust 1.78+. On macOS, Xcode Command Line Tools and Node are required.
+## 从源码构建
+
+需要：Windows 10/11、Node 18+、Rust 1.78+。macOS 需要 Xcode Command Line Tools 与 Node。
 
 ```bash
 npm install
-npm test             # theme contract + import smoke + TypeScript check
-npm run dev:app      # launch the Tauri app in dev mode
+npm test             # 主题契约 + 导入冒烟 + TypeScript 类型检查
+npm run dev:app      # 启动 Tauri 桌面应用（开发模式）
 ```
 
-Production build:
+生产构建：
 
 ```bash
-npm run build        # frontend production build
-npx tauri build      # full desktop bundle
-cd src-tauri && cargo build --release --bin sugt-cli   # standalone CLI
+npm run build        # 前端生产构建
+npm run build:web    # 把局域网 WebUI 嵌入 sugt-cli；不需要 WebUI 时可跳过
+npx tauri build      # 完整桌面应用打包
+cd src-tauri && cargo build --release --bin sugt-cli   # 独立 CLI
 ```
 
-Full verification (frontend plus Rust library and integration tests):
+构建 `sugt-cli` 前必须先执行 `npm run build:web`；否则 CLI 内嵌的是占位页。
+
+发布前的完整验证（前端 + Rust 单元与集成测试）：
 
 ```bash
 npm test
 cd src-tauri && cargo test
 ```
 
-## Tech Stack
+## 技术栈
 
-| Layer | Choice |
+| 层 | 选型 |
 | --- | --- |
-| Desktop shell | Tauri 2.9 (WebView2 on Windows / WKWebView on macOS) |
-| Frontend | React 18 + TypeScript 5.7 + Vite 6 |
-| Backend | Rust (edition 2021) + Axum 0.7 |
-| Gateway | Embedded Axum HTTP server, OpenAI / Anthropic protocol bridging |
-| CLI | `sugt-cli` (standalone binary: `serve` / `status` / `test` / `env` / `init`) |
+| 桌面壳 | Tauri 2.9（Windows 用 WebView2 / macOS 用 WKWebView） |
+| 前端 | React 18 + TypeScript 5.7 + Vite 6 |
+| 后端 | Rust (edition 2021) + Axum 0.7 |
+| 网关 | 内嵌 Axum HTTP 服务器，OpenAI / Anthropic 协议互转 |
+| CLI | `sugt-cli`（独立二进制，支持 `serve` / `status` / `test` / `env` / `init` / `webui`） |
+| 局域网 WebUI | 独立 Axum listener + 内嵌 SPA；`/api/invoke` RPC，网关 Key 换 HMAC 会话 |
 
-## Feedback & Contributions
+## 反馈与参与
 
-Questions and suggestions are welcome — open an [Issue](https://github.com/lsuen/sugt/issues). The project is under active polish; a star is the best encouragement.
+有问题或建议，欢迎开 [Issues](https://github.com/lsuen/sugt/issues)。项目持续打磨中，Star 是对作者最大的鼓励。
 
 ## License
 

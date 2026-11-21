@@ -2,7 +2,7 @@
  * 作用：接管前集中展示 SUGT 将写入的内容，并形成「看影响 → 做决定 → 执行」闭环。
  * 每次挂载都重新读取 preview_takeover，避免展示过期影响。 */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import { Copy, RotateCcw, ShieldCheck, X } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { t } from './i18n';

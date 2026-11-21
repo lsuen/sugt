@@ -4,17 +4,19 @@
    禁止再给 .pet-stage 或环境层铺任何径向/纯色「假桌面」。
    结构：
      舞台（视线 3D / 靠近度）—— background 必须 transparent !important
-       ├ 环境层：仅粒子 / 完成火花（无 halo / ground）
+       ├ 环境层：空层（无粒子、无火花、无雾）
        ├ 信息层：气泡 + 脚底胶囊 + 思考云
        ├ 角色层：单层动画 WebP
-       └ 右键菜单
+       └ 右键菜单在另一扇不透明小窗里，不画进这个舞台
    连续缓动由 JS rAF 写变量；每个姿势只挂一张素材。 */
 .pet-stage {
   --pet-accent: #4ade80;
-  --pet-glow: rgba(74, 222, 128, 0.22);
   --pet-ink: #eaf6ff;
-  --pet-panel: rgba(8, 16, 28, 0.9);
+  /* v1.4 扁平化：控件改用不透明实色 + 清晰描边；去掉模糊/阴影后靠实色保证可读性。
+     旧 --pet-glow / --pet-panel 只服务阴影与半透明模糊，v1.4 起已无引用，一并移除。 */
+  --pet-panel-solid: #101d2b;
   --pet-line: rgba(140, 200, 232, 0.28);
+  --pet-line-strong: rgba(140, 200, 232, 0.46);
   /* 窄侧栏：气泡叠在立绘左侧空隙；此区域必须保持穿透，不可整窗解穿透 */
   --pet-side-w: 28%;
   /* v1.3.1 角色安全边：窗口 overflow:hidden 是硬裁剪，lifted 上移 10px、
@@ -67,12 +69,13 @@
   opacity: var(--pet-opacity);
 }
 .pet-stage[data-facing="left"] { --face-x: -1; }
-.pet-stage[data-state="offline"] { --pet-accent: #8fa3b8; --pet-glow: rgba(143,163,184,.16); }
-.pet-stage[data-state="idle"] { --pet-accent: #4ade80; --pet-glow: rgba(74,222,128,.22); }
-.pet-stage[data-state="typing"] { --pet-accent: #5ec8ff; --pet-glow: rgba(94,200,255,.24); }
-.pet-stage[data-state="done"] { --pet-accent: #4ade80; --pet-glow: rgba(120,235,170,.26); }
-.pet-stage[data-state="error"] { --pet-accent: #f87171; --pet-glow: rgba(248,113,113,.24); }
-.pet-stage[data-state="sleep"] { --pet-accent: #8fa3b8; --pet-glow: rgba(143,163,184,.12); }
+/* 状态色只驱动 3px 右边条与状态圆点；不再驱动 glow 阴影（v1.4 零阴影） */
+.pet-stage[data-state="offline"] { --pet-accent: #8fa3b8; }
+.pet-stage[data-state="idle"] { --pet-accent: #4ade80; }
+.pet-stage[data-state="typing"] { --pet-accent: #5ec8ff; }
+.pet-stage[data-state="done"] { --pet-accent: #4ade80; }
+.pet-stage[data-state="error"] { --pet-accent: #f87171; }
+.pet-stage[data-state="sleep"] { --pet-accent: #8fa3b8; }
 
 /* ---- 环境层：禁止底板；只留点状装饰 ---- */
 .pet-ambient {
@@ -98,15 +101,15 @@
 .pet-mote:nth-child(4) { left: 92%; top: 54%; animation-delay: 3.9s; }
 .pet-mote:nth-child(5) { left: 45%; top: 38%; animation-delay: 5.2s; }
 .pet-mote:nth-child(6) { left: 78%; top: 12%; animation-delay: 6.3s; }
+/* 完成火花：用径向色块做辉光，不用 box-shadow（v1.4 全控件零阴影） */
 .pet-spark {
   position: absolute;
   left: 72%;
   top: 34%;
-  width: 1.6px;
-  height: 1.6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: #eafff3;
-  box-shadow: 0 0 6px var(--pet-accent);
+  background: radial-gradient(circle, #eafff3 0%, var(--pet-accent) 42%, transparent 78%);
   opacity: 0;
 }
 .pet-stage[data-state="done"] .pet-spark { animation: pet-spark 0.7s ease-out 1; }
@@ -120,6 +123,9 @@
   z-index: 2;
   pointer-events: none;
 }
+/* v1.4 消息框扁平化：纯色实底、无 backdrop-filter、无 box-shadow。
+   透明窗里阴影会被 overflow 裁成矩形底板，拖动时拖影；改用 1px 描边 +
+   3px 状态色右边条界定边界，ok/error/info 只换右边条颜色。 */
 .pet-bubble {
   position: absolute;
   left: 3px;
@@ -127,21 +133,15 @@
   z-index: 5;
   width: max-content;
   max-width: calc(var(--pet-side-w) + 52px);
-  padding: 7px 9px;
-  border: 1px solid color-mix(in srgb, var(--pet-line) 85%, #fff 15%);
-  border-right: 2px solid var(--pet-accent);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--pet-panel) 88%, transparent);
-  -webkit-backdrop-filter: blur(10px) saturate(1.15);
-  backdrop-filter: blur(10px) saturate(1.15);
+  padding: 8px 10px;
+  border: 1px solid var(--pet-line-strong);
+  border-right: 3px solid var(--pet-accent);
+  border-radius: 10px;
+  background: var(--pet-panel-solid);
   font-size: 12px;
   line-height: 1.45;
   letter-spacing: 0.01em;
   overflow-wrap: anywhere;
-  box-shadow:
-    0 10px 24px rgba(2, 8, 18, 0.48),
-    0 0 18px var(--pet-glow),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
   pointer-events: none;
   animation: pet-bubble-in 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -152,14 +152,65 @@
   top: 50%;
   width: 6px;
   height: 6px;
-  background: var(--pet-panel);
-  border-top: 1px solid var(--pet-line);
-  border-right: 1px solid var(--pet-line);
+  background: var(--pet-panel-solid);
+  border-top: 1px solid var(--pet-line-strong);
+  border-right: 1px solid var(--pet-line-strong);
   transform: rotate(45deg);
 }
 .pet-bubble-ok { border-right-color: #4ade80; }
 .pet-bubble-error { border-right-color: #f87171; }
 .pet-bubble-info { border-right-color: #5ec8ff; }
+
+/* ---- 消息分类分级外观（作者：孙文龙 sun）----
+   依据 data-category 给气泡分级：闲置更轻、结果强色条、状态左侧提示、互动小标记。
+   沿用 v1.4 扁平语言（实底 + 描边），零 box-shadow / 零 backdrop-filter；
+   新增子元素全部保持 pointer-events:none，气泡整体不制造点击墙。 */
+.pet-bubble[data-category="idle"] {
+  border-color: var(--pet-line);
+  border-right-color: rgba(94, 200, 255, 0.45);
+  color: #c7dfee;
+  font-weight: 400;
+}
+.pet-bubble[data-category="result"] {
+  border-right-width: 5px;
+  border-right-color: var(--pet-accent);
+  font-weight: 600;
+}
+.pet-bubble[data-category="state"] {
+  border-left: 3px solid rgba(94, 200, 255, 0.55);
+}
+.pet-bubble-cat {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border: 1px solid var(--pet-line);
+  border-radius: 4px;
+  color: #8fa3b8;
+  font-size: 9px;
+  line-height: 1.5;
+  vertical-align: middle;
+  pointer-events: none;
+}
+.pet-bubble[data-category="result"] .pet-bubble-cat {
+  border-color: var(--pet-accent);
+  color: var(--pet-accent);
+}
+.pet-bubble[data-category="interaction"] .pet-bubble-cat,
+.pet-bubble[data-category="state"] .pet-bubble-cat {
+  border-color: rgba(94, 200, 255, 0.6);
+  color: #5ec8ff;
+}
+.pet-bubble-count {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(94, 200, 255, 0.16);
+  color: #5ec8ff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
 
 /* 脚底状态：纯文字，禁止胶囊底板/描边（移动时会看成「背景边框」拖影） */
 .pet-status-bar {
@@ -204,8 +255,8 @@
 }
 
 /* ---- 角色层：四层互不覆盖，每层只挂一张素材 ----
-   铁律：禁止 drop-shadow / box-shadow。透明窗里阴影会被 overflow 裁成矩形底板，
-   拖动/漫游时必出重影与「背景边框」。色调只用 brightness/grayscale/saturate。
+   铁律：禁止 drop-shadow / box-shadow / brightness / grayscale。
+   透明窗里滤镜和阴影会被 overflow 裁成矩形底板。
    活感分层：figure(朝向 + 头跟随) → weight(重心 7.9s + 身延迟)
              → motion(呼吸 3.1s) → secondary(发梢 5.3s) → loops(逐帧/一次性动效)。
    3.1 / 5.3 / 7.9s 按 0.1s 为单位两两互质，合成周期约 3.6 小时，盯不出循环点。 */
@@ -226,17 +277,8 @@
   filter: none;
 }
 .pet-stage.interactive .pet-figure { pointer-events: auto; cursor: grab; }
-.pet-stage.interactive .pet-figure:hover {
-  filter: brightness(1.07);
-}
 .pet-stage.interactive .pet-figure:active,
 .pet-figure.dragging { cursor: grabbing; }
-.pet-stage[data-state="offline"] .pet-figure {
-  filter: grayscale(0.55);
-}
-.pet-stage[data-state="sleep"] .pet-figure {
-  filter: saturate(0.72);
-}
 
 /* 重心层：身延迟用独立 translate 属性，与 animation 的 transform 叠加而不互相覆盖 */
 .pet-weight {
@@ -331,6 +373,11 @@
 .pet-loop[data-loop="peek"] { background-image: url('../assets/pet/su-peek-loop.webp'); }
 .pet-loop[data-loop="walk"] { background-image: url('../assets/pet/su-walk-loop.webp'); }
 .pet-loop[data-loop="idle"] { background-image: url('../assets/pet/su-idle-loop.webp'); }
+.pet-loop[data-loop="squatDraw"] { background-image: url('../assets/pet/su-squatDraw-loop.webp'); }
+.pet-loop[data-loop="wiggleDance"] { background-image: url('../assets/pet/su-wiggleDance-loop.webp'); }
+.pet-loop[data-loop="kickflip"] { background-image: url('../assets/pet/su-kickflip-loop.webp'); }
+.pet-loop[data-loop="miniGame"] { background-image: url('../assets/pet/su-miniGame-loop.webp'); }
+.pet-loop[data-loop="yawn"] { background-image: url('../assets/pet/su-yawn-loop.webp'); }
 .pet-poster[data-frame="lifted"] { background-image: url('../assets/pet/su-lifted.webp'); }
 .pet-poster[data-frame="landing"] { background-image: url('../assets/pet/su-landing.webp'); }
 .pet-poster[data-frame="typing"] { background-image: url('../assets/pet/su-typing.webp'); }
@@ -351,6 +398,11 @@
 .pet-poster[data-frame="peek"] { background-image: url('../assets/pet/su-peek.webp'); }
 .pet-poster[data-frame="walk"] { background-image: url('../assets/pet/su-walk.webp'); }
 .pet-poster[data-frame="idle"] { background-image: url('../assets/pet/su-idle.webp'); }
+.pet-poster[data-frame="squatDraw"] { background-image: url('../assets/pet/su-squatDraw.webp'); }
+.pet-poster[data-frame="wiggleDance"] { background-image: url('../assets/pet/su-wiggleDance.webp'); }
+.pet-poster[data-frame="kickflip"] { background-image: url('../assets/pet/su-kickflip.webp'); }
+.pet-poster[data-frame="miniGame"] { background-image: url('../assets/pet/su-miniGame.webp'); }
+.pet-poster[data-frame="yawn"] { background-image: url('../assets/pet/su-yawn.webp'); }
 /* @generated:pet-assets end */
 
 /* 非激活循环跳过合成；sleep/offline 时彻底藏起非当前帧以省解码 */
@@ -398,9 +450,8 @@
 .pet-stage.still .pet-secondary,
 .pet-stage.still .pet-mote { animation-play-state: paused; }
 
-/* listening：靠近 idle 时侧耳提亮，不切换真实 typing 状态 */
+/* listening：靠近 idle 时侧耳，不切换真实 typing 状态，也不加滤镜底板 */
 .pet-stage.pet-listening .pet-figure {
-  filter: brightness(1.08) saturate(1.06);
   transform:
     scaleX(var(--face-x))
     translate3d(calc(var(--head-x) * 3px), calc(var(--head-y) * 1.8px), 0)
@@ -455,9 +506,9 @@
   align-items: center;
   gap: 3px;
   padding: 4px 7px;
-  border: 1px solid var(--pet-line);
+  border: 1px solid var(--pet-line-strong);
   border-radius: 999px;
-  background: rgba(8, 16, 28, 0.72);
+  background: var(--pet-panel-solid);
   pointer-events: none;
   animation: pet-thought-in 0.3s ease-out 1;
 }
@@ -563,50 +614,42 @@
   display: none;
 }
 
-/* 眼神高光：随视线轻微移动；移动中关闭，避免径向光斑拖成底板 */
-.pet-gaze {
-  position: absolute;
-  left: 43%;
-  top: 19%;
-  width: 22%;
-  height: 12%;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at 50% 45%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 62%);
-  mix-blend-mode: screen;
-  opacity: calc(0.14 + var(--near) * 0.42);
-  transform: translate(calc(var(--gaze-x) * 3px), calc(var(--gaze-y) * 1.8px));
-  transition: none;
-  pointer-events: none;
-}
+/* 眼神高光会在透明窗上铺一层雾，关掉。选择器留着，避免旧样式回潮。 */
+.pet-gaze { display: none; }
 
-/* ---- 右键快捷菜单：紧凑面板贴在立绘上，禁止铺满整窗（否则解穿透=透明墙） ---- */
+/* ---- 右键菜单：独立小窗里铺满，不再挂进精灵透明窗 ---- */
 .pet-menu {
-  position: absolute;
-  left: calc(var(--pet-side-w) + 6%);
-  right: 6%;
-  top: 14%;
-  bottom: auto;
+  --pet-panel-solid: #101d2b;
+  --pet-ink: #eaf6ff;
+  --pet-line-strong: rgba(140, 200, 232, 0.46);
+  position: static;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
   z-index: 10;
   display: flex;
   flex-direction: column;
   gap: 3px;
   padding: 7px;
-  border: 1px solid color-mix(in srgb, var(--pet-line) 85%, #fff 15%);
+  /* v1.4：与气泡同一套扁平语言——实底 + 描边，无模糊、无阴影 */
+  border: 1px solid var(--pet-line-strong);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--pet-panel) 94%, transparent);
-  -webkit-backdrop-filter: blur(12px) saturate(1.15);
-  backdrop-filter: blur(12px) saturate(1.15);
-  box-shadow: 0 10px 24px rgba(2, 8, 18, 0.5), 0 0 18px var(--pet-glow);
+  background: var(--pet-panel-solid);
+  color: var(--pet-ink);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   pointer-events: auto;
   animation: pet-menu-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pet-menu-item {
+  appearance: none;
   display: block;
   width: 100%;
+  font-family: inherit;
   padding: 4px 8px;
   border: 0;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--pet-ink);
   font-size: 11px;
   line-height: 1.4;
@@ -615,7 +658,7 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 .pet-menu-item:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(94, 200, 255, 0.16);
   color: #fff;
 }
 .pet-menu-item--danger { color: #f87171; }
@@ -658,9 +701,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px;
-  border: 1px solid var(--pet-line);
+  border: 1px solid var(--pet-line-strong);
   border-radius: 7px;
-  background: rgba(8, 16, 28, 0.86);
+  background: var(--pet-panel-solid);
 }
 .pet-stage.interactive .pet-edit-bar { pointer-events: auto; }
 
@@ -745,4 +788,117 @@
   .pet-figure { transform: none; }
   .pet-weight { translate: none; }
   .pet-gaze, .pet-stage.petted .pet-figure::after { display: none; }
+}
+
+/* ---- 只读信息弹窗（作者：孙文龙 sun）----
+   ModalPortal 把弹窗挂到 document.body；overlay 窗口不加载主窗口 styles.css，
+   因此弹窗样式随 pet.css 一起进包。变量自带缺省值，不依赖 .pet-stage 作用域。
+   遮罩保持透明（硬零背景），只有弹窗面板自身有实色；零 box-shadow / 零 backdrop-filter。 */
+.pet-info-overlay {
+  --pet-panel-solid: #101d2b;
+  --pet-line: rgba(140, 200, 232, 0.28);
+  --pet-line-strong: rgba(140, 200, 232, 0.46);
+  --pet-ink: #eaf6ff;
+  --pet-accent: #5ec8ff;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  background: transparent;
+  pointer-events: auto;
+}
+.pet-info-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 260px);
+  max-height: 100%;
+  border: 1px solid var(--pet-line-strong);
+  border-radius: 12px;
+  background: var(--pet-panel-solid);
+  color: var(--pet-ink);
+  font-size: 11px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.pet-info-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--pet-line);
+}
+.pet-info-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.pet-info-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--pet-line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pet-ink);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pet-info-close:hover { background: rgba(94, 200, 255, 0.16); }
+.pet-info-body {
+  padding: 6px 9px;
+  overflow-y: auto;
+}
+.pet-info-state {
+  margin: 4px 0;
+  color: #8fa3b8;
+}
+.pet-info-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+}
+.pet-info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pet-info-row dt {
+  flex: 0 0 auto;
+  color: #8fa3b8;
+  font-size: 10px;
+}
+.pet-info-row dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.pet-info-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 9px;
+  border-top: 1px solid var(--pet-line);
+}
+.pet-info-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--pet-line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pet-ink);
+  font-size: 10px;
+  cursor: pointer;
+}
+.pet-info-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.pet-info-btn--primary {
+  border-color: rgba(94, 200, 255, 0.6);
+  color: #5ec8ff;
 }

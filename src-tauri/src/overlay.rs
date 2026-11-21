@@ -1,8 +1,8 @@
-//! 流量悬浮窗：置顶 + 半透明 + 鼠标穿透的小窗，实时展示 token 交互。
-//! 位置策略：未定位（x/y < 0）时按模式分派——流量 HUD 在主屏右上角，
-//! 桌面精灵在主屏右下角；启动恢复时若坐标不在任何 monitor 范围内（如副屏已拔），
-//! 自动按当前模式重新定位并写回配置。
-//! 尺寸/布局方向由配置驱动（width/height/layout），前端按 layout 渲染横竖排。
+//! 桌面精灵（小酥）透明窗：置顶 + 透明 + 元素级鼠标穿透。
+//! 流量 HUD 悬浮窗已废弃，本模块只服务精灵一个功能域。
+//! 位置策略：未定位（x/y < 0）时落到主屏右下角；启动恢复时若坐标不在任何
+//! monitor 范围内（如副屏已拔），自动重新定位并写回配置。
+//! 尺寸由配置驱动（width/height），透明区穿透由前端命中框动态切换。
 
 use crate::commands::AppRuntime;
 use crate::model::OverlayConfig;
@@ -11,32 +11,7 @@ use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, WebviewUrl, Webvi
 const LABEL: &str = "overlay";
 const MARGIN: f64 = 16.0;
 
-/// 主屏右上角物理坐标。前端 `outerPosition()` 和 `set_position(PhysicalPosition)` 都是物理像素；
-/// Retina 上若把逻辑坐标当物理坐标用，悬浮窗会偏到屏幕内侧。
-fn top_right(app: &AppHandle, width: f64) -> (i32, i32) {
-    let Some(m) = app.primary_monitor().ok().flatten() else {
-        return (MARGIN as i32, MARGIN as i32);
-    };
-    let origin = m.position();
-    top_right_physical(origin.x, origin.y, m.size().width, m.scale_factor(), width)
-}
-
-fn top_right_physical(
-    origin_x: i32,
-    origin_y: i32,
-    screen_width: u32,
-    scale: f64,
-    window_width: f64,
-) -> (i32, i32) {
-    let scale = scale.max(1.0);
-    let margin_px = MARGIN * scale;
-    let width_px = window_width * scale;
-    let x = origin_x + ((screen_width as f64) - width_px - margin_px).max(margin_px) as i32;
-    let y = origin_y + margin_px as i32;
-    (x, y)
-}
-
-/// 主屏右下角物理坐标：桌面精灵默认停靠位，避开顶部菜单栏与右上角 HUD。
+/// 主屏右下角物理坐标：桌面精灵默认停靠位，避开顶部菜单栏。
 fn bottom_right(app: &AppHandle, width: f64, height: f64) -> (i32, i32) {
     let Some(m) = app.primary_monitor().ok().flatten() else {
         return (MARGIN as i32, MARGIN as i32);
@@ -66,13 +41,9 @@ fn bottom_right_physical(
     (x, y)
 }
 
-/// 按当前模式选择默认落点：精灵右下角，原流量 HUD 仍保留右上角。
+/// 未定位时落到主屏右下角（HUD 废弃后不再有第二种落点）。
 fn placement(app: &AppHandle, cfg: &OverlayConfig) -> (i32, i32) {
-    if cfg.pet_enabled {
-        bottom_right(app, cfg.width, cfg.height)
-    } else {
-        top_right(app, cfg.width)
-    }
+    bottom_right(app, cfg.width, cfg.height)
 }
 
 fn point_inside(x: i32, y: i32, origin_x: i32, origin_y: i32, width: u32, height: u32) -> bool {
@@ -102,7 +73,7 @@ fn window_fully_inside(
         && bottom <= origin_y.saturating_add_unsigned(screen_height)
 }
 
-/// 未定位或窗口不完整落在任一 monitor 内 → 按当前模式重新定位；坐标已被改写。
+/// 未定位或窗口不完整落在任一 monitor 内 → 重新定位；坐标已被改写。
 /// x/y < 0 是显式哨兵（多屏 origin 可能为负，不能只靠坐标范围判断）。
 async fn ensure_on_screen(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
     let unpositioned = cfg.x < 0 || cfg.y < 0;
@@ -281,23 +252,17 @@ async fn write_back(app: &AppHandle, cfg: &OverlayConfig) {
     }
 }
 
-/// 依据配置创建/更新/销毁悬浮窗；可能改写 cfg.x/y（首次右上角、副屏回退），调用方负责持久化。
+/// 依据配置创建/更新/销毁精灵透明窗；可能改写 cfg.x/y（首次右下角、副屏回退），调用方负责持久化。
 pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), String> {
-    // HUD：仅编辑态解除穿透。
-    // 精灵：默认不穿透（整窗可交互，拖拽/右键可用）；仅 pet_click_through 开启时才
-    // 走元素级动态穿透。配置热更不要再写 ignore_cursor_events，交给前端按立绘/
-    // 菜单命中框动态 pet_set_clickable，避免空白侧栏变成透明墙。
-    let hud_interactive = cfg.edit && !cfg.pet_enabled;
+    // 配置热更不重写 ignore_cursor_events，交给前端按立绘/菜单命中框动态
+    // pet_set_clickable，避免透明边变成挡点击的墙。仅编辑态强制解除穿透。
     match app.get_webview_window(LABEL) {
         Some(w) if !cfg.enabled => {
-            w.close().map_err(|e| format!("关闭悬浮窗失败: {e}"))?;
+            w.close().map_err(|e| format!("关闭精灵窗口失败: {e}"))?;
         }
         Some(w) => {
-            if !cfg.pet_enabled {
-                w.set_ignore_cursor_events(!hud_interactive)
-                    .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
-            } else if cfg.edit {
-                // 精灵编辑态需要点保存/拖柄；退出编辑后由前端重新按命中框切回穿透
+            if cfg.edit {
+                // 编辑态需要点保存/拖柄；退出编辑后由前端重新按命中框切回穿透
                 w.set_ignore_cursor_events(false)
                     .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             }
@@ -318,7 +283,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
         None if cfg.enabled => {
             ensure_on_screen(app, cfg).await?;
             let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("overlay.html".into()))
-                .title(if cfg.pet_enabled { "SUGT 小su" } else { "SUGT 流量" })
+                .title("SUGT 小su")
                 .decorations(false)
                 .transparent(true)
                 .shadow(false)
@@ -331,13 +296,9 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
             let _ = w.set_shadow(false);
-            // 新建窗口：默认不穿透；只有显式开启 pet_click_through 才穿透。
+            // 透明区始终穿透：新建窗口先忽略光标，再由命中框解开。
             // 编辑态强制可点击（保存按钮 / 拖柄需要接收事件）。
-            let ignore = if cfg.pet_enabled {
-                cfg.pet_click_through && !cfg.edit
-            } else {
-                !hud_interactive
-            };
+            let ignore = !cfg.edit;
             w.set_ignore_cursor_events(ignore)
                 .map_err(|e| format!("设置鼠标穿透失败: {e}"))?;
             w.set_always_on_top(true)
@@ -352,8 +313,7 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        bottom_right_physical, clamp_roam_position, point_inside, top_right_physical,
-        window_fully_inside,
+        bottom_right_physical, clamp_roam_position, point_inside, window_fully_inside,
     };
 
     #[test]
@@ -402,20 +362,6 @@ mod tests {
     fn pet_dock_keeps_origin_offset_for_secondary_monitor() {
         let (x, y) = bottom_right_physical(-1920, 200, 1920, 1080, 1.0, 120.0, 160.0);
         assert_eq!((x, y), (-1920 + 1920 - 120 - 16, 200 + 1080 - 160 - 16));
-    }
-
-    #[test]
-    fn retina_top_right_stays_in_physical_pixels() {
-        // 1512 逻辑点 × 2 = 3024 物理像素，窗口宽 280 逻辑点
-        let (x, y) = top_right_physical(0, 0, 3024, 2.0, 280.0);
-        assert_eq!(y, 32);
-        assert_eq!(x, 3024 - 560 - 32);
-    }
-
-    #[test]
-    fn scale_one_matches_logical_layout() {
-        let (x, y) = top_right_physical(0, 0, 1920, 1.0, 280.0);
-        assert_eq!((x, y), (1920 - 280 - 16, 16));
     }
 
     #[test]
