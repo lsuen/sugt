@@ -15,6 +15,7 @@ import { SettingsOverview, type OverviewStatus } from './SettingsOverview';
 import { PetSettingsSection } from './PetSettingsSection';
 import { MaintenanceSection } from './MaintenanceSection';
 import { DEFAULT_OVERLAY, type OverlayConfigView } from './pet/config';
+import { ConfigPresetPanel } from './ConfigPresetPanel';
 export type { OverlayConfigView };
 
 export type LanShareInfo = {
@@ -54,11 +55,12 @@ type AppConfigView = {
 };
 
 type Tab = 'dashboard' | 'models' | 'clients' | 'skills' | 'me' | 'rules' | 'settings';
-export type SettingsTab = 'overview' | 'general' | 'appearance' | 'advanced' | 'pet' | 'logs' | 'about';
+export type SettingsTab = 'overview' | 'general' | 'presets' | 'appearance' | 'advanced' | 'pet' | 'logs' | 'about';
 
 const SETTINGS_TABS: { id: SettingsTab; key: TKey }[] = [
   { id: 'overview', key: 'set.tabOverview' },
   { id: 'general', key: 'set.tabGeneral' },
+  { id: 'presets', key: 'set.tabPresets' },
   { id: 'appearance', key: 'set.tabAppearance' },
   { id: 'advanced', key: 'set.tabAdvanced' },
   { id: 'pet', key: 'set.tabPet' },
@@ -562,6 +564,15 @@ export function SettingsPanel({
 
           <MaintenanceSection config={config} pushToast={toast} />
         </div>
+      )}
+
+      {tab === 'presets' && (
+        <ConfigPresetPanel
+          run={run}
+          pushToast={toast}
+          formatError={formatError}
+          gatewayRunning={Boolean(status?.running)}
+        />
       )}
 
       {tab === 'appearance' && (

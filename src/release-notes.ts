@@ -6,6 +6,7 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  { type: 'feat', text: '配置预设：内置稳定工作 / 省钱省流 / 极速响应三档一键切换，应用前预览字段改动；支持自定义预设的保存、覆盖、导入导出与删除' },
   { type: 'feat', text: '连通性测试改为真实 LLM 探测：返回内容、延迟与 t/s，网络通但模型失效不再误报成功' },
   { type: 'feat', text: '模型列表：按服务商批量获取、并发测试、启用/禁用，禁用即从控制台隐藏' },
   { type: 'feat', text: '策略盒子：优先级 / 权重 / 轮换 / 速度阈值四种路由，统一 model id 对外暴露' },

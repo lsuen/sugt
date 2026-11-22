@@ -166,6 +166,38 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         // ===== P0 状态/配置 =====
         "get_config" => to_value(runtime.config.read().await.clone()),
 
+        // ===== 配置预设（与桌面命令共用 presets::*_core，单一真相源） =====
+        "list_config_presets" => to_value(crate::presets::list_config_presets_core(
+            &runtime.paths.config_dir,
+        )?),
+        "apply_config_preset" => {
+            let id: String = single(args)?;
+            to_value(crate::presets::apply_config_preset_core(runtime, &id).await?)
+        }
+        "save_config_preset" => {
+            let name: String = single(args)?;
+            to_value(crate::presets::save_config_preset_core(runtime, &name).await?)
+        }
+        "delete_config_preset" => {
+            let id: String = single(args)?;
+            crate::presets::delete_config_preset_core(&runtime.paths.config_dir, &id)?;
+            to_value(())
+        }
+        "export_config_preset" => {
+            let id: String = single(args)?;
+            to_value(crate::presets::export_config_preset_core(
+                &runtime.paths.config_dir,
+                &id,
+            )?)
+        }
+        "import_config_preset" => {
+            let json: String = single(args)?;
+            to_value(crate::presets::import_config_preset_core(
+                &runtime.paths.config_dir,
+                &json,
+            )?)
+        }
+
         // ===== P0 Provider =====
         "list_providers" => to_value(crate::commands::list_providers_core(runtime).await?),
         "list_experimental_free_candidates" => {

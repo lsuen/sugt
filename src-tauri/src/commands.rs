@@ -12,6 +12,7 @@ use crate::{
         RuntimeStatus, WorkspaceRules, CLIENT_MODEL_ID, MAX_LOG_RETENTION_DAYS,
     },
     model_registry::{self, ModelEntry, ModelProbe},
+    presets::{self, ConfigPreset},
     probe,
     quick_chat::{self, ChatHistory, ChatReply, HistoryMsg},
     request_rules::{self, RequestRule},
@@ -2655,6 +2656,52 @@ pub async fn set_takeover_settings_path(
 #[tauri::command]
 pub async fn get_config(runtime: State<'_, AppRuntime>) -> Result<AppConfig, String> {
     Ok(runtime.config.read().await.clone())
+}
+
+// ===== 配置预设：业务逻辑在 presets.rs，这里只做 Tauri State 适配 =====
+
+#[tauri::command]
+pub async fn list_config_presets(
+    runtime: State<'_, AppRuntime>,
+) -> Result<Vec<ConfigPreset>, String> {
+    presets::list_config_presets_core(&runtime.paths.config_dir)
+}
+
+#[tauri::command]
+pub async fn apply_config_preset(
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<ConfigPreset, String> {
+    presets::apply_config_preset_core(runtime.inner(), &id).await
+}
+
+#[tauri::command]
+pub async fn save_config_preset(
+    runtime: State<'_, AppRuntime>,
+    name: String,
+) -> Result<ConfigPreset, String> {
+    presets::save_config_preset_core(runtime.inner(), &name).await
+}
+
+#[tauri::command]
+pub async fn delete_config_preset(runtime: State<'_, AppRuntime>, id: String) -> Result<(), String> {
+    presets::delete_config_preset_core(&runtime.paths.config_dir, &id)
+}
+
+#[tauri::command]
+pub async fn export_config_preset(
+    runtime: State<'_, AppRuntime>,
+    id: String,
+) -> Result<String, String> {
+    presets::export_config_preset_core(&runtime.paths.config_dir, &id)
+}
+
+#[tauri::command]
+pub async fn import_config_preset(
+    runtime: State<'_, AppRuntime>,
+    json: String,
+) -> Result<ConfigPreset, String> {
+    presets::import_config_preset_core(&runtime.paths.config_dir, &json)
 }
 
 /// 流量悬浮窗配置（悬浮窗页面初始化时读取）。
