@@ -128,3 +128,6 @@ __pycache__/
 /src-tauri/webui-dist/assets/
 /src-tauri/webui-dist/.DS_Store
 
+
+# 内部开发规则契约：本地留档，不上传公开仓库
+/public_code_rules.md
