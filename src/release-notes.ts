@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.20.1';
+export const CURRENT_VERSION = '1.2.1';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
