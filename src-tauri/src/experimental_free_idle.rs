@@ -59,13 +59,38 @@ async fn run_idle_cycle(runtime: &AppRuntime, auto_rotate: bool) -> Result<(), S
     else {
         return Ok(());
     };
+    let current_route_id = provider.model_name.clone();
+    // 先取候选指标用于日志：期望轮换日志能判定「为什么换、换到哪、快多少」，
+    // 因为只有 'rotated' 这种无字段日志无法在事后定位误切问题。
+    let candidate = experimental_free::pick_best_probe(&probes).map(|probe| {
+        (
+            probe.name.clone(),
+            probe.tokens_per_sec,
+            probe.latency_ms,
+        )
+    });
     if !experimental_free::apply_best_from_probes(provider, &probes) {
+        info!(
+            action = "idle_auto_rotate",
+            reason = "no_better_route",
+            current_route_id,
+            candidate_route_id = %candidate.as_ref().map(|c| c.0.as_str()).unwrap_or_default(),
+            "experimental free idle probe: kept current route"
+        );
         return Ok(());
     }
     let snapshot = config.clone();
     drop(config);
     runtime.persist().await.map_err(|e| e.to_string())?;
     runtime.gateway.replace_config(snapshot).await;
-    info!("experimental free idle probe: rotated to best route");
+    info!(
+        action = "idle_auto_rotate",
+        reason = "tps_latency_probe",
+        current_route_id,
+        candidate_route_id = %candidate.as_ref().map(|c| c.0.as_str()).unwrap_or_default(),
+        tokens_per_sec = ?candidate.as_ref().and_then(|c| c.1),
+        latency_ms = ?candidate.as_ref().and_then(|c| c.2),
+        "experimental free idle probe: rotated to best route"
+    );
     Ok(())
 }

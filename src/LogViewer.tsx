@@ -20,7 +20,9 @@ function parseLogLine(line: string, index: number): LogEntry {
     };
     const fields = data.fields ?? {};
     const base = String(fields.message ?? data.message ?? line);
-    const extras = ['client', 'provider', 'model', 'path', 'mode', 'latency_ms', 'status', 'failover', 'error', 'reason']
+    // 期望后端请求日志带 request_id，因为串联一次代理命中的多行日志要靠它；
+    // 加入白名单后设置-日志里才能看到该字段。
+    const extras = ['client', 'provider', 'model', 'path', 'mode', 'latency_ms', 'status', 'failover', 'error', 'reason', 'request_id']
       .filter((key) => fields[key] !== undefined && fields[key] !== null && fields[key] !== '')
       .map((key) => `${key}=${String(fields[key])}`);
     const message = extras.length ? `${base} · ${extras.join(' · ')}` : base;

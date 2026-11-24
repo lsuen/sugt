@@ -7,7 +7,8 @@ use crate::store::paths::{
 };
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MountTarget {
@@ -27,53 +28,102 @@ impl MountTarget {
 }
 
 pub fn install_skill(store_paths: &StorePaths, skill_id: &str) -> Result<SkillCatalogItem> {
-    validate_skill_id(skill_id)?;
-    let catalog = crate::store::catalog::build_catalog(store_paths)?;
-    let item = catalog
-        .into_iter()
-        .find(|entry| entry.id == skill_id)
-        .ok_or_else(|| anyhow!("未找到技能：{}", skill_id))?;
-    let source = find_skill_source(store_paths, &item.repo_id, &item.relative_path)?;
-    let dest = store_paths.staged_skill_dir(skill_id);
-    replace_dir(&source, &dest)?;
+    let started = Instant::now();
+    let outcome = (|| -> Result<SkillCatalogItem> {
+        validate_skill_id(skill_id)?;
+        let catalog = crate::store::catalog::build_catalog(store_paths)?;
+        let item = catalog
+            .into_iter()
+            .find(|entry| entry.id == skill_id)
+            .ok_or_else(|| anyhow!("未找到技能：{}", skill_id))?;
+        let source = find_skill_source(store_paths, &item.repo_id, &item.relative_path)?;
+        let dest = store_paths.staged_skill_dir(skill_id);
+        replace_dir(&source, &dest)?;
 
-    let (name, _) = parse_skill_md(&source.join("SKILL.md")).unwrap_or((item.name.clone(), None));
-    let mut staged = load_staged_meta(store_paths)?;
-    staged.skills.insert(
-        skill_id.to_string(),
-        StagedSkillRecord {
-            name,
-            repo_id: item.repo_id.clone(),
-            relative_path: item.relative_path.clone(),
-            installed_at: now_secs(),
-        },
-    );
-    save_staged_meta(store_paths, &staged)?;
+        let (name, _) = parse_skill_md(&source.join("SKILL.md")).unwrap_or((item.name.clone(), None));
+        let mut staged = load_staged_meta(store_paths)?;
+        staged.skills.insert(
+            skill_id.to_string(),
+            StagedSkillRecord {
+                name,
+                repo_id: item.repo_id.clone(),
+                relative_path: item.relative_path.clone(),
+                installed_at: now_secs(),
+            },
+        );
+        save_staged_meta(store_paths, &staged)?;
 
-    let mounted = load_mounted_meta(store_paths)?;
-    let (mounted_claude, mounted_codex, mounted_any) = mount_flags(&mounted, skill_id);
-    Ok(SkillCatalogItem {
-        id: skill_id.to_string(),
-        name: item.name,
-        description: item.description,
-        repo_id: item.repo_id,
-        repo_label: item.repo_label,
-        relative_path: item.relative_path,
-        staged: true,
-        mounted: mounted_any,
-        mounted_claude,
-        mounted_codex,
-    })
+        let mounted = load_mounted_meta(store_paths)?;
+        let (mounted_claude, mounted_codex, mounted_any) = mount_flags(&mounted, skill_id);
+        Ok(SkillCatalogItem {
+            id: skill_id.to_string(),
+            name: item.name,
+            description: item.description,
+            repo_id: item.repo_id,
+            repo_label: item.repo_label,
+            relative_path: item.relative_path,
+            staged: true,
+            mounted: mounted_any,
+            mounted_claude,
+            mounted_codex,
+        })
+    })();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &outcome {
+        Ok(item) => info!(
+            action = "install",
+            skill_id,
+            source = %format!("{}:{}", item.repo_id, item.relative_path),
+            elapsed_ms,
+            "store skill install succeeded"
+        ),
+        Err(err) => warn!(
+            action = "install",
+            skill_id,
+            error = %err,
+            elapsed_ms,
+            "store skill install failed"
+        ),
+    }
+    outcome
 }
 
 pub fn uninstall_skill(store_paths: &StorePaths, skill_id: &str) -> Result<()> {
-    validate_skill_id(skill_id)?;
-    let mut staged = load_staged_meta(store_paths)?;
-    staged.skills.remove(skill_id);
-    save_staged_meta(store_paths, &staged)?;
-    remove_dir_if_exists(&store_paths.staged_skill_dir(skill_id))?;
-    unmount_skill(store_paths, skill_id, MountTarget::Both).ok();
-    Ok(())
+    let started = Instant::now();
+    let outcome = (|| -> Result<()> {
+        validate_skill_id(skill_id)?;
+        let mut staged = load_staged_meta(store_paths)?;
+        staged.skills.remove(skill_id);
+        save_staged_meta(store_paths, &staged)?;
+        remove_dir_if_exists(&store_paths.staged_skill_dir(skill_id))?;
+        // 期望卸载时挂载残留只告警不中断，因为 staged 已经清掉、整体算卸载成功。
+        if let Err(err) = unmount_skill(store_paths, skill_id, MountTarget::Both) {
+            warn!(
+                action = "uninstall",
+                skill_id,
+                error = %err,
+                "unmount during uninstall failed"
+            );
+        }
+        Ok(())
+    })();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &outcome {
+        Ok(()) => info!(
+            action = "uninstall",
+            skill_id,
+            elapsed_ms,
+            "store skill uninstall succeeded"
+        ),
+        Err(err) => warn!(
+            action = "uninstall",
+            skill_id,
+            error = %err,
+            elapsed_ms,
+            "store skill uninstall failed"
+        ),
+    }
+    outcome
 }
 
 pub fn mount_skill(

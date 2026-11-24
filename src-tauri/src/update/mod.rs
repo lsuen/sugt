@@ -75,7 +75,7 @@ fn store_paths_from_config(config_dir: &Path) -> StorePaths {
     StorePaths::from_app(&AppPaths {
         config_dir: config_dir.to_path_buf(),
         config_file: config_dir.join("config.toml"),
-        log_file: config_dir.join("sugt.log"),
+        log_file: config_dir.join(crate::logging::LOG_FILE_NAME),
     })
 }
 

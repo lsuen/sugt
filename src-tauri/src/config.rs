@@ -5,7 +5,6 @@ use std::{fs, path::{Path, PathBuf}};
 
 const DIR_NAME: &str = ".sugt";
 const CONFIG_FILE: &str = "config.toml";
-const LOG_FILE: &str = "sugt.log";
 /// macOS 本地配置目录名（放 Application Support，避开「桌面与文稿」iCloud 同步）。
 const MACOS_APP_SUPPORT_NAME: &str = "sugt";
 
@@ -27,7 +26,7 @@ pub fn resolve_paths() -> Result<AppPaths> {
     Ok(AppPaths {
         config_dir: base.clone(),
         config_file: base.join(CONFIG_FILE),
-        log_file: base.join(LOG_FILE),
+        log_file: base.join(crate::logging::LOG_FILE_NAME),
     })
 }
 

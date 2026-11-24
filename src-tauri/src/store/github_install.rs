@@ -13,6 +13,8 @@ use crate::store::settings::load_settings;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+use tracing::{info, warn};
 
 /// 仅允许公开代码托管域名，避免把任意 host 交给 git clone。
 const ALLOWED_HOSTS: &[&str] = &[
@@ -147,6 +149,7 @@ fn clone_with_branch_fallback(
     };
     let dest_str = dest.to_string_lossy().to_string();
     let mut last_error = String::new();
+    let started = Instant::now();
     for branch in &branches {
         let output = hidden_git()
             .args([
@@ -164,9 +167,23 @@ fn clone_with_branch_fallback(
             .output()
             .context("无法执行 git clone")?;
         if output.status.success() {
+            info!(
+                action = "shallow_clone",
+                source = %parsed.label,
+                branch = %branch,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "shallow clone succeeded"
+            );
             return Ok((*branch).to_string());
         }
         last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        warn!(
+            action = "shallow_clone",
+            source = %parsed.label,
+            branch = %branch,
+            error = %last_error,
+            "shallow clone failed, trying next branch"
+        );
         // 失败的 clone 可能留下空目录，先清干净再试下一个分支。
         remove_dir_if_exists(dest).ok();
     }
@@ -192,6 +209,13 @@ pub fn install_from_git_url(
     if !git_available() {
         return Err(anyhow!("{}", git_missing_hint()));
     }
+    info!(
+        action = "install_from_git_url",
+        source = %parsed.label,
+        branch = branch.unwrap_or("default"),
+        "git skill install started"
+    );
+    let started = Instant::now();
     store_paths.ensure_dirs()?;
 
     let temp_id = format!(
@@ -206,6 +230,13 @@ pub fn install_from_git_url(
         Ok(branch) => branch,
         Err(err) => {
             remove_dir_if_exists(&clone_dir).ok();
+            warn!(
+                action = "install_from_git_url",
+                source = %parsed.label,
+                error = %err,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "git skill install failed at clone"
+            );
             return Err(err);
         }
     };
@@ -213,6 +244,13 @@ pub fn install_from_git_url(
     let skill_dirs = match scan_skill_dirs(&clone_dir, &clone_dir, 0) {
         Ok(dirs) if dirs.is_empty() => {
             remove_dir_if_exists(&clone_dir).ok();
+            warn!(
+                action = "install_from_git_url",
+                source = %parsed.label,
+                reason = "no skill dirs",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "git skill install aborted"
+            );
             return Err(anyhow!(
                 "仓库里没有找到 SKILL.md：{}。技能包必须包含 SKILL.md",
                 parsed.label
@@ -220,6 +258,14 @@ pub fn install_from_git_url(
         }
         Ok(dirs) if dirs.len() > MAX_SKILLS => {
             remove_dir_if_exists(&clone_dir).ok();
+            warn!(
+                action = "install_from_git_url",
+                source = %parsed.label,
+                reason = "too many skills",
+                count = dirs.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "git skill install aborted"
+            );
             return Err(anyhow!(
                 "仓库含 {} 个技能，超过单次上限 {}，请先精简或改用「添加仓库」分批安装",
                 dirs.len(),
@@ -229,6 +275,13 @@ pub fn install_from_git_url(
         Ok(dirs) => dirs,
         Err(err) => {
             remove_dir_if_exists(&clone_dir).ok();
+            warn!(
+                action = "install_from_git_url",
+                source = %parsed.label,
+                error = %err,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "git skill install failed at scan"
+            );
             return Err(err);
         }
     };
@@ -275,10 +328,26 @@ pub fn install_from_git_url(
             remove_dir_if_exists(&store_paths.staged_skill_dir(id)).ok();
         }
         remove_dir_if_exists(&clone_dir).ok();
+        warn!(
+            action = "install_from_git_url",
+            source = %parsed.label,
+            error = %err,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "git skill install failed at staging, rolled back"
+        );
         return Err(err.context("安装失败，已回滚到安装前状态"));
     }
 
     let count = installed.len();
+    info!(
+        action = "install_from_git_url",
+        source = %parsed.label,
+        branch = %branch_used,
+        installed_count = count,
+        skill_ids = ?written_ids,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "git skill install succeeded"
+    );
     let note = format!(
         "已从 {} 安装 {} 个技能到「技能 → 本地技能」。请在该页勾选技能并挂载到目标 Agent；触发词与优化建议会一并展示。",
         parsed.label, count

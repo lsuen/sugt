@@ -5,7 +5,7 @@
 use crate::agent_adapters;
 use crate::takeover_profiles::TakeoverProfile;
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// 内置 SUGT skill 的来源（相对本 crate 根目录）
 pub const SUGT_SKILL_NAME: &str = "sugt";
@@ -86,17 +86,6 @@ pub fn remove_sugt_skill(targets: &[PathBuf]) -> Result<Vec<PathBuf>> {
         removed.push(dest_dir);
     }
     Ok(removed)
-}
-
-/// 检测 SUGT skill 在某个目标目录中是否已注入
-pub fn is_sugt_skill_injected(target: &Path) -> bool {
-    let marker = target.join(SUGT_SKILL_NAME).join(SUGT_SKILL_MARKER_FILE);
-    if !marker.is_file() {
-        return false;
-    }
-    std::fs::read_to_string(&marker)
-        .map(|c| c.contains(SUGT_SKILL_MARKER_CONTENT))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -73,7 +73,6 @@ pub fn run() {
             commands::set_workspace_rules,
             commands::set_workspace_inject_template,
             commands::default_workspace_inject_template,
-            commands::preview_workspace_rules,
             commands::test_workspace_notify,
             commands::overlay_start_drag,
             commands::focus_main_window,

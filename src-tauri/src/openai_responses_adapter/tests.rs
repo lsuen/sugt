@@ -219,12 +219,23 @@ async fn sse_stream_forwards_usage_into_completed() {
 
 #[test]
 fn responses_usage_includes_total_tokens() {
-    let u = responses_usage(10, 5);
+    let u = responses_usage(10, 5, false);
     assert_eq!(u["input_tokens"], 10);
     assert_eq!(u["output_tokens"], 5);
     assert_eq!(u["total_tokens"], 15);
     assert!(u.get("input_tokens_details").is_some());
     assert!(u.get("output_tokens_details").is_some());
+    // 实测 usage 不带估算标记。
+    assert!(u.get("sugt_estimated").is_none());
+}
+
+/// 期望：合成估算 usage 必须带 `sugt_estimated` 标记，
+/// 因为下游统计要靠它区分「上游实测」与「网关兜底估算」，否则估算会冒充实测进用量。
+#[test]
+fn responses_usage_marks_estimated_values() {
+    let u = responses_usage(0, 42, true);
+    assert_eq!(u["output_tokens"], 42);
+    assert_eq!(u["sugt_estimated"], true);
 }
 
 #[tokio::test]

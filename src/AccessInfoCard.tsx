@@ -214,9 +214,11 @@ export function AccessInfoCard({ pushToast }: Props) {
           <ul className="access-info-list">
             {info.entries.map((entry, index) => (
               <li className="access-info-row" key={`${entry.label}-${index}`}>
+                {/* 期望首项是统一入口，因为后端 build_local_access_info 把 CLIENT_MODEL_ID 置顶；
+                    用位置而非品牌名判断高亮，默认 model id 变更时这里不会漏改。 */}
                 <span
                   className={
-                    entry.label === 'sutai'
+                    index === 0
                       ? 'access-info-label is-primary'
                       : 'access-info-label'
                   }

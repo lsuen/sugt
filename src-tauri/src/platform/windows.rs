@@ -246,10 +246,3 @@ fn hidden(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd.no_window().stdin(Stdio::null());
     cmd
 }
-
-// ---------- 测试辅助：公开内部函数给集成测试 ----------
-
-#[cfg(test)]
-pub mod test_hooks {
-    pub use super::is_executable as is_executable_internal;
-}

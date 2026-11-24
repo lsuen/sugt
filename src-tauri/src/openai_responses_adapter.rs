@@ -2,7 +2,6 @@ use anyhow::Result;
 use async_stream::stream;
 use bytes::Bytes;
 use futures_util::{pin_mut, Stream, StreamExt};
-use reqwest::Response;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
@@ -1017,16 +1016,6 @@ fn sanitize_tool_choice(out_obj: &mut serde_json::Map<String, Value>, meta: &Cha
     }
 }
 
-/// ????Chat Completions JSON ? Responses API JSON
-pub async fn chat_to_responses(response: Response, model: &str) -> Result<Bytes> {
-    let status = response.status();
-    let body = response.text().await?;
-    if !status.is_success() {
-        return Ok(Bytes::from(body));
-    }
-    Ok(chat_json_to_responses_body(&body, model)?)
-}
-
 /// 兼容层常在 HTTP 200 的正常响应里附带 `"error": null`、空串或空对象。
 /// 流式与非流式必须共用这一个判定，否则一边修好另一边仍会把整轮对话判成失败。
 fn is_real_error_value(err: &Value) -> bool {
@@ -1075,7 +1064,7 @@ pub(crate) fn responses_upstream_failure(model: &str, message: &str) -> Result<B
         "model": model,
         "output": [],
         "output_text": "",
-        "usage": responses_usage(0, 0),
+        "usage": responses_usage(0, 0, false),
         "parallel_tool_calls": false,
         "tool_choice": "auto",
         "store": false,
@@ -1259,7 +1248,7 @@ pub fn chat_json_to_responses_body_with_meta(
     let usage = chat
         .get("usage")
         .map(normalize_chat_usage_to_responses)
-        .unwrap_or_else(|| responses_usage(0, 0));
+        .unwrap_or_else(|| responses_usage(0, 0, false));
     let output_text = output
         .iter()
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
@@ -1292,14 +1281,22 @@ pub fn chat_json_to_responses_body_with_meta(
 }
 
 /// Codex / Responses API 要求 usage 含 `total_tokens`（缺了会 ResponseCompleted 解析失败）。
-fn responses_usage(input_tokens: u64, output_tokens: u64) -> Value {
-    json!({
+///
+/// `estimated = true` 表示这组数字来自字符数兜底而非上游实测。标记会写进 usage 对象，
+/// 因为下游统计必须能区分实测与估算：估算值可以给客户端做上下文预算，
+/// 但不能进我们的用量统计（否则面板上的数字无法与实测区分）。
+fn responses_usage(input_tokens: u64, output_tokens: u64, estimated: bool) -> Value {
+    let mut usage = json!({
         "input_tokens": input_tokens,
         "input_tokens_details": { "cached_tokens": 0 },
         "output_tokens": output_tokens,
         "output_tokens_details": { "reasoning_tokens": 0 },
         "total_tokens": input_tokens.saturating_add(output_tokens),
-    })
+    });
+    if estimated {
+        usage["sugt_estimated"] = json!(true);
+    }
+    usage
 }
 
 fn normalize_chat_usage_to_responses(usage: &Value) -> Value {
@@ -1313,7 +1310,8 @@ fn normalize_chat_usage_to_responses(usage: &Value) -> Value {
         .or_else(|| usage.get("completion_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    responses_usage(input, output)
+    // 上游 chat usage 是实测值，estimated 恒为 false。
+    responses_usage(input, output, false)
 }
 
 struct SseMapState {
@@ -1794,7 +1792,13 @@ fn finalize_events(state: &mut SseMapState) -> String {
         completed_output.push(item);
     }
 
-    let usage = responses_usage(state.input_tokens, state.output_tokens);
+    // usage_estimated 为真时这组数字来自字符数兜底，必须带标记，
+    // 否则下游统计会把估算值当成上游实测写进用量。
+    let usage = responses_usage(
+        state.input_tokens,
+        state.output_tokens,
+        state.usage_estimated,
+    );
     let response_obj = json!({
         "id": state.response_id,
         "object": "response",
@@ -1858,29 +1862,6 @@ fn failed_events(state: &mut SseMapState, message: &str) -> String {
                 "param": Value::Null,
             },
         }
-    });
-    format_sse_data(&failed) + "data: [DONE]\n\n"
-}
-
-/// 上游返回 4xx 时，构造一段 Responses 形状的失败 SSE 直接交给客户端。
-/// 之前把错误体当作成功流转发，客户端只会收到一条空的 `response.completed`，
-/// 看起来像「模型正常地什么都没说」，错误完全不可诊断。
-pub fn upstream_failure_sse(model: &str, message: &str) -> String {
-    let failed = json!({
-        "type": "response.failed",
-        "sequence_number": 1,
-        "response": {
-            "id": "sugt-resp-error",
-            "object": "response",
-            "status": "failed",
-            "model": model,
-            "error": {
-                "message": message,
-                "type": "upstream_error",
-                "code": Value::Null,
-                "param": Value::Null,
-            },
-        },
     });
     format_sse_data(&failed) + "data: [DONE]\n\n"
 }

@@ -5,6 +5,7 @@ use crate::model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus};
 use futures_util::future::join_all;
 use futures_util::StreamExt;
 use serde::Serialize;
+use tracing::{info, warn};
 
 pub const EXPERIMENTAL_FREE_ID: &str = "sugt-free";
 pub const EXPERIMENTAL_FREE_PROVIDER: &str = "sugt-free";
@@ -340,12 +341,14 @@ pub async fn probe_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> 
 /// 逐路由真实 LLM 测速：复用 probe_llm_connectivity 发一条真实消息，
 /// 返回可用性 + 延迟 + 生成速度。并发上限 4，避免瞬时打满公开免费上游。
 pub async fn test_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> {
-    // 先落成 owned 列表，避免闭包参数引用生命周期在 boxed future 里触发 HRTB 限制。
-    let routes: Vec<(String, String)> = ROUTES
+    // 先落成 owned 列表并带路由序号，避免闭包参数引用生命周期在 boxed future 里触发 HRTB 限制。
+    // route_id 用 ROUTES 下标：期望它稳定标识一条免费路由，因为模型名可能重复而下标不会。
+    let routes: Vec<(usize, String, String)> = ROUTES
         .iter()
-        .map(|route| (route.base_url.to_string(), route.model.to_string()))
+        .enumerate()
+        .map(|(idx, route)| (idx, route.base_url.to_string(), route.model.to_string()))
         .collect();
-    futures_util::stream::iter(routes.into_iter().map(|(base_url, model)| {
+    futures_util::stream::iter(routes.into_iter().map(|(route_id, base_url, model)| {
         let client = client.clone();
         let name = model.clone();
         // 临时 provider 只用于探测：不取 sugt-free id，避免 prepare_upstream_provider 再改绑路由。
@@ -373,6 +376,34 @@ pub async fn test_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> {
         };
         async move {
             let report = crate::probe::probe_llm_connectivity(&client, &provider).await;
+            // 期望 key 一律脱敏后再入日志，因为免费通道的匿名 key 也是凭据形态，
+            // 直接打印会被日志采集当成真 key 误报泄漏。
+            let api_key = crate::model::mask_secret(&provider.api_key);
+            if report.ok {
+                info!(
+                    action = "free_route_probe",
+                    provider = %provider.provider,
+                    model = %name,
+                    route_id,
+                    status = "ok",
+                    latency_ms = report.latency_ms,
+                    tokens_per_sec = report.tokens_per_sec,
+                    api_key = %api_key,
+                    "free route probe succeeded"
+                );
+            } else {
+                warn!(
+                    action = "free_route_probe",
+                    provider = %provider.provider,
+                    model = %name,
+                    route_id,
+                    status = "fail",
+                    latency_ms = report.latency_ms,
+                    api_key = %api_key,
+                    error = report.error.as_deref().unwrap_or_default(),
+                    "free route probe failed"
+                );
+            }
             FreeModelProbe {
                 name,
                 available: report.ok,
@@ -402,8 +433,27 @@ async fn probe_one(client: &reqwest::Client, base_url: &str, model: &str) -> boo
     }
     let req = req.json(&body).timeout(std::time::Duration::from_secs(18));
     match req.send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
+        Ok(resp) => {
+            let ok = resp.status().is_success();
+            if !ok {
+                warn!(
+                    action = "free_route_ping",
+                    model,
+                    status = %resp.status(),
+                    "free route ping probe returned non-success"
+                );
+            }
+            ok
+        }
+        Err(err) => {
+            warn!(
+                action = "free_route_ping",
+                model,
+                error = %err,
+                "free route ping probe failed"
+            );
+            false
+        }
     }
 }
 
@@ -430,6 +480,14 @@ pub async fn refresh_on_enable(
         .map(|p| p.name.as_str())
         .collect();
     if available.is_empty() {
+        warn!(
+            action = "refresh_on_enable",
+            provider = %EXPERIMENTAL_FREE_PROVIDER,
+            model = %provider.model_name,
+            available_count = 0,
+            error = "免费实验通道暂无可用模型，请稍后重试或恢复实验源",
+            "free channel refresh found no available route"
+        );
         provider.last_error = Some("免费实验通道暂无可用模型，请稍后重试或恢复实验源".into());
         provider.status = ProviderStatus::Unavailable;
     } else {
@@ -446,6 +504,14 @@ pub async fn refresh_on_enable(
         provider.status = ProviderStatus::Available;
     }
     provider.last_checked_at = Some(chrono::Utc::now());
+    info!(
+        action = "refresh_on_enable",
+        provider = %EXPERIMENTAL_FREE_PROVIDER,
+        model = %provider.model_name,
+        available_count = available.len(),
+        status = ?provider.status,
+        "free channel refresh finished"
+    );
     probes
 }
 

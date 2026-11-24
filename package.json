@@ -34,8 +34,9 @@
     "test:notice-model": "node tests/notice-model-smoke.mjs",
     "test:notice-queue": "node tests/notice-queue-smoke.mjs",
     "test:css": "node tests/css-guard.mjs",
+    "test:provider-contract": "node tests/provider-contract-guard.mjs",
     "pet:check-generated": "python3 docs/孙测测/scripts/gen_pet_from_manifest.py --check",
-    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run test:pet-manifest && npm run test:notice-model && npm run test:notice-queue && npm run test:css && npm run check",
+    "test": "npm run test:themes && npm run test:theme-pack && npm run test:pet-state && npm run test:pet-manifest && npm run test:notice-model && npm run test:notice-queue && npm run test:css && npm run check && npm run test:provider-contract",
     "clean:cache": "cd src-tauri && cargo clean && echo target cleared",
     "export:public": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -Clean",
     "export:public:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-public-tree.ps1 -VerifyOnly"

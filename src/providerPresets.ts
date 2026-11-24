@@ -86,7 +86,8 @@ export const VENDOR_DEFINITIONS: VendorDefinition[] = [
     anthropicBaseUrl: 'https://api.deepseek.com/anthropic',
     defaultModel: 'deepseek-chat',
     modelsListMode: 'openai_compatible',
-    docUrl: 'https://api-docs.deepseek.com/guides/anthropic_api',
+    // 期望与后端 provider_catalog.rs 的 deepseek doc_url 一致，避免同一服务商两处目录漂移。
+    docUrl: 'https://api-docs.deepseek.com/',
   },
   {
     id: 'dashscope',

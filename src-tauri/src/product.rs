@@ -26,10 +26,6 @@ pub fn product_line_label() -> &'static str {
     }
 }
 
-pub fn is_store_edition() -> bool {
-    product_line() == ProductLine::Store
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

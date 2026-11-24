@@ -1,6 +1,21 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invoke, listen } from './transport';
-import { ChevronDown, FolderOpen, Send, Square } from 'lucide-react';
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  Copy,
+  Cpu,
+  Eye,
+  FolderOpen,
+  type LucideIcon,
+  PawPrint,
+  Puzzle,
+  ScrollText,
+  Send,
+  Settings,
+  Square,
+} from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { lang, t, type TKey } from './i18n';
 import { MeMarkdown } from './meMarkdown';
@@ -74,6 +89,16 @@ export type MeMessage = {
 
 const IMAGE_MAX = 3;
 const IMAGE_BYTES_MAX = 2 * 1024 * 1024;
+const INPUT_MAX_HEIGHT = 200;
+const ME_IDEA_KEYS: TKey[] = [
+  'me.suggestGateway',
+  'me.suggestErrors',
+  'me.suggestList',
+  'me.suggestProject',
+  'me.suggestLookup',
+];
+/** 离底部不到这个距离才跟随新消息滚动；用户往上翻历史时不打断阅读。 */
+const STICK_THRESHOLD_PX = 80;
 
 function imageSrc(image: MeImage): string {
   return `data:${image.media_type};base64,${image.data}`;
@@ -181,8 +206,8 @@ export function tauriMeApi(): MeApi {
   };
 }
 
-/** SOUL 只读编排层允许的四类意图；写操作仍由用户点按钮走既有确定性命令。 */
-export type SoulRoute = 'clients' | 'skills' | 'preview' | 'settings' | 'pet';
+/** SOUL 只读编排层允许的意图；写操作仍由用户点按钮走既有确定性命令。 */
+export type SoulRoute = 'clients' | 'skills' | 'preview' | 'models' | 'logs' | 'settings' | 'pet';
 
 type Props = {
   api?: MeApi;
@@ -236,6 +261,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimerRef = useRef<number | null>(null);
+  const stickToBottomRef = useRef(true);
 
   const refreshStatus = () => {
     void invoke<{
@@ -325,9 +351,16 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
 
   useEffect(() => {
     const node = logRef.current;
-    if (!node) return;
+    if (!node || !stickToBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
   }, [session, live, liveDraft, liveSteps, awaiting]);
+
+  useLayoutEffect(() => {
+    const node = inputRef.current;
+    if (!node) return;
+    node.style.height = 'auto';
+    node.style.height = `${Math.min(node.scrollHeight, INPUT_MAX_HEIGHT)}px`;
+  }, [draft]);
 
   useEffect(() => {
     if (!clearArmed) return;
@@ -413,6 +446,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     if ((!message && images.length === 0) || busy) return;
     setDraft('');
     setDraftImages([]);
+    stickToBottomRef.current = true;
     await run(() => client.send(message, images), true);
   }
 
@@ -609,7 +643,16 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
       </div>
       {session?.mode === 'config' && <p className="me-warn">{t('me.configWarn')}</p>}
 
-      <div className="me-log" ref={logRef} role="log" aria-live="polite">
+      <div
+        className="me-log"
+        ref={logRef}
+        role="log"
+        aria-live="polite"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          stickToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < STICK_THRESHOLD_PX;
+        }}
+      >
         {session && session.messages.length === 0 && !awaiting && (
           <div className="me-hello">
             <div className="me-who">
@@ -618,9 +661,9 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
             </div>
             <MeMarkdown text={t('me.greeting')} />
             <div className="me-ideas">
-              <button type="button" className="tiny" onClick={() => void send(t('me.suggestList'))}>{t('me.suggestList')}</button>
-              <button type="button" className="tiny" onClick={() => void send(t('me.suggestProject'))}>{t('me.suggestProject')}</button>
-              <button type="button" className="tiny" onClick={() => void send(t('me.suggestLookup'))}>{t('me.suggestLookup')}</button>
+              {ME_IDEA_KEYS.map((key) => (
+                <button key={key} type="button" className="me-idea" onClick={() => void send(t(key))}>{t(key)}</button>
+              ))}
             </div>
           </div>
         )}
@@ -865,7 +908,17 @@ type SuBubbleProps = {
   onRoute?: (route: SoulRoute) => void;
 };
 
-const VALID_SOUL_ROUTES: SoulRoute[] = ['clients', 'skills', 'preview', 'settings', 'pet'];
+const SOUL_ROUTE_ICONS: Record<SoulRoute, LucideIcon> = {
+  clients: Bot,
+  skills: Puzzle,
+  preview: Eye,
+  models: Cpu,
+  logs: ScrollText,
+  settings: Settings,
+  pet: PawPrint,
+};
+
+const VALID_SOUL_ROUTES = Object.keys(SOUL_ROUTE_ICONS) as SoulRoute[];
 
 /// 解析模型输出的意图标记；未知 / 半截标记一律剥离，绝不当作正文或指令执行。
 function parseSoulRoutes(raw: string): { text: string; routes: SoulRoute[] } {
@@ -893,12 +946,42 @@ function SoulRouteCard({ routes, onRoute }: { routes: SoulRoute[]; onRoute: (rou
     <div className="me-route-card">
       <p className="hint compact">{t('me.routeHint')}</p>
       <div className="me-route-actions">
-        {routes.map((route) => (
-          <button key={route} type="button" className="ghost tiny-btn" onClick={() => onRoute(route)}>
-            {t(`me.route.${route}` as TKey)}
-          </button>
-        ))}
+        {routes.map((route) => {
+          const Icon = SOUL_ROUTE_ICONS[route];
+          return (
+            <button key={route} type="button" className="ghost tiny-btn me-route-btn" onClick={() => onRoute(route)}>
+              <Icon size={14} aria-hidden />
+              {t(`me.route.${route}` as TKey)}
+            </button>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+function CopyReply({ text }: { text: string }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const timer = window.setTimeout(() => setState('idle'), 1600);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const label = state === 'ok' ? t('me.copied') : state === 'fail' ? t('me.copyFail') : t('me.copy');
+  return (
+    <div className="me-su-tools">
+      <button
+        type="button"
+        className={state === 'ok' ? 'me-tool-btn ok' : 'me-tool-btn'}
+        aria-label={label}
+        title={label}
+        onClick={() => {
+          navigator.clipboard.writeText(text).then(() => setState('ok'), () => setState('fail'));
+        }}
+      >
+        {state === 'ok' ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
+        <span>{label}</span>
+      </button>
     </div>
   );
 }
@@ -918,6 +1001,7 @@ function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, o
           </div>
         )}
         {onRoute && <SoulRouteCard routes={parsed.routes} onRoute={onRoute} />}
+        {parsed.text && !live && !streaming && <CopyReply text={parsed.text} />}
         {steps.length > 0 && (
           <details className="me-process" open={processOpen}>
             <summary>

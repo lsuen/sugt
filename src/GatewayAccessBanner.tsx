@@ -5,6 +5,7 @@ import { UpstreamSelector } from './UpstreamSelector'
 import { QuickChatModal } from './QuickChatModal'
 import { CodeExampleModal } from './CodeExampleModal'
 import { t, type TKey } from './i18n'
+import { LOCAL_KEY_FALLBACK } from './constants'
 
 type AccessMode = 'auto' | 'openai' | 'anthropic'
 
@@ -34,12 +35,23 @@ type ProviderOption = {
   id: string
   name: string
   model_name: string
+  /** 与后端 ProviderView.model_alias 对齐：切换模型时须原样保留 */
+  model_alias?: string | null
+  /** 与后端 ProviderView.public_model_id 对齐 */
+  public_model_id?: string
   enabled: boolean
   base_url: string
   api_key: string
   api_key_masked: string
   protocol: 'openai' | 'anthropic' | 'open_ai'
   provider: string
+  status?: 'Unknown' | 'Available' | 'Unavailable'
+  last_checked_at?: string | null
+  last_error?: string | null
+  auto_adapt_base_url?: boolean
+  /** 上游文本重试配置：切换模型时须原样透传，不能被默认值重置（WB-006） */
+  tool_text_retry_enabled?: boolean
+  tool_text_retry_extra?: number
   experimental?: boolean
 }
 
@@ -124,7 +136,10 @@ export function GatewayAccessBanner({
   }, [status?.anthropic_access_mode])
 
   const gatewayKey =
-    (status?.gateway_client_api_key || '').trim() || 'sugt-local-key'
+    (status?.gateway_client_api_key || '').trim() || LOCAL_KEY_FALLBACK
+  // 期望 status.public_model_id 始终由后端下发，因为公开/试用安装的 model id 可能不同；
+  // 无值时保持空态，不伪造品牌 id。
+  const modelId = status?.public_model_id ?? ''
 
   // 状态标识（流量视图）：优先显示最近一次请求实际走的协议模式，
   // 与网关日志 mode= 一一对应；无流量时回退显示用户接入配置（auto / openai / anthropic）
@@ -162,7 +177,9 @@ export function GatewayAccessBanner({
   }
 
   const openCodeExample = () => {
-    const modelId = 'sutai'
+    // 空 model id 时后端无可用的对外 id，示例模板会输出 MODEL = "" 误导用户（WB-014）。
+    // 与同卡片复制按钮口径一致：无值直接不生成、不打开。
+    if (!modelId) return
     setCodeSample(pythonExample(openaiBase, modelId, gatewayKey))
     setCodeOpen(true)
   }
@@ -222,11 +239,12 @@ export function GatewayAccessBanner({
           <div className="access-field">
             <span className="access-label"> {t('gateway.modelId')}</span>
             <div className="access-value-row">
-              <code className="access-code">sutai</code>
+              <code className="access-code">{modelId || '-'}</code>
               <button
                 type="button"
                 className="tiny icon-only"
-                onClick={() => void copy('sutai', t('gateway.modelId'))}
+                disabled={!modelId}
+                onClick={() => void copy(modelId, t('gateway.modelId'))}
                 aria-label={t('gateway.modelId')}
               >
                 <Copy size={14} />
@@ -290,6 +308,7 @@ export function GatewayAccessBanner({
         <button
           type="button"
           className="button ghost"
+          disabled={!modelId}
           onClick={openCodeExample}
         >
           <Code2 size={14} />

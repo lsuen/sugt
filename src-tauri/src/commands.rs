@@ -29,6 +29,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, RwLock};
 use tracing::warn;
 
+/// `read_logs` 单次返回上限。期望一次拉取量有硬上限，因为整份日志经 IPC 回传会拖垮前端。
+const READ_LOGS_MAX_LINES: usize = 500;
+
+/// 备选监听口默认值。期望与 `model.rs::default_port_fallback_ports()` 一致，因为
+/// 那个函数是 serde 默认值来源且为私有，跨模块无法直接引用；改一处必须同步另一处。
+pub(crate) const DEFAULT_PORT_FALLBACK_PORTS: [u16; 3] = [9878, 18887, 28887];
+
 async fn gateway_is_reachable(config: &AppConfig) -> bool {
     gateway_daemon::is_reachable(&config.client_host(), config.port).await
 }
@@ -121,10 +128,10 @@ async fn ensure_gateway_listening(
         return Ok(());
     }
 
-    Err(
-        "启动网关失败：端口可能被占用或系统拒绝监听。请检查配置端口、关闭占用程序，或改用 9878 等端口后点击「修复接管」"
-            .to_string(),
-    )
+    Err(format!(
+        "启动网关失败：端口可能被占用或系统拒绝监听。请检查配置端口、关闭占用程序，或改用 {} 等端口后点击「修复接管」",
+        DEFAULT_PORT_FALLBACK_PORTS[0]
+    ))
 }
 
 /// 用实际监听口刷新接管脚本，但**绝不**把临时口写进 `config.toml` 的首选 `port`。
@@ -1588,7 +1595,7 @@ pub async fn update_gateway_settings(
     update_gateway_settings_core(runtime.inner(), input, Some(&app)).await
 }
 
-pub(crate) async fn update_gateway_settings_core(
+pub async fn update_gateway_settings_core(
     runtime: &AppRuntime,
     input: GatewaySettingsInput,
     app: Option<&AppHandle>,
@@ -1625,7 +1632,7 @@ pub(crate) async fn update_gateway_settings_core(
             .into_iter()
             .collect();
         config.port_fallback_ports = if cleaned.is_empty() {
-            vec![9878, 18887, 28887]
+            DEFAULT_PORT_FALLBACK_PORTS.to_vec()
         } else {
             cleaned
         };
@@ -1635,7 +1642,22 @@ pub(crate) async fn update_gateway_settings_core(
         if trimmed.is_empty() {
             return Err("网关 API Key 不能为空".to_string());
         }
-        config.gateway_client_api_key = trimmed.to_string();
+        let new_key = trimmed.to_string();
+        // WB-003：程序化改主 key 必须与 client-keys 池同步，否则鉴权仍用旧 key、
+        // 接入卡却显示新 key。复用 update_client_key 的 primary 分支：改池内 primary
+        // + 一次持久化；ensure_primary 保证空池/无 primary 时补种，已有 primary 时幂等。
+        let mut keys_file = runtime.gateway.client_keys_snapshot().await;
+        let mut keys_changed = crate::client_keys::ensure_primary(&mut keys_file, &new_key);
+        if let Some(primary) = keys_file.keys.iter_mut().find(|key| key.primary) {
+            if primary.key != new_key {
+                primary.key = new_key.clone();
+                keys_changed = true;
+            }
+        }
+        if keys_changed {
+            runtime.gateway.persist_client_keys(keys_file).await?;
+        }
+        config.gateway_client_api_key = new_key;
     }
     if let Some(mode) = input.anthropic_access_mode {
         config.anthropic_access_mode = mode;
@@ -1836,7 +1858,14 @@ pub async fn get_lan_share_info(runtime: State<'_, AppRuntime>) -> Result<LanSha
 pub fn lan_share_info_from_config(config: &AppConfig) -> LanShareInfo {
     let port = config.port;
     let api_key = config.gateway_client_api_key.clone();
-    let model_id = "sutai".to_string();
+    // 期望模型 id 取当前激活 provider 的公开别名，因为写死 "sutai" 会在用户改别名后
+    // 把错误入口复制给对端；取不到激活 provider 就留空，绝不编造默认值。
+    let model_id = config
+        .active_provider_id
+        .as_deref()
+        .and_then(|id| config.providers.iter().find(|provider| provider.id == id))
+        .map(|provider| provider.public_model_id())
+        .unwrap_or_default();
     if !config.allow_lan_access {
         return LanShareInfo {
             enabled: false,
@@ -2293,7 +2322,8 @@ pub async fn read_logs(
     runtime: State<'_, AppRuntime>,
     lines: usize,
 ) -> Result<Vec<String>, String> {
-    crate::logging::tail(&runtime.paths.log_file, lines.min(500)).map_err(|err| err.to_string())
+    crate::logging::tail(&runtime.paths.log_file, lines.min(READ_LOGS_MAX_LINES))
+        .map_err(|err| err.to_string())
 }
 
 /// 维护设置（PRD v1.1.11 R7）。
@@ -2781,36 +2811,6 @@ pub async fn set_workspace_inject_template(
 #[tauri::command]
 pub fn default_workspace_inject_template() -> String {
     crate::workspace_rules::default_inject_template().to_string()
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WorkspaceRulesPreview {
-    pub enabled: bool,
-    pub has_inject: bool,
-    pub inject_chars: usize,
-    pub inject_text: String,
-    pub listen_url: String,
-}
-
-/// 预览将注入上游的全局规则文本（可传入草稿；空则用已保存配置）。
-#[tauri::command]
-pub async fn preview_workspace_rules(
-    runtime: State<'_, AppRuntime>,
-    rules: Option<WorkspaceRules>,
-) -> Result<WorkspaceRulesPreview, String> {
-    let config = runtime.config.read().await.clone();
-    let mut rules = rules.unwrap_or(config.workspace_rules.clone());
-    rules.normalize();
-    let listen_url = config.listen_url();
-    let inject = crate::workspace_rules::build_inject_text(&rules, &listen_url);
-    let inject_text = inject.clone().unwrap_or_default();
-    Ok(WorkspaceRulesPreview {
-        enabled: rules.enabled,
-        has_inject: inject.is_some(),
-        inject_chars: inject_text.chars().count(),
-        inject_text,
-        listen_url,
-    })
 }
 
 /// 用当前配置的 webhook 发一条测试消息（不经模型）。

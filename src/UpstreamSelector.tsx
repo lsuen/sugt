@@ -17,9 +17,17 @@ type ProviderOption = {
   api_key_masked: string
   protocol: 'openai' | 'anthropic' | 'open_ai'
   provider: string
-  experimental?: boolean
+  /** 与后端 ProviderView 对齐：下列字段随 providers 原样透传，不在本组件改写 */
+  public_model_id?: string
+  status?: 'Unknown' | 'Available' | 'Unavailable'
+  last_checked_at?: string | null
+  last_error?: string | null
+  auto_adapt_base_url?: boolean
   tool_text_retry_enabled?: boolean
   tool_text_retry_extra?: number
+  /** 用户配置的公开别名；切换模型时原样回传，避免被前端默认值覆盖 */
+  model_alias?: string | null
+  experimental?: boolean
 }
 
 type FreeModelProbe = {
@@ -381,7 +389,9 @@ export function UpstreamSelector({
       base_url: provider.base_url,
       api_key: provider.api_key,
       model_name: model,
-      model_alias: 'sutai',
+      // 保留该服务商已有的别名：后端 commands.rs 会把空串过滤成 None 并回落 CLIENT_MODEL_ID，
+      // 也就是「传空串 = 清空别名」，并非「不改写」。别名必须原样回传，否则切模型会静默清空用户别名。
+      model_alias: provider.model_alias ?? '',
       protocol:
         provider.protocol === 'open_ai' ? 'openai' : provider.protocol,
       enabled: provider.enabled,

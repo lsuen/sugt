@@ -9,6 +9,7 @@ import type { AboutStatusView } from './AboutSection';
 import { CURRENT_VERSION } from './release-notes';
 import { t } from './i18n';
 import type { SettingsTab } from './SettingsPanel';
+import { LOCAL_KEY_FALLBACK } from './constants';
 
 export type OverviewStatus = AboutStatusView & {
   running?: boolean;
@@ -70,16 +71,18 @@ export function SettingsOverview({
 
   const openaiBase = status?.openai_base_url ?? `${statusListenUrl ?? 'http://127.0.0.1:8787'}/v1`;
   const anthropicBase = status?.anthropic_base_url ?? statusListenUrl ?? 'http://127.0.0.1:8787';
-  const apiKey = status?.gateway_client_api_key || 'sugt-local-key';
-  const modelId = status?.public_model_id || 'sutai';
+  const apiKey = status?.gateway_client_api_key || LOCAL_KEY_FALLBACK;
+  // 期望后端下发真实 public_model_id；无值只显示空态，不用品牌名冒充。
+  const modelId = status?.public_model_id ?? '';
   const upstream = status?.active_provider ?? status?.last_proxy_provider ?? '-';
   const buildId = status?.trial?.build_id ?? '-';
 
+  // 期望展示值可读、复制值真实；空 model id 只展示占位，不能把占位复制出去。
   const fields = [
-    { label: t('gateway.openaiBase'), value: openaiBase },
-    { label: t('gateway.anthropicBase'), value: anthropicBase },
-    { label: t('gateway.apiKey'), value: apiKey },
-    { label: t('gateway.modelId'), value: modelId },
+    { label: t('gateway.openaiBase'), value: openaiBase, copyValue: openaiBase },
+    { label: t('gateway.anthropicBase'), value: anthropicBase, copyValue: anthropicBase },
+    { label: t('gateway.apiKey'), value: apiKey, copyValue: apiKey },
+    { label: t('gateway.modelId'), value: modelId || '-', copyValue: modelId },
   ];
 
   return (
@@ -154,7 +157,8 @@ export function SettingsOverview({
                   type="button"
                   className="tiny icon-only"
                   aria-label={field.label}
-                  onClick={() => void copy(field.value, field.label)}
+                  disabled={!field.copyValue}
+                  onClick={() => void copy(field.copyValue, field.label)}
                 >
                   <Copy size={13} />
                 </button>

@@ -542,7 +542,8 @@ fn default_pet_bubble_ms() -> u32 {
 }
 
 fn default_gateway_client_api_key() -> String {
-    "sugt-local-key".to_string()
+    // 期望：与鉴权层共用唯一真相源，避免两处字面量漂移。
+    crate::gateway_auth::DUMMY_LOCAL_KEY.to_string()
 }
 
 pub(crate) fn is_loopback_bind_host(host: &str) -> bool {
@@ -797,11 +798,6 @@ impl From<&ProviderConfig> for ProviderView {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct LogLine {
-    pub line: String,
-}
-
 pub fn trim_base_url(mut base_url: String) -> String {
     while base_url.ends_with('/') {
         base_url.pop();
@@ -895,15 +891,33 @@ pub fn resolve_provider_base_url(
 }
 
 pub fn mask_secret(secret: &str) -> String {
-    if secret.len() <= 8 {
+    // WB-009：按字符计数与切片，不能用字节下标。任意中文 / emoji key 都不能切在
+    // UTF-8 字符中间 panic；短串（<= 8 字符）统一返回固定星号，不泄露长度信息。
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 8 {
         return "********".to_string();
     }
-    format!("{}****{}", &secret[..4], &secret[secret.len() - 4..])
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}****{tail}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mask_secret_handles_ascii_unicode_and_short_input() {
+        // ASCII：保留前 4 后 4，与旧行为一致。
+        assert_eq!(mask_secret("abcdefghijk"), "abcd****hijk");
+        // 短串（含恰好 8 字符）：固定星号，不泄露长度。
+        assert_eq!(mask_secret("abcd"), "********");
+        assert_eq!(mask_secret("12345678"), "********");
+        // 纯中文：按字符计数，9 字符必然安全脱敏，旧实现按字节必 panic。
+        assert_eq!(mask_secret("密钥测试一二三四五"), "密钥测试****二三四五");
+        // emoji 混排：按字符计数，不切在 UTF-8 中间。
+        assert_eq!(mask_secret("🔑🔑🔑abcde🔑🔑🔑"), "🔑🔑🔑a****e🔑🔑🔑");
+    }
 
     #[test]
     fn old_provider_without_tool_retry_fields_stays_on() {

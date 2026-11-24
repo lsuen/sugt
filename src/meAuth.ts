@@ -37,7 +37,3 @@ export function saveMeAuthMode(mode: MeAuthMode): void {
     /* ignore */
   }
 }
-
-export function meAuthModeLabelKey(mode: MeAuthMode): `me.auth.${MeAuthMode}` {
-  return `me.auth.${mode}`;
-}

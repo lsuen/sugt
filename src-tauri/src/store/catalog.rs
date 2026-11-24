@@ -454,29 +454,6 @@ pub(crate) fn save_mounted_meta(store_paths: &StorePaths, meta: &MountedMeta) ->
     Ok(())
 }
 
-pub fn list_staged_skills(store_paths: &StorePaths) -> Result<Vec<SkillCatalogItem>> {
-    let meta = load_staged_meta(store_paths)?;
-    let mounted = load_mounted_meta(store_paths)?;
-    let mut items = Vec::new();
-    for (id, record) in meta.skills {
-        let (mounted_claude, mounted_codex, mounted_any) = mount_flags(&mounted, &id);
-        items.push(SkillCatalogItem {
-            id,
-            name: record.name,
-            description: None,
-            repo_id: record.repo_id.clone(),
-            repo_label: record.repo_id,
-            relative_path: record.relative_path,
-            staged: true,
-            mounted: mounted_any,
-            mounted_claude,
-            mounted_codex,
-        });
-    }
-    items.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(items)
-}
-
 pub fn find_skill_source(
     store_paths: &StorePaths,
     repo_id: &str,

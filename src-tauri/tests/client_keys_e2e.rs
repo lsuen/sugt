@@ -274,3 +274,351 @@ async fn invalid_key_is_rejected_without_usage() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 默认安装：池里只有一把 primary 本地占位密钥 `sugt-local-key`。
+fn write_default_local_key(dir: &PathBuf) {
+    save_keys(
+        dir,
+        &ClientKeysFile {
+            version: 1,
+            keys: vec![entry("local", "默认", "sugt-local-key", true)],
+        },
+    )
+    .expect("默认入站密钥文件可写入");
+}
+
+/// 池里含一把启用主密钥与一把停用密钥，用于验证停用链路。
+fn write_disabled_key(dir: &PathBuf) {
+    let mut disabled = entry("disabled", "已停用", "sk-disabled", false);
+    disabled.enabled = false;
+    save_keys(
+        dir,
+        &ClientKeysFile {
+            version: 1,
+            keys: vec![entry("active", "在线", "sk-active", true), disabled],
+        },
+    )
+    .expect("含停用键的入站密钥文件可写入");
+}
+
+/// 不返回 usage 的上游：正文刻意足够长，旧实现会把字符数估算成 token 冒充实测。
+async fn no_usage_upstream(
+    State(captured): State<Captured>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    push_auth(&captured, &headers);
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({
+            "id": "chatcmpl-no-usage",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "这是一段刻意足够长的模拟回复正文，用来确认上游没有 usage 字段时网关不会把字符数估算值冒充真实 token 用量写入入站密钥统计。"
+                }
+            }]
+        })
+        .to_string(),
+    )
+}
+
+/// 默认安装的本地主密钥 `sugt-local-key` 必须正常计入用量。
+///
+/// 覆盖「接入密钥用量永远 0 次 0」缺陷：旧实现在 inbound_target 里无条件跳过
+/// DUMMY key（`sugt-local-key`），导致默认主密钥的请求/token 全部丢失。
+#[tokio::test]
+async fn default_local_key_usage_is_recorded() {
+    let dir = temp_dir("default-local");
+    write_default_local_key(&dir);
+
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let upstream = Router::new()
+        .route("/*path", any(ok_upstream))
+        .with_state(captured.clone());
+    let (addr, state) = start_gateway(&dir, upstream).await;
+
+    // 请求前：用量全为 0 —— 正是缺陷的起点。
+    let before = usage_of(&state, "local").await;
+    assert_eq!(
+        before.request_count, 0,
+        "初始 request_count 期望 0，实际 {}",
+        before.request_count
+    );
+    assert_eq!(
+        before.total_tokens, 0,
+        "初始 total_tokens 期望 0，实际 {}",
+        before.total_tokens
+    );
+    assert!(
+        before.clients.is_empty(),
+        "初始 clients 期望为空，实际 {:?}",
+        before.clients
+    );
+
+    let client = reqwest::Client::new();
+    let (status, body) = chat(&client, addr, "sugt-local-key", "default-local").await;
+    assert!(
+        status.is_success(),
+        "默认本地密钥请求期望成功，实际 {status}: {body}"
+    );
+
+    let usage = wait_for_tokens(&state, "local", 35).await;
+    assert_eq!(
+        usage.request_count, 1,
+        "默认主密钥 request_count 期望从 0 变 1，实际 {}",
+        usage.request_count
+    );
+    assert_eq!(
+        usage.total_tokens, 35,
+        "上游真实 usage 30+5 期望累加为 35，实际 {}",
+        usage.total_tokens
+    );
+    assert_eq!(
+        usage.clients.len(),
+        1,
+        "clients 期望 1 条，实际 {} 条",
+        usage.clients.len()
+    );
+    assert_eq!(
+        usage.clients[0].label, "default-local",
+        "客户端标签期望 default-local，实际 {}",
+        usage.clients[0].label
+    );
+    assert_eq!(
+        usage.clients[0].total_tokens, 35,
+        "客户端 total_tokens 期望 35，实际 {}",
+        usage.clients[0].total_tokens
+    );
+
+    let auths = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(auths.len(), 1, "期望 1 次请求打到上游，实际 {}", auths.len());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 上游响应不带 usage 时，不得把字符数估算值当作实测 token 写入。
+///
+/// 覆盖「估算冒充实测」缺陷：total_tokens 必须保持 0，但 request_count 照常累加。
+#[tokio::test]
+async fn missing_upstream_usage_does_not_inflate_tokens() {
+    let dir = temp_dir("no-usage");
+    write_keys(&dir);
+
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let upstream = Router::new()
+        .route("/*path", any(no_usage_upstream))
+        .with_state(captured.clone());
+    let (addr, state) = start_gateway(&dir, upstream).await;
+
+    let client = reqwest::Client::new();
+    let (status, body) = chat(&client, addr, "sk-team", "no-usage-client").await;
+    assert!(
+        status.is_success(),
+        "无 usage 的上游响应仍应成功透传，实际 {status}: {body}"
+    );
+
+    // 请求计数是同步落内存的，响应返回即应为 1。
+    let usage = usage_of(&state, "team").await;
+    assert_eq!(
+        usage.request_count, 1,
+        "request_count 期望 1，实际 {}",
+        usage.request_count
+    );
+    assert_eq!(
+        usage.clients.len(),
+        1,
+        "clients 期望 1 条，实际 {} 条",
+        usage.clients.len()
+    );
+
+    // token 归集走 tokio::spawn：持续观察约 1s，确认没有任何估算值被写进来。
+    for _ in 0..20 {
+        let usage = usage_of(&state, "team").await;
+        assert_eq!(
+            usage.total_tokens, 0,
+            "上游无 usage 时 total_tokens 期望恒为 0（不得把字符数估算当实测），实际 {}",
+            usage.total_tokens
+        );
+        assert_eq!(
+            usage.clients[0].total_tokens, 0,
+            "客户端 total_tokens 期望恒为 0，实际 {}",
+            usage.clients[0].total_tokens
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let auths = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(auths.len(), 1, "期望 1 次请求打到上游，实际 {}", auths.len());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 停用的密钥必须被拒绝，且不产生任何用量。
+///
+/// 覆盖增删停用链路里「停用后仍能刷用量」的风险。
+#[tokio::test]
+async fn disabled_key_is_rejected_without_usage() {
+    let dir = temp_dir("disabled");
+    write_disabled_key(&dir);
+
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let upstream = Router::new()
+        .route("/*path", any(ok_upstream))
+        .with_state(captured.clone());
+    let (addr, state) = start_gateway(&dir, upstream).await;
+
+    let client = reqwest::Client::new();
+    let (status, _body) = chat(&client, addr, "sk-disabled", "disabled-client").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "停用 key 期望返回 401，实际 {status}"
+    );
+
+    let disabled = usage_of(&state, "disabled").await;
+    assert_eq!(
+        disabled.request_count, 0,
+        "停用 key request_count 期望 0，实际 {}",
+        disabled.request_count
+    );
+    assert_eq!(
+        disabled.total_tokens, 0,
+        "停用 key total_tokens 期望 0，实际 {}",
+        disabled.total_tokens
+    );
+    assert!(
+        disabled.clients.is_empty(),
+        "停用 key clients 期望为空，实际 {:?}",
+        disabled.clients
+    );
+
+    let auths = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        auths.is_empty(),
+        "停用 key 不应触达上游，实际 {} 次",
+        auths.len()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 与 `start_gateway` 相同，但额外返回 mock 上游地址——WB-003 需要用它构造
+/// `AppRuntime` 的配置，才能在真实 HTTP 链路上验证程序化改 key。
+async fn start_gateway_with_upstream(
+    dir: &PathBuf,
+    upstream: Router,
+) -> (std::net::SocketAddr, std::net::SocketAddr, GatewayState) {
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock 上游可绑定");
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream)
+            .await
+            .expect("mock 上游运行失败");
+    });
+
+    let state = GatewayState::new(app_config(upstream_addr), Some(dir.join("config.toml")))
+        .expect("网关状态可构造");
+    let gateway = build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("网关可绑定");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            gateway.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("网关运行失败");
+    });
+    (addr, upstream_addr, state)
+}
+
+/// WB-003：程序化改主入站 key 必须同步 client-keys 池内 primary。
+///
+/// 旧实现只改 AppConfig，池里仍是旧 key，导致接入卡显示新 key、客户端带新 key 却 401。
+/// 这里直接调用 `update_gateway_settings_core`（与接入卡/Codex 脚本同一条程序化路径），
+/// 验证：池内 primary.key 与落盘内容同步更新，新 key 立刻可用且用量记到它，旧 key 立刻 401。
+#[tokio::test]
+async fn programmatic_primary_key_change_syncs_key_pool() {
+    let dir = temp_dir("programmatic-key");
+    write_keys(&dir); // primary = sk-config
+
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let upstream = Router::new()
+        .route("/*path", any(ok_upstream))
+        .with_state(captured.clone());
+    let (addr, upstream_addr, state) = start_gateway_with_upstream(&dir, upstream).await;
+
+    let mut runtime_config = app_config(upstream_addr);
+    runtime_config.codex_takeover_enabled = false; // 测试不得改写真实 ~/.codex
+    let runtime = sugt_lib::commands::AppRuntime {
+        paths: sugt_lib::config::AppPaths {
+            config_dir: dir.clone(),
+            config_file: dir.join("config.toml"),
+            log_file: dir.join("sugt.log"),
+        },
+        gateway: state.clone(),
+        config: Arc::new(tokio::sync::RwLock::new(runtime_config)),
+    };
+
+    // 用 serde 构造输入：GatewaySettingsInput 无 Default，未给字段的 Option 均为 None。
+    let input: sugt_lib::commands::GatewaySettingsInput = serde_json::from_value(json!({
+        "gatewayClientApiKey": "sk-new"
+    }))
+    .expect("输入可反序列化");
+    let updated = sugt_lib::commands::update_gateway_settings_core(&runtime, input, None)
+        .await
+        .expect("程序化改 key 应成功");
+    assert_eq!(updated.gateway_client_api_key, "sk-new");
+
+    // 池内 primary 必须同步成新 key，且落盘一致。
+    let file = state.client_keys_snapshot().await;
+    let primary = file.keys.iter().find(|k| k.primary).expect("primary");
+    assert_eq!(primary.key, "sk-new", "程序化改 key 必须同步密钥池 primary");
+    let on_disk = sugt_lib::client_keys::load(&dir);
+    let on_disk_primary = on_disk.keys.iter().find(|k| k.primary).expect("落盘 primary");
+    assert_eq!(on_disk_primary.key, "sk-new", "落盘 client-keys.json 必须同步");
+    let config_text = std::fs::read_to_string(dir.join("config.toml")).expect("config.toml 可读");
+    assert!(
+        config_text.contains("sk-new"),
+        "config.toml 必须写入新 key"
+    );
+
+    let client = reqwest::Client::new();
+    // 新 key：200，且 usage 30+5 记到同步后的 primary。
+    let (status_new, body_new) = chat(&client, addr, "sk-new", "new-key-client").await;
+    assert!(
+        status_new.is_success(),
+        "新 key 应成功，实际 {status_new}: {body_new}"
+    );
+    let new_usage = wait_for_tokens(&state, "config", 35).await;
+    assert_eq!(
+        new_usage.total_tokens, 35,
+        "新 key 的 usage 应记到同步后的 primary"
+    );
+    assert!(
+        new_usage.clients.iter().any(|c| c.label == "new-key-client"),
+        "用量应归因到新 key 的客户端"
+    );
+
+    // 旧 key：401，且不产生任何用量或上游请求。
+    let (status_old, _) = chat(&client, addr, "sk-config", "old-key-client").await;
+    assert_eq!(status_old, StatusCode::UNAUTHORIZED, "旧 key 必须立即 401");
+    let after = usage_of(&state, "config").await;
+    assert_eq!(after.request_count, 1, "旧 key 请求不得计数");
+    assert_eq!(after.total_tokens, 35, "旧 key 请求不得产生 usage");
+    assert!(
+        !after.clients.iter().any(|c| c.label == "old-key-client"),
+        "旧 key 请求不得产生客户端用量记录"
+    );
+    let auths = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(auths.len(), 1, "只有新 key 请求打到上游");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

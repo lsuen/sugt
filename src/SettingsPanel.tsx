@@ -16,6 +16,7 @@ import { PetSettingsSection } from './PetSettingsSection';
 import { MaintenanceSection } from './MaintenanceSection';
 import { DEFAULT_OVERLAY, type OverlayConfigView } from './pet/config';
 import { ConfigPresetPanel } from './ConfigPresetPanel';
+import { DEFAULT_RETRY_BUDGET_MS, DEFAULT_RETRY_SINGLE_MS } from './constants';
 export type { OverlayConfigView };
 
 export type LanShareInfo = {
@@ -679,7 +680,7 @@ export function SettingsPanel({
                   min={0}
                   step={1000}
                   value={retryBudgetDraft}
-                  placeholder="480000"
+                  placeholder={String(DEFAULT_RETRY_BUDGET_MS)}
                   aria-label={t('set.retryBudgetMs')}
                   onChange={(e) => setRetryBudgetDraft(e.target.value)}
                 />
@@ -693,7 +694,7 @@ export function SettingsPanel({
                   min={0}
                   step={1000}
                   value={retrySingleDraft}
-                  placeholder="60000"
+                  placeholder={String(DEFAULT_RETRY_SINGLE_MS)}
                   aria-label={t('set.retrySingleMs')}
                   onChange={(e) => setRetrySingleDraft(e.target.value)}
                 />

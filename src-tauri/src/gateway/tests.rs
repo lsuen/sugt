@@ -11,6 +11,7 @@ fn rewrites_json_model() {
         body,
         "new-model",
         Some(crate::openai_responses_adapter::DEFAULT_CODEX_MAX_TOKENS),
+        "-",
     );
     let value: Value = serde_json::from_slice(&rewritten).unwrap();
     assert_eq!(value["model"], "new-model");
@@ -21,18 +22,18 @@ fn rewrite_model_respects_default_max_tokens_switch() {
     let body = Bytes::from_static(br#"{"model":"old","messages":[]}"#);
 
     // 规则关闭（None）：不填 max_tokens。
-    let suppressed = rewrite_model(body.clone(), "m", None);
+    let suppressed = rewrite_model(body.clone(), "m", None, "-");
     let value: Value = serde_json::from_slice(&suppressed).unwrap();
     assert!(value.get("max_tokens").is_none(), "关闭后不得自动填 max_tokens");
 
     // 规则覆盖：用规则值。
-    let overridden = rewrite_model(body.clone(), "m", Some(4096));
+    let overridden = rewrite_model(body.clone(), "m", Some(4096), "-");
     let value: Value = serde_json::from_slice(&overridden).unwrap();
     assert_eq!(value["max_tokens"], 4096);
 
     // 请求自带 max_tokens 时保持原值。
     let explicit = Bytes::from_static(br#"{"model":"old","max_tokens":128}"#);
-    let kept = rewrite_model(explicit, "m", Some(4096));
+    let kept = rewrite_model(explicit, "m", Some(4096), "-");
     let value: Value = serde_json::from_slice(&kept).unwrap();
     assert_eq!(value["max_tokens"], 128);
 }
@@ -50,7 +51,7 @@ fn rule_body_fields_parse_json_values_and_fallback_to_string() {
         ..Default::default()
     };
     let body = Bytes::from_static(br#"{"model":"m"}"#);
-    let out = apply_rule_body_fields(body, &effects);
+    let out = apply_rule_body_fields(body, &effects, "-");
     let value: Value = serde_json::from_slice(&out).unwrap();
 
     assert_eq!(value["temperature"], 0.2, "数字按 JSON 解析");
@@ -69,7 +70,7 @@ fn rule_body_fields_skip_non_object_body() {
     for raw in [&b"[1,2]"[..], &b"not json"[..]] {
         let body = Bytes::copy_from_slice(raw);
         assert_eq!(
-            apply_rule_body_fields(body.clone(), &effects),
+            apply_rule_body_fields(body.clone(), &effects, "-"),
             body,
             "非对象请求体必须原样返回"
         );
@@ -100,7 +101,7 @@ fn rule_headers_never_override_auth_or_protocol_headers() {
         &headers,
         "real-key",
         AuthMode::OpenAi,
-        &effects.headers,
+        &effects.headers, "-",
     )
     .unwrap()
     .build()
@@ -198,7 +199,7 @@ async fn gateway_applies_request_rules_to_outbound_request() {
         "只应命中 codex 作用域"
     );
 
-    let body = apply_rule_body_fields(Bytes::from_static(br#"{"model":"m"}"#), &effects);
+    let body = apply_rule_body_fields(Bytes::from_static(br#"{"model":"m"}"#), &effects, "-");
     let value: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["temperature"], 0.3);
 }
@@ -552,5 +553,217 @@ async fn request_route_falls_back_when_every_member_invalid() {
     let route = request_route(&state, &config, "box-a").await;
     assert!(route.box_id.is_none(), "空链必须回退，而不是判死请求");
     assert!(!route.providers.is_empty());
+}
+
+#[test]
+fn inbound_target_counts_default_primary_key() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("sugt-local-key"));
+    let allowed = vec!["sugt-local-key".to_string()];
+    let target = inbound_target(&headers, &allowed, None).expect("显式默认主密钥应命中");
+    assert_eq!(target.key, "sugt-local-key");
+}
+
+#[test]
+fn inbound_target_ignores_missing_or_unknown_key() {
+    let allowed = vec!["sugt-local-key".to_string()];
+    assert!(
+        inbound_target(&HeaderMap::new(), &allowed, None).is_none(),
+        "无 header 时身份无法确定，保持不计"
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("not-in-pool"));
+    assert!(
+        inbound_target(&headers, &allowed, None).is_none(),
+        "池外 key 不计"
+    );
+}
+
+#[tokio::test]
+async fn note_client_key_use_records_default_primary_usage() {
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("sugt-local-key"));
+    let extra = state.client_keys_snapshot().await;
+    let allowed = crate::client_keys::enabled_key_strings(&extra);
+    assert!(
+        allowed.iter().any(|k| k == "sugt-local-key"),
+        "默认主密钥应由 ensure_primary 补种进池"
+    );
+
+    let target = note_client_key_use(&state, &headers, &allowed, None)
+        .await
+        .expect("显式默认主密钥应命中");
+    assert!(!target.request_id.is_empty(), "命中时应生成 request_id");
+
+    let after = state.client_keys_snapshot().await;
+    let primary = after.keys.iter().find(|k| k.primary).expect("primary");
+    assert_eq!(primary.usage.request_count, 1, "默认主密钥 request_count 应增加");
+    assert_eq!(primary.usage.clients.len(), 1, "客户端标识应记录");
+}
+
+#[test]
+fn usage_for_stats_never_fabricates_when_upstream_omits_usage() {
+    let no_usage = r#"{"choices":[{"message":{"content":"你好世界，这是一段足够长的文本，用来触发字数估算"}}]}"#.as_bytes();
+    let (real, estimated) = split_usage_for_stats(no_usage);
+    assert!(
+        real.is_none(),
+        "上游无 usage 时统计侧必须为 None，估算不得冒充实测"
+    );
+    assert!(estimated > 0, "估算值只出现在日志侧");
+
+    let with_usage = br#"{"usage":{"prompt_tokens":12,"completion_tokens":7},"choices":[]}"#;
+    let (real, estimated) = split_usage_for_stats(with_usage);
+    assert_eq!(real, Some((12, 7)), "真实 usage 原样透传");
+    assert_eq!(estimated, 0);
+}
+
+/// 期望：Responses 适配器在上游缺 usage 时合成的估算 usage（带 `sugt_estimated` 标记）
+/// 不得进入统计——它是网关兜底数字，不是上游实测值。
+#[test]
+fn estimated_fallback_usage_is_excluded_from_stats() {
+    let synthesized = br#"{"usage":{"input_tokens":0,"output_tokens":42,"total_tokens":42,"sugt_estimated":true}}"#;
+    let (real, estimated) = split_usage_for_stats(synthesized);
+    assert!(
+        real.is_none(),
+        "带 sugt_estimated 标记的 usage 不得计入统计"
+    );
+    assert_eq!(estimated, 42, "估算值只出现在日志侧");
+
+    // 无标记的同形 usage 视为上游实测，仍应入统计。
+    let measured = br#"{"usage":{"input_tokens":0,"output_tokens":42,"total_tokens":42}}"#;
+    let (real, estimated) = split_usage_for_stats(measured);
+    assert_eq!(real, Some((0, 42)), "上游实测 usage 应原样入统计");
+    assert_eq!(estimated, 0);
+}
+
+/// WB-010：原生 Responses 的 `response.completed` 事件把 usage 嵌在 `response.usage` 下，
+/// 提取器必须识别，否则实测用量长期记 0。
+#[test]
+fn native_responses_nested_usage_is_extracted() {
+    let sse = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"usage\":{\"input_tokens\":128,\"output_tokens\":32,\"total_tokens\":160}}}\n",
+    );
+    let parsed = parse_usage_from_bytes(sse.as_bytes()).expect("嵌套 response.usage 必须被识别");
+    assert_eq!(parsed, (128, 32, false));
+
+    // 顶层 usage 保持原有行为。
+    assert_eq!(
+        extract_usage_from_json(&json!({"usage": {"prompt_tokens": 12, "completion_tokens": 7}})),
+        Some((12, 7, false))
+    );
+}
+
+/// WB-010：嵌套 usage 上的 `sugt_estimated` 标记同样不得冒充实测。
+#[test]
+fn nested_estimated_usage_is_excluded_from_stats() {
+    let value: Value = serde_json::from_str(
+        r#"{"type":"response.completed","response":{"usage":{"input_tokens":0,"output_tokens":42,"sugt_estimated":true}}}"#,
+    )
+    .expect("JSON 可解析");
+    assert_eq!(extract_usage_from_json(&value), Some((0, 42, true)));
+    let (real, estimated) = split_usage_for_stats(value.to_string().as_bytes());
+    assert!(real.is_none(), "带估算标记的嵌套 usage 不得计入统计");
+    assert_eq!(estimated, 42, "估算值只出现在日志侧");
+}
+
+/// WB-011：hold 回放路径必须把 token 按客户端/通道归因写入全局统计，
+/// 否则 clients / models 明细会比总数少一截。
+#[tokio::test]
+async fn json_from_hold_records_attributed_tokens() {
+    let state = GatewayState::new(AppConfig::default(), None).expect("state");
+    // 先建一条请求记录，让 record_tokens_attributed 有可累加的客户端条目。
+    state
+        .stats
+        .record(RequestRecord {
+            success: true,
+            latency_ms: 1,
+            user_agent: "cli".into(),
+            provider_name: "通道A".into(),
+            model_name: "m".into(),
+            path: "v1/chat/completions".into(),
+        })
+        .await;
+
+    let held = ChatHold {
+        prefix: vec![Bytes::from_static(
+            br#"{"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":9}}"#,
+        )],
+        rest: None,
+        saw_tool: false,
+    };
+    let inbound = InboundTarget {
+        key: "k".into(),
+        label: "cli".into(),
+        ip: "127.0.0.1".into(),
+        request_id: "r1".into(),
+    };
+    let response = json_from_hold(
+        held,
+        "m",
+        state.clone(),
+        None,
+        Some(inbound),
+        Some(("cli".into(), "通道A".into())),
+    )
+    .expect("hold 回放应成功");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 归因写入走 tokio::spawn，轮询等待落回内存。
+    for _ in 0..40 {
+        let snap = state.traffic_stats().await;
+        if snap.total_input_tokens == 21 {
+            let client = snap
+                .recent_clients
+                .iter()
+                .find(|item| item.label == "cli")
+                .expect("clients 明细应包含该请求");
+            let channel = snap
+                .recent_channels
+                .iter()
+                .find(|item| item.provider_name == "通道A")
+                .expect("channels 明细应包含该请求");
+            assert_eq!(client.input_tokens, 21);
+            assert_eq!(channel.output_tokens, 9);
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("hold 路径的归因 token 未写入统计");
+}
+
+/// WB-002：内部端点按连接来源 IP 鉴权——loopback 免 key，非 loopback 无 key 必须 401。
+#[test]
+fn internal_endpoints_require_key_from_non_loopback_peer() {
+    use std::net::SocketAddr;
+    let config = AppConfig {
+        gateway_client_api_key: "team-secret".into(),
+        ..AppConfig::default()
+    };
+    let allowed = vec!["team-secret".to_string()];
+    let local: SocketAddr = "127.0.0.1:12345".parse().expect("local addr");
+    let remote: SocketAddr = "192.168.1.20:54321".parse().expect("remote addr");
+
+    // loopback：无 key 放行，保留本机兼容。
+    assert!(internal_access_allowed(&HeaderMap::new(), &config, &allowed, Some(local)));
+    // 非 loopback：无 key 必须拒绝（对应 HTTP 401）。
+    assert!(!internal_access_allowed(&HeaderMap::new(), &config, &allowed, Some(remote)));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("team-secret"));
+    assert!(internal_access_allowed(&headers, &config, &allowed, Some(remote)));
+
+    let mut bad = HeaderMap::new();
+    bad.insert("x-api-key", HeaderValue::from_static("wrong"));
+    assert!(!internal_access_allowed(&bad, &config, &allowed, Some(remote)));
+
+    // X-Forwarded-For 不参与来源判定：真实 peer 为 loopback 时伪造远端头也不影响。
+    let mut spoofed = HeaderMap::new();
+    spoofed.insert("x-forwarded-for", HeaderValue::from_static("192.168.1.99"));
+    assert!(internal_access_allowed(&spoofed, &config, &allowed, Some(local)));
+
+    // 拿不到连接信息时按非本机处理，要求 key。
+    assert!(!internal_access_allowed(&HeaderMap::new(), &config, &allowed, None));
 }
 

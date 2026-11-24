@@ -1,4 +1,5 @@
 use crate::agent_adapters;
+use crate::gateway_auth::DUMMY_LOCAL_KEY;
 use crate::model::AppConfig;
 pub use crate::agent_adapters::expand_home;
 use anyhow::{anyhow, Result};
@@ -181,10 +182,6 @@ pub fn save_custom_profiles(config_dir: &Path, profiles: &[TakeoverProfile]) -> 
     save_store(config_dir, &store)
 }
 
-pub fn save_custom_profile(config_dir: &Path, profile: TakeoverProfile) -> Result<()> {
-    upsert_profile(config_dir, profile)
-}
-
 pub fn upsert_profile(config_dir: &Path, profile: TakeoverProfile) -> Result<()> {
     let mut store = load_store(config_dir);
     // 重新添加已删除的内置模板时，清掉删除标记
@@ -312,7 +309,7 @@ pub fn resolve_env(config: &AppConfig, profile: &TakeoverProfile) -> BTreeMap<St
     let openai_base = format!("{}/v1", anthropic_base);
     let client_key = config.gateway_client_api_key.trim();
     let key = if client_key.is_empty() {
-        "sugt-local-key"
+        DUMMY_LOCAL_KEY
     } else {
         client_key
     };
@@ -528,10 +525,6 @@ fn find_command_on_path(cmd: &str) -> Option<PathBuf> {
     crate::process_util::find_command_on_path(cmd)
 }
 
-pub fn detect_cli(profile: &TakeoverProfile) -> bool {
-    resolve_cli_path(profile).is_some()
-}
-
 pub fn display_settings_path(profile: &TakeoverProfile) -> Option<String> {
     if let Some(custom) = profile
         .settings_path
@@ -555,20 +548,6 @@ pub fn set_settings_path(config_dir: &Path, id: &str, path: Option<String>) -> R
     let to_save = profile.clone();
     upsert_profile(config_dir, to_save)?;
     find_profile(config_dir, id).ok_or_else(|| anyhow!("保存后未找到模板：{}", id))
-}
-
-pub fn is_env_active(profile: &TakeoverProfile, config: &AppConfig) -> bool {
-    let expected = resolve_env(config, profile);
-    if expected.is_empty() {
-        return false;
-    }
-    expected.iter().all(|(name, value)| {
-        std::env::var(name).map(|v| v == *value).unwrap_or(false)
-    })
-}
-
-pub fn profile_view(config: &AppConfig, profile: &TakeoverProfile) -> TakeoverProfileView {
-    profile_view_with_config_dir(None, config, profile)
 }
 
 pub fn profile_view_with_config_dir(

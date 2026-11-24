@@ -386,13 +386,6 @@ pub fn by_id(id: &str) -> Option<&'static AgentAdapter> {
     ADAPTERS.iter().find(|a| a.id.eq_ignore_ascii_case(&key))
 }
 
-pub fn by_command(command: &str) -> Option<&'static AgentAdapter> {
-    let key = command.trim().to_ascii_lowercase();
-    ADAPTERS
-        .iter()
-        .find(|a| a.commands.iter().any(|c| c.eq_ignore_ascii_case(&key)))
-}
-
 /// 未知客户端返回「能力未声明」，而不是伪装成已知 Agent。
 pub fn config_capability(id: &str) -> ConfigCapability {
     by_id(id).map(|a| a.config).unwrap_or(UNKNOWN_CAPABILITY)

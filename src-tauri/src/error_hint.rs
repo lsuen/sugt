@@ -87,16 +87,6 @@ pub fn classify_http_error(status: StatusCode, body: &str) -> String {
     }
 }
 
-pub fn format_connection_test_error(status: Option<StatusCode>, body: &str, err: Option<&reqwest::Error>) -> String {
-    if let Some(err) = err {
-        return classify_request_error(err);
-    }
-    if let Some(status) = status {
-        return classify_http_error(status, body);
-    }
-    "连接测试失败：未知错误".to_string()
-}
-
 fn truncate_body(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {

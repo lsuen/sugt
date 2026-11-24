@@ -1,8 +1,9 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use sugt_lib::{
-    clients, commands::AppRuntime, config, gateway::GatewayState, gateway_daemon, lan, logging,
-    me_agent, model::{mask_secret, AppConfig, ProviderConfig}, takeover_profiles, trial,
+    clients, commands::AppRuntime, config, gateway::GatewayState, gateway_auth::DUMMY_LOCAL_KEY,
+    gateway_daemon, lan, logging, me_agent,
+    model::{mask_secret, AppConfig, ProviderConfig}, takeover_profiles, trial,
 };
 use std::time::Duration;
 use tokio::signal;
@@ -767,7 +768,7 @@ fn ensure_strong_client_key(
     paths: &config::AppPaths,
 ) -> Result<Option<String>> {
     let key = app_config.gateway_client_api_key.trim();
-    if key.is_empty() || key == "sugt-local-key" {
+    if key.is_empty() || key == DUMMY_LOCAL_KEY {
         let new_key = format!("sugt-{}", Uuid::new_v4().simple());
         app_config.gateway_client_api_key = new_key.clone();
         config::save_config(paths, app_config)?;

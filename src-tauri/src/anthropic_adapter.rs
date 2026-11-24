@@ -10,8 +10,6 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-
 pub fn anthropic_to_openai(body: Bytes, model_name: &str) -> Result<Bytes> {
     anthropic_to_openai_with_default(
         body,
@@ -557,13 +555,6 @@ fn passthrough_response(
         builder = builder.header(name, value);
     }
     Ok(builder.body(Body::from(bytes))?)
-}
-
-pub fn anthropic_auth_headers(api_key: &str) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    headers.insert("x-api-key", api_key.parse()?);
-    headers.insert("anthropic-version", ANTHROPIC_VERSION.parse()?);
-    Ok(headers)
 }
 
 pub fn anthropic_stream_response(

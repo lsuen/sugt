@@ -256,6 +256,10 @@ type ProviderView = {
   api_key: string;
   api_key_masked: string;
   model_name: string;
+  /** 与后端 ProviderView.model_alias 对齐：用户自定义公开别名，切换模型时须原样保留 */
+  model_alias?: string | null;
+  /** 与后端 ProviderView.public_model_id 对齐：后端下发的对外 model id */
+  public_model_id?: string;
   protocol: ProviderProtocol | 'open_ai';
   enabled: boolean;
   status: ProviderStatus;
@@ -937,12 +941,22 @@ function AppMain() {
                     id: p.id,
                     name: p.name,
                     model_name: p.model_name,
+                    // 别名与文本重试配置必须原样透传：控制台切模型会走 save_provider 回写这些字段，
+                    // 漏传会被后端回落成 CLIENT_MODEL_ID / 默认重试次数，静默清空用户配置（WB-001/006）。
+                    model_alias: p.model_alias,
+                    public_model_id: p.public_model_id,
                     enabled: p.enabled,
                     base_url: p.base_url,
                     api_key: p.api_key,
                     api_key_masked: p.api_key_masked,
                     provider: p.provider,
                     protocol: p.protocol,
+                    status: p.status,
+                    last_checked_at: p.last_checked_at,
+                    last_error: p.last_error,
+                    auto_adapt_base_url: p.auto_adapt_base_url,
+                    tool_text_retry_enabled: p.tool_text_retry_enabled,
+                    tool_text_retry_extra: p.tool_text_retry_extra,
                     experimental: p.experimental,
                   }))}
                 busy={busy}
@@ -970,6 +984,12 @@ function AppMain() {
                 }
                 if (route === 'clients') { setTab('clients'); return; }
                 if (route === 'skills') { setTab('skills'); return; }
+                if (route === 'models') { setTab('models'); return; }
+                if (route === 'logs') {
+                  setTab('settings');
+                  setSettingsTab('logs');
+                  return;
+                }
                 if (route === 'pet') {
                   setTab('settings');
                   setSettingsTab('pet');

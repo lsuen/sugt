@@ -224,9 +224,31 @@ description = "Enables the test_provider_draft command"
 commands.allow = ["test_provider_draft"]
 
 [[permission]]
+identifier = "allow-test-provider-models"
+description = "Enables the test_provider_models command"
+commands.allow = ["test_provider_models"]
+
+[[permission]]
 identifier = "allow-quick-gateway-chat"
 description = "Enables the quick_gateway_chat command"
 commands.allow = ["quick_gateway_chat"]
+
+[[permission]]
+identifier = "allow-quick-chat-history"
+description = "Enables quick chat history commands"
+commands.allow = ["get_quick_chat_history", "save_quick_chat_history", "clear_quick_chat_history"]
+
+[[permission]]
+identifier = "allow-config-preset-commands"
+description = "Enables config preset commands"
+commands.allow = [
+  "list_config_presets",
+  "apply_config_preset",
+  "save_config_preset",
+  "delete_config_preset",
+  "export_config_preset",
+  "import_config_preset"
+]
 
 [[permission]]
 identifier = "allow-me-commands"
@@ -273,7 +295,6 @@ commands.allow = [
   "set_workspace_rules",
   "set_workspace_inject_template",
   "default_workspace_inject_template",
-  "preview_workspace_rules",
   "test_workspace_notify"
 ]
 

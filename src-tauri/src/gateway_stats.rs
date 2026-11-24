@@ -78,6 +78,7 @@ struct StatsInner {
     today_count: u64,
     latency_sum_ms: u64,
     latency_count: u64,
+    /// 这四个计数器只累计上游真实 usage；上游未返回 usage 时保持不动，不写估算值。
     total_input_tokens: u64,
     total_output_tokens: u64,
     today_input_tokens: u64,
@@ -131,7 +132,8 @@ impl GatewayStatsCollector {
             .await;
     }
 
-    /// 记 token，并可选归因到来源 / 通道（均为真实用量，非估算）。
+    /// 记 token，并可选归因到来源 / 通道。
+    /// 期望：调用方只传上游真实 usage；字符估算值不进统计，只在日志里以 estimated_ 字段出现。
     pub async fn record_tokens_attributed(
         &self,
         input_tokens: u64,
@@ -172,6 +174,16 @@ impl GatewayStatsCollector {
     }
 
     pub async fn record(&self, record: RequestRecord) {
+        self.record_inner(record, true).await;
+    }
+
+    /// 记一次请求但不贡献耗时样本：用于鉴权拒绝这类没有真实上游耗时的请求。
+    /// 失败数、分钟桶、客户端/通道计数照常累计，只有 `avg_latency_ms` 不受影响。
+    pub async fn record_without_latency(&self, record: RequestRecord) {
+        self.record_inner(record, false).await;
+    }
+
+    async fn record_inner(&self, record: RequestRecord, count_latency: bool) {
         let mut inner = self.inner.write().await;
         roll_today_if_needed(&mut inner);
         inner.total += 1;
@@ -181,8 +193,10 @@ impl GatewayStatsCollector {
         } else {
             inner.failed += 1;
         }
-        inner.latency_sum_ms += record.latency_ms;
-        inner.latency_count += 1;
+        if count_latency {
+            inner.latency_sum_ms += record.latency_ms;
+            inner.latency_count += 1;
+        }
 
         let minute = minute_epoch();
         let bucket = inner.minute_buckets.entry(minute).or_insert((0, 0));
@@ -442,5 +456,40 @@ mod tests {
         assert_eq!(snap.today_output_tokens, 20);
         assert_eq!(snap.recent_clients[0].input_tokens, 100);
         assert_eq!(snap.recent_channels[0].output_tokens, 20);
+    }
+
+    /// WB-008：鉴权拒绝只计失败数，不得以 0ms 样本污染「平均耗时」。
+    #[tokio::test]
+    async fn denied_requests_do_not_dilute_average_latency() {
+        let stats = GatewayStatsCollector::new();
+        stats
+            .record(RequestRecord {
+                success: true,
+                latency_ms: 100,
+                user_agent: "claude-cli".into(),
+                provider_name: "通道A".into(),
+                model_name: "m".into(),
+                path: "v1/chat/completions".into(),
+            })
+            .await;
+        for _ in 0..5 {
+            stats
+                .record_without_latency(RequestRecord {
+                    success: false,
+                    latency_ms: 0,
+                    user_agent: "intruder".into(),
+                    provider_name: "网关".into(),
+                    model_name: "-".into(),
+                    path: "v1/chat/completions".into(),
+                })
+                .await;
+        }
+        let snap = stats.snapshot().await;
+        assert_eq!(snap.total_requests, 6, "拒绝也要计入总请求");
+        assert_eq!(snap.failed_count, 5, "5 条拒绝计失败数");
+        assert_eq!(
+            snap.avg_latency_ms, 100,
+            "拒绝不得以 0ms 拉低平均耗时"
+        );
     }
 }

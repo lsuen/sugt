@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use tokio::net::TcpListener;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{error_hint, model::AppConfig};
 
@@ -8,17 +8,21 @@ use crate::{error_hint, model::AppConfig};
 pub async fn bind_with_fallback(config: &AppConfig) -> Result<(TcpListener, std::net::SocketAddr)> {
     let host = config.bind_host();
     let ports = config.port_candidates();
+    // 期望候选表可观测，因为端口漂移是常见故障，日志里要能看出「到底扫了哪些口」。
+    info!(host = %host, requested_port = config.port, candidates = ?ports, "gateway bind started");
     let mut last_err: Option<anyhow::Error> = None;
 
-    for port in ports {
+    for (idx, port) in ports.into_iter().enumerate() {
         let addr: std::net::SocketAddr = format!("{}:{}", host, port)
             .parse()
             .map_err(|err| anyhow!("监听地址无效 {}:{} — {}", host, port, err))?;
         match TcpListener::bind(addr).await {
             Ok(listener) => {
                 let bound = listener.local_addr()?;
+                info!(host = %host, port = bound.port(), requested_port = config.port, candidate_index = idx, "gateway listener bound");
                 if bound.port() != config.port {
                     warn!(
+                        host = %host,
                         requested = config.port,
                         bound = bound.port(),
                         "port fallback: bound alternate port"
@@ -28,7 +32,7 @@ pub async fn bind_with_fallback(config: &AppConfig) -> Result<(TcpListener, std:
             }
             Err(err) => {
                 let hint = error_hint::format_bind_error(addr, &err);
-                warn!(port, error = %hint, "bind failed, trying next candidate");
+                warn!(host = %host, port, candidate_index = idx, error = %hint, "bind failed, trying next candidate");
                 last_err = Some(anyhow!(hint));
             }
         }

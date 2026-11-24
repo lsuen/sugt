@@ -351,21 +351,6 @@ impl GatewayState {
         }
     }
 
-    /// 有未落盘增量时立即写盘；失败只告警。
-    pub async fn flush_key_pools(&self) {
-        let Some(dir) = self.config_dir.as_deref() else {
-            return;
-        };
-        let _guard = self.key_pools_io.lock().await;
-        if !self.key_pools_dirty.swap(false, Ordering::Relaxed) {
-            return;
-        }
-        let snapshot = self.key_pools.read().await.clone();
-        if let Err(err) = api_key_pool::save(dir, &snapshot) {
-            warn!(error = %err, "保存 API Key 池用量失败");
-        }
-    }
-
     /// 入站客户端密钥快照（内存为准，含最新累计用量）。
     pub async fn client_keys_snapshot(&self) -> crate::client_keys::ClientKeysFile {
         self.client_keys.read().await.clone()
@@ -400,21 +385,6 @@ impl GatewayState {
         let mut file = self.client_keys.write().await;
         if crate::client_keys::record_tokens(&mut file, key, label, ip, tokens) {
             self.client_keys_dirty.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// 入站密钥有未落盘增量时立即写盘；失败只告警。
-    pub async fn flush_client_keys(&self) {
-        let Some(dir) = self.config_dir.as_deref() else {
-            return;
-        };
-        let _guard = self.key_pools_io.lock().await;
-        if !self.client_keys_dirty.swap(false, Ordering::Relaxed) {
-            return;
-        }
-        let snapshot = self.client_keys.read().await.clone();
-        if let Err(err) = crate::client_keys::save(dir, &snapshot) {
-            warn!(error = %err, "保存入站密钥用量失败");
         }
     }
 
@@ -621,6 +591,7 @@ impl GatewayState {
         mode: &str,
         success: bool,
         workspace_rules_injected: bool,
+        request_id: &str,
     ) {
         let client = crate::gateway_stats::client_label_from_headers(headers);
         let hit = ProxyHit {
@@ -635,6 +606,7 @@ impl GatewayState {
         };
         if success {
             info!(
+                request_id = %request_id,
                 client = %client,
                 provider = %provider.name,
                 model = %provider.model_name,
@@ -645,6 +617,7 @@ impl GatewayState {
             );
         } else {
             warn!(
+                request_id = %request_id,
                 client = %client,
                 provider = %provider.name,
                 model = %provider.model_name,
@@ -665,24 +638,24 @@ impl GatewayState {
         reason: &str,
     ) {
         let client = crate::gateway_stats::client_label_from_headers(headers);
-        warn!(client = %client, path = %path, reason = %reason, "inbound request denied");
-        self.record_failure_stats(0, headers, path, None).await;
-    }
-
-    pub async fn ensure_listening(&self, auto_start: bool) -> Result<(), String> {
-        if self.is_running().await {
-            return Ok(());
-        }
-        if auto_start {
-            self.start()
-                .await
-                .map_err(|err| error_hint::format_gateway_start_error(&err))?;
-            Ok(())
-        } else {
-            Err(
-                "gateway_not_running:本地网关未运行，请先启动网关或使用「启动网关并接管」".to_string(),
-            )
-        }
+        let request_id = next_request_id();
+        warn!(request_id = %request_id, client = %client, path = %path, reason = %reason, "inbound request denied");
+        // WB-008：拒绝没有真实上游耗时，只计失败数，不得以 0ms 样本拉低平均耗时。
+        let user_agent = headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        self.stats
+            .record_without_latency(RequestRecord {
+                success: false,
+                latency_ms: 0,
+                user_agent,
+                provider_name: "网关".to_string(),
+                model_name: "-".to_string(),
+                path: path.to_string(),
+            })
+            .await;
     }
 
     pub async fn config(&self) -> AppConfig {
@@ -809,16 +782,64 @@ impl GatewayState {
     }
 }
 
+/// WB-002：内部端点是否允许本次请求。
+///
+/// 按连接来源 IP 判定，而不是配置绑定地址，也**不信任** `X-Forwarded-For`：
+/// - loopback：保留本机兼容——无 key 放行；带了 key 仍按既有规则校验，错误 key 拒绝；
+/// - 非 loopback：必须携带匹配入站 key（配置 key 或密钥池 key），与绑定地址无关。
+pub(crate) fn internal_access_allowed(
+    headers: &HeaderMap,
+    config: &AppConfig,
+    allowed: &[String],
+    peer: Option<std::net::SocketAddr>,
+) -> bool {
+    let loopback = peer
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(false); // 拿不到连接信息时按非本机处理，要求 key
+    if loopback {
+        crate::gateway_auth::validate_client_request_with_keys(headers, config, allowed)
+    } else {
+        crate::gateway_auth::validate_remote_request(headers, config, allowed)
+    }
+}
+
+/// WB-002：内部端点的统一鉴权层。只挂在内部端点子路由上；
+/// `/health` 是存活探针保持公开，代理主链路沿用各自既有校验。
+async fn internal_endpoint_auth(
+    State(state): State<GatewayState>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response<Body> {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0);
+    let config = state.config().await;
+    let extra = state.client_keys_snapshot().await;
+    let allowed = crate::client_keys::enabled_key_strings(&extra);
+    if !internal_access_allowed(request.headers(), &config, &allowed, peer) {
+        return json_error(StatusCode::UNAUTHORIZED, "网关 API Key 无效或未提供");
+    }
+    next.run(request).await
+}
+
 /// 构造网关路由。公开给集成测试，用真实 HTTP 请求验证 /v1/responses 全链路。
 pub fn build_router(state: GatewayState) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    // WB-002：内部端点统一挂鉴权层，避免新增端点时漏写 handler 内校验。
+    let internal = Router::new()
         .route("/v1/models", get(models))
         .route("/v1/_sugt/traffic", get(traffic_endpoint))
         .route("/v1/_sugt/workspace-rules", get(workspace_rules_preview))
         .route("/v1/_sugt/notify", post(notify_endpoint))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            internal_endpoint_auth,
+        ));
+    Router::new()
+        .route("/health", get(health))
         .route("/v1/messages", post(proxy_anthropic_messages))
         .route("/*path", any(proxy_openai))
+        .merge(internal)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -862,18 +883,42 @@ pub struct InboundTarget {
     pub key: String,
     pub label: String,
     pub ip: String,
+    /// 进程内短请求 ID：同一请求的多条日志靠它串联；不含任何密钥/token。
+    pub request_id: String,
+}
+
+/// 生成短请求 ID（原子计数 + 毫秒时间戳），不引入新依赖。
+/// 期望：日志可凭 request_id 串起一次网关请求，且 counter 溢出也只是回绕不影响定位。
+static REQUEST_ID_SEQ: AtomicU64 = AtomicU64::new(0);
+fn next_request_id() -> String {
+    let seq = REQUEST_ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{:x}-{:x}", ms, seq)
 }
 
 /// 入站校验通过后，把「用了池里的哪把 key」记到用量上，并把客户端标识沿链路下传。
 ///
-/// 只有命中池内启用 key（含主密钥）才计数；兼容占位符 `sugt-local-key` 不计。
+/// 命中池内启用 key 才计数；占位符 `sugt-local-key` 若在池内（默认主密钥）同样计入。
+/// 期望：默认主密钥用量非零，因为 `ensure_primary` 空池时会用它补种 primary；
+/// 无 key header 的请求仍不计（身份无法确定），保持兼容。
 async fn note_client_key_use(
     state: &GatewayState,
     headers: &HeaderMap,
     allowed: &[String],
     peer: Option<std::net::SocketAddr>,
 ) -> Option<InboundTarget> {
-    let target = inbound_target(headers, allowed, peer)?;
+    let mut target = inbound_target(headers, allowed, peer)?;
+    target.request_id = next_request_id();
+    info!(
+        request_id = %target.request_id,
+        client_key = %crate::model::mask_secret(&target.key),
+        client_label = %target.label,
+        client_ip = %target.ip,
+        "inbound client key matched"
+    );
     state
         .record_client_request(&target.key, &target.label, &target.ip)
         .await;
@@ -886,9 +931,9 @@ fn inbound_target(
     peer: Option<std::net::SocketAddr>,
 ) -> Option<InboundTarget> {
     let presented = crate::gateway_auth::extract_client_api_key(headers)?;
-    if presented == crate::gateway_auth::DUMMY_LOCAL_KEY {
-        return None;
-    }
+    // 期望：池内 key（含默认主密钥 DUMMY_LOCAL_KEY）都计数——
+    // 过去在此排除 DUMMY，导致默认主密钥永远 0 次；它在池内身份明确，应计入。
+    // 鉴权规则不变：allowed 仍由 enabled_key_strings 生成，validate_client_request_with_keys 不动。
     if !allowed.iter().any(|key| key == &presented) {
         return None;
     }
@@ -896,6 +941,7 @@ fn inbound_target(
         key: presented,
         label: inbound_label(headers),
         ip: inbound_ip(headers, peer),
+        request_id: String::new(), // 由 note_client_key_use 填入
     })
 }
 
@@ -938,16 +984,16 @@ async fn notify_endpoint(
     let config = state.config().await;
     let extra = state.client_keys_snapshot().await;
     let allowed = crate::client_keys::enabled_key_strings(&extra);
-    if crate::gateway_auth::extract_client_api_key(&headers).is_some()
-        && !crate::gateway_auth::validate_client_request_with_keys(&headers, &config, &allowed)
-    {
+    let peer = connect_info.map(|info| info.0);
+    // WB-002：不再「无 header 直接放行」——按连接来源 IP 判断，非本机无 key 一律 401。
+    if !internal_access_allowed(&headers, &config, &allowed, peer) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "ok": false, "error": "invalid gateway api key" })),
         )
             .into_response();
     }
-    note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
+    note_client_key_use(&state, &headers, &allowed, peer).await;
     let rules = &config.workspace_rules;
     if !rules.notify_enabled {
         return (
@@ -1111,13 +1157,23 @@ async fn proxy_openai(
     }
     let inbound = note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
-    info!(client = %client, path = %path, "inbound openai-compatible request");
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
+    info!(
+        request_id = %request_id,
+        client = %client,
+        path = %path,
+        "inbound openai-compatible request"
+    );
     let active_guard = state.begin_request();
     let started = std::time::Instant::now();
     match proxy_request(state.clone(), headers.clone(), request, inbound).await {
         Ok(response) => hold_guard_through_body(response, active_guard),
         Err(err) => {
-            error!(client = %client, path = %path, error = %err, "inbound request failed");
+            error!(request_id = %request_id, client = %client, path = %path, error = %err, "inbound request failed");
             state
                 .record_failure_stats(
                     started.elapsed().as_millis() as u64,
@@ -1148,14 +1204,24 @@ async fn proxy_anthropic_messages(
     }
     let inbound = note_client_key_use(&state, &headers, &allowed, connect_info.map(|info| info.0)).await;
     let client = crate::gateway_stats::client_label_from_headers(&headers);
-    info!(client = %client, path = "v1/messages", "inbound anthropic messages request");
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
+    info!(
+        request_id = %request_id,
+        client = %client,
+        path = "v1/messages",
+        "inbound anthropic messages request"
+    );
     let active_guard = state.begin_request();
     let started = std::time::Instant::now();
     let (parts, body) = request.into_parts();
     let bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(bytes) => bytes,
         Err(err) => {
-            error!(client = %client, error = %err, "读取 Anthropic 请求体失败");
+            error!(request_id = %request_id, client = %client, error = %err, "读取 Anthropic 请求体失败");
             return anthropic_error(StatusCode::BAD_REQUEST, "请求体读取失败");
         }
     };
@@ -1169,7 +1235,7 @@ async fn proxy_anthropic_messages(
             match run.await {
                 Ok(response) => response,
                 Err(err) => {
-                    warn!(error = %err, "anthropic 上游失败，改为会话内提示");
+                    warn!(request_id = %request_id, error = %err, "anthropic 上游失败，改为会话内提示");
                     session_notice(
                         crate::upstream_resilience::Wire::Anthropic,
                         &client_model,
@@ -1187,7 +1253,7 @@ async fn proxy_anthropic_messages(
             match run.await {
                 Ok(response) => response,
                 Err(err) => {
-                    error!(client = %client, path = "v1/messages", error = %err, "inbound request failed");
+                    error!(request_id = %request_id, client = %client, path = "v1/messages", error = %err, "inbound request failed");
                     state
                         .record_failure_stats(
                             started.elapsed().as_millis() as u64,
@@ -1242,6 +1308,11 @@ async fn proxy_anthropic_request(
     request: Request<Body>,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX).await?;
     let config = state.config().await;
     let (effects, _is_codex) = request_rule_effects(&state, &headers, false).await;
@@ -1274,7 +1345,7 @@ async fn proxy_anthropic_request(
         memory.set_free(is_free);
         let own_key = !provider.api_key.trim().is_empty();
         if !is_free && state.is_circuit_open(&provider.id).await {
-            warn!(provider = %provider.name, "provider 处于熔断冷却期，跳过");
+            warn!(request_id = %request_id, provider = %provider.name, "provider 处于熔断冷却期，跳过");
             continue;
         }
         let attempt_started = std::time::Instant::now();
@@ -1314,7 +1385,7 @@ async fn proxy_anthropic_request(
                     "anthropic_native",
                 ),
                 None => {
-                    warn!(provider = %provider.name, "force-native mode skipped provider");
+                    warn!(request_id = %request_id, provider = %provider.name, "force-native mode skipped provider");
                     let _ = memory.observe(crate::upstream_resilience::FailureClass::Terminal(
                         crate::upstream_resilience::NoticeKind::BadRequest,
                     ));
@@ -1349,7 +1420,7 @@ async fn proxy_anthropic_request(
                     .await
                     {
                         Ok(response) if is_native_endpoint_unsupported(&response) => {
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %provider.name,
                                 client = ?anthropic_client.map(|kind| kind.label()),
                                 "anthropic native /v1/messages 不支持, fallback to openai adapter"
@@ -1413,6 +1484,7 @@ async fn proxy_anthropic_request(
                         mode,
                         true,
                         rules_injected,
+                        inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                     )
                     .await;
                 return Ok(response);
@@ -1428,7 +1500,7 @@ async fn proxy_anthropic_request(
                     .await
                     .unwrap_or_default();
                 let text = String::from_utf8_lossy(&bytes);
-                warn!(provider = %provider.name, %status, body = %text, "provider returned anthropic error");
+                warn!(request_id = %request_id, provider = %provider.name, %status, body = %text, "provider returned anthropic error");
                 if let Some(box_id) = box_id.as_deref() {
                     state
                         .note_member_failure(
@@ -1456,7 +1528,7 @@ async fn proxy_anthropic_request(
                 }
             }
             Err(class) => {
-                warn!(provider = %provider.name, "provider anthropic request error");
+                warn!(request_id = %request_id, provider = %provider.name, "provider anthropic request error");
                 if let Some(box_id) = box_id.as_deref() {
                     state
                         .note_member_failure(
@@ -1485,6 +1557,7 @@ async fn proxy_anthropic_request(
             &client_model,
             crate::upstream_resilience::Wire::Anthropic,
             stream,
+            &request_id,
         )
         .await
         {
@@ -1509,6 +1582,11 @@ async fn proxy_anthropic_native(
     effects: &RuleEffects,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     // 原生端点优先用解析结果（可能来自服务商目录的 anthropic_base_url），兜底用 provider.base_url
     let target = build_target_url(
         native_target.as_deref().unwrap_or(&provider.base_url),
@@ -1518,8 +1596,9 @@ async fn proxy_anthropic_native(
     let client_model = client_model_of(&body);
     let default_max = rule_default_max_tokens(effects, false);
     let payload = apply_rule_body_fields(
-        rewrite_model(body, &provider.model_name, default_max),
+        rewrite_model(body, &provider.model_name, default_max, &request_id),
         effects,
+        &request_id,
     );
     let mut builder = state.client.post(&target);
     builder = copy_forward_headers(
@@ -1528,9 +1607,10 @@ async fn proxy_anthropic_native(
         &provider.api_key,
         AuthMode::Anthropic,
         &effects.headers,
+        &request_id,
     )?;
 
-    info!(
+    info!(request_id = %request_id,
         provider = %provider.name,
         model = %provider.model_name,
         path = "v1/messages",
@@ -1540,11 +1620,11 @@ async fn proxy_anthropic_native(
 
     let response = match builder.body(payload).send().await {
         Ok(response) => {
-            note_key_attempt(state, provider).await;
+            note_key_attempt(state, provider, inbound.as_ref().map(|t| t.request_id.as_str())).await;
             response
         }
         Err(err) => {
-            note_key_attempt(state, provider).await;
+            note_key_attempt(state, provider, inbound.as_ref().map(|t| t.request_id.as_str())).await;
             note_key_error(state, provider, &err.to_string()).await;
             return Err(err.into());
         }
@@ -1579,6 +1659,11 @@ async fn proxy_anthropic_via_openai(
     effects: &RuleEffects,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>, crate::upstream_resilience::FailureClass> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let failover = state.config().await.failover_enabled;
     let attempts = upstream_attempts(provider, failover);
     let client_model = client_model_of(&body);
@@ -1598,7 +1683,7 @@ async fn proxy_anthropic_via_openai(
             &attempt.model_name,
             default_max,
         ) {
-            Ok(payload) => apply_rule_body_fields(payload, effects),
+            Ok(payload) => apply_rule_body_fields(payload, effects, &request_id),
             Err(_) => {
                 return Err(crate::upstream_resilience::FailureClass::Terminal(
                     crate::upstream_resilience::NoticeKind::BadRequest,
@@ -1615,11 +1700,12 @@ async fn proxy_anthropic_via_openai(
                 &attempt.api_key,
                 AuthMode::OpenAi,
                 &effects.headers,
+                &request_id,
             ) {
                 Ok(builder) => builder,
                 Err(_) => return Err(crate::upstream_resilience::classify_network()),
             };
-            info!(
+            info!(request_id = %request_id,
                 provider = %attempt.name,
                 model = %attempt.model_name,
                 path = "v1/messages",
@@ -1627,7 +1713,7 @@ async fn proxy_anthropic_via_openai(
                 "proxying anthropic messages request"
             );
             let sent = builder.body(payload.clone()).send().await;
-            note_key_attempt(state, attempt).await;
+            note_key_attempt(state, attempt, inbound.as_ref().map(|t| t.request_id.as_str())).await;
             match sent {
             Ok(response) if response.status().is_success() => {
                 let client = crate::gateway_stats::client_label_from_headers(headers);
@@ -1639,7 +1725,7 @@ async fn proxy_anthropic_via_openai(
                     } {
                         Ok(held) => held,
                         Err(err) => {
-                            warn!(provider = %attempt.name, error = %err, "读取上游回复失败");
+                            warn!(request_id = %request_id, provider = %attempt.name, error = %err, "读取上游回复失败");
                             break Some(crate::upstream_resilience::classify_network());
                         }
                     };
@@ -1652,7 +1738,7 @@ async fn proxy_anthropic_via_openai(
                             paid_text_total(attempt, effects),
                         ) {
                             crate::upstream_resilience::TextOnlyStep::RetrySame => {
-                                warn!(
+                                warn!(request_id = %request_id,
                                     provider = %attempt.name,
                                     model = %attempt.model_name,
                                     try_index = text_tries,
@@ -1661,7 +1747,7 @@ async fn proxy_anthropic_via_openai(
                                 continue;
                             }
                             crate::upstream_resilience::TextOnlyStep::NextRoute => {
-                                warn!(
+                                warn!(request_id = %request_id,
                                     provider = %attempt.name,
                                     model = %attempt.model_name,
                                     try_index = text_tries,
@@ -1670,7 +1756,7 @@ async fn proxy_anthropic_via_openai(
                                 break None;
                             }
                             crate::upstream_resilience::TextOnlyStep::Forward => {
-                                warn!(
+                                warn!(request_id = %request_id,
                                     provider = %attempt.name,
                                     model = %attempt.model_name,
                                     try_index = text_tries,
@@ -1747,7 +1833,7 @@ async fn proxy_anthropic_via_openai(
                 let status = response.status();
                 let retry_after = header_str(response.headers(), "retry-after");
                 let text = response.text().await.unwrap_or_default();
-                warn!(
+                warn!(request_id = %request_id,
                     provider = %attempt.name,
                     model = %attempt.model_name,
                     %status,
@@ -1769,7 +1855,7 @@ async fn proxy_anthropic_via_openai(
                 ));
             }
             Err(err) => {
-                warn!(provider = %attempt.name, error = %err, "anthropic adapter request error");
+                warn!(request_id = %request_id, provider = %attempt.name, error = %err, "anthropic adapter request error");
                 note_key_error(state, attempt, &err.to_string()).await;
                 break Some(crate::upstream_resilience::classify_network());
             }
@@ -1802,6 +1888,11 @@ async fn proxy_request(
     request: Request<Body>,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let path = request.uri().path().trim_start_matches('/').to_string();
     let query = request
         .uri()
@@ -1824,6 +1915,7 @@ async fn proxy_request(
             let body_bytes = body_bytes.clone();
             let query = query.clone();
             let client_model = client_model.clone();
+            let request_id = request_id.clone();
             let inbound = inbound.clone();
             async move {
                 match proxy_responses_via_chat(
@@ -1839,7 +1931,7 @@ async fn proxy_request(
                 {
                     Ok(response) => response,
                     Err(err) => {
-                        warn!(error = %err, "codex responses 上游失败，改为会话内提示");
+                        warn!(request_id = %request_id, error = %err, "codex responses 上游失败，改为会话内提示");
                         session_notice(
                             crate::upstream_resilience::Wire::Responses,
                             &client_model,
@@ -1874,11 +1966,12 @@ async fn proxy_request(
     );
     if stream {
         let client_model = client_model.clone();
+        let request_id = request_id.clone();
         return Ok(hold_stream(async move {
             match run.await {
                 Ok(response) => response,
                 Err(err) => {
-                    warn!(error = %err, "chat 上游失败，改为会话内提示");
+                    warn!(request_id = %request_id, error = %err, "chat 上游失败，改为会话内提示");
                     session_notice(
                         crate::upstream_resilience::Wire::Chat,
                         &client_model,
@@ -1890,11 +1983,12 @@ async fn proxy_request(
         }));
     }
     let client_model = client_model.clone();
+    let request_id = request_id.clone();
     return Ok(hold_json(async move {
         match run.await {
             Ok(response) => response,
             Err(err) => {
-                warn!(error = %err, "chat 上游失败，改为会话内提示");
+                warn!(request_id = %request_id, error = %err, "chat 上游失败，改为会话内提示");
                 session_notice(
                     crate::upstream_resilience::Wire::Chat,
                     &client_model,
@@ -1917,6 +2011,11 @@ async fn proxy_chat_upstream(
     config: AppConfig,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let (effects, is_codex) = request_rule_effects(&state, &headers, false).await;
     let client_model = client_model_of(&body_bytes);
     let route = request_route(&state, &config, &client_model).await;
@@ -1928,7 +2027,7 @@ async fn proxy_chat_upstream(
     }
     let stream = crate::anthropic_adapter::request_wants_stream(&body_bytes);
     let tools = crate::upstream_resilience::request_declares_tools(&body_bytes);
-    let body_bytes = apply_rule_body_fields(body_bytes, &effects);
+    let body_bytes = apply_rule_body_fields(body_bytes, &effects, &request_id);
     let mut memory = crate::upstream_resilience::FailureMemory::new();
     let mut budget = retry_budget(&config);
     let started = std::time::Instant::now();
@@ -1955,6 +2054,7 @@ async fn proxy_chat_upstream(
                     body_bytes.clone(),
                     &attempt.model_name,
                     rule_default_max_tokens(&effects, is_codex),
+                    &request_id,
                 );
                 let mut text_tries = 0u32;
                 let attempt_started = std::time::Instant::now();
@@ -1966,8 +2066,9 @@ async fn proxy_chat_upstream(
                         &attempt.api_key,
                         AuthMode::OpenAi,
                         &effects.headers,
+                        &request_id,
                     )?;
-                    info!(
+                    info!(request_id = %request_id,
                         provider = %attempt.name,
                         model = %attempt.model_name,
                         base_url = %attempt.base_url,
@@ -1977,7 +2078,7 @@ async fn proxy_chat_upstream(
                     );
                     let own_key = !attempt.api_key.trim().is_empty();
                     let sent = builder.body(payload.clone()).send().await;
-                    note_key_attempt(&state, attempt).await;
+                    note_key_attempt(&state, attempt, inbound.as_ref().map(|t| t.request_id.as_str())).await;
                     match sent {
                         Ok(response) if response.status().is_success() => {
                             if tools {
@@ -1988,7 +2089,7 @@ async fn proxy_chat_upstream(
                                 } {
                                     Ok(held) => held,
                                     Err(err) => {
-                                        warn!(provider = %attempt.name, error = %err, "读取上游回复失败");
+                                        warn!(request_id = %request_id, provider = %attempt.name, error = %err, "读取上游回复失败");
                                         break Some(crate::upstream_resilience::classify_network());
                                     }
                                 };
@@ -2001,7 +2102,7 @@ async fn proxy_chat_upstream(
                                         paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2010,7 +2111,7 @@ async fn proxy_chat_upstream(
                                             continue;
                                         }
                                         crate::upstream_resilience::TextOnlyStep::NextRoute => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2019,7 +2120,7 @@ async fn proxy_chat_upstream(
                                             break None;
                                         }
                                         crate::upstream_resilience::TextOnlyStep::Forward => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2039,6 +2140,7 @@ async fn proxy_chat_upstream(
                                         "openai_direct",
                                         true,
                                         rules_injected,
+                                        inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                                     )
                                     .await;
                                 if let Some(box_id) = box_id.as_deref() {
@@ -2068,6 +2170,7 @@ async fn proxy_chat_upstream(
                                         state.clone(),
                                         key_target_of(attempt),
                                         inbound.clone(),
+                                        Some(token_attr_from(&headers, attempt)),
                                     )
                                 };
                             }
@@ -2082,6 +2185,7 @@ async fn proxy_chat_upstream(
                                     "openai_direct",
                                     true,
                                     rules_injected,
+                                    inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                                 )
                                 .await;
                             if let Some(box_id) = box_id.as_deref() {
@@ -2108,7 +2212,7 @@ async fn proxy_chat_upstream(
                             let status = response.status();
                             let retry_after = header_str(response.headers(), "retry-after");
                             let text = response.text().await.unwrap_or_default();
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
@@ -2130,7 +2234,7 @@ async fn proxy_chat_upstream(
                             ));
                         }
                         Err(err) => {
-                            warn!(provider = %attempt.name, error = %err, "provider request error");
+                            warn!(request_id = %request_id, provider = %attempt.name, error = %err, "provider request error");
                             note_key_error(&state, attempt, &err.to_string()).await;
                             break Some(crate::upstream_resilience::classify_network());
                         }
@@ -2166,6 +2270,7 @@ async fn proxy_chat_upstream(
             &client_model,
             crate::upstream_resilience::Wire::Chat,
             stream,
+            &request_id,
         )
         .await
         {
@@ -2189,6 +2294,11 @@ async fn proxy_responses_via_chat(
     rules_injected: bool,
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let config = state.config().await;
     // /v1/responses 只由 Codex 走：is_codex 恒为真
     let (effects, _is_codex) = request_rule_effects(&state, &headers, true).await;
@@ -2239,7 +2349,7 @@ async fn proxy_responses_via_chat(
                     &attempt.model_name,
                     &body_bytes,
                 );
-            info!(
+            info!(request_id = %request_id,
                 provider = %attempt.name,
                 base_url = %attempt.base_url,
                 model = %attempt.model_name,
@@ -2259,7 +2369,7 @@ async fn proxy_responses_via_chat(
                         &body_bytes,
                         &attempt.model_name,
                     )?;
-                let upstream_body = apply_rule_body_fields(upstream_body, &effects);
+                let upstream_body = apply_rule_body_fields(upstream_body, &effects, &request_id);
                 let target = build_target_url(&native_base, "v1/responses", query);
                 let mut builder = state.client.request(method.clone(), &target);
                 builder = copy_forward_headers(
@@ -2268,9 +2378,10 @@ async fn proxy_responses_via_chat(
                     &attempt.api_key,
                     AuthMode::OpenAi,
                     &effects.headers,
+                    &request_id,
                 )?;
 
-                info!(
+                info!(request_id = %request_id,
                     provider = %attempt.name,
                     model = %attempt.model_name,
                     native_base = %native_base,
@@ -2282,7 +2393,7 @@ async fn proxy_responses_via_chat(
                 );
 
                 let sent = builder.body(upstream_body).send().await;
-                note_key_attempt(&state, attempt).await;
+                note_key_attempt(&state, attempt, inbound.as_ref().map(|t| t.request_id.as_str())).await;
                 match sent {
                     Ok(response) if response.status().is_success() => {
                         state.reset_circuit(&key).await;
@@ -2296,6 +2407,7 @@ async fn proxy_responses_via_chat(
                                 "responses_native",
                                 true,
                                 rules_injected,
+                                inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                             )
                             .await;
                         if let Some(box_id) = box_id.as_deref() {
@@ -2358,7 +2470,7 @@ async fn proxy_responses_via_chat(
                     Ok(response) => {
                         let status = response.status();
                         let text = response.text().await.unwrap_or_default();
-                        warn!(
+                        warn!(request_id = %request_id,
                             provider = %attempt.name,
                             model = %attempt.model_name,
                             %status,
@@ -2373,7 +2485,7 @@ async fn proxy_responses_via_chat(
                         .await;
                     }
                     Err(err) => {
-                        warn!(
+                        warn!(request_id = %request_id,
                             provider = %attempt.name,
                             error = %err,
                             "native responses request failed, will try chat/completions"
@@ -2389,7 +2501,7 @@ async fn proxy_responses_via_chat(
                     &attempt.model_name,
                     rule_default_max_tokens(&effects, true),
                 )?;
-            let chat_body_base = apply_rule_body_fields(chat_body_base, &effects);
+            let chat_body_base = apply_rule_body_fields(chat_body_base, &effects, &request_id);
             let target = build_target_url(&attempt.base_url, "v1/chat/completions", query);
             let has_tools = crate::command_mode::chat_body_has_tools(&chat_body_base);
             // 对齐 cc-switch / 官方 Gateway 要求：先保留 tools 走 Chat Completions 转换，
@@ -2423,9 +2535,10 @@ async fn proxy_responses_via_chat(
                     &attempt.api_key,
                     AuthMode::OpenAi,
                     &effects.headers,
+                    &request_id,
                 )?;
 
-                info!(
+                info!(request_id = %request_id,
                     provider = %attempt.name,
                     model = %attempt.model_name,
                     base_url = %attempt.base_url,
@@ -2445,14 +2558,14 @@ async fn proxy_responses_via_chat(
 
                 if stream {
                     let sent = builder.body(chat_body).send().await;
-                    note_key_attempt(&state, attempt).await;
+                    note_key_attempt(&state, attempt, inbound.as_ref().map(|t| t.request_id.as_str())).await;
                     match sent {
                         Ok(response) if response.status().is_success() => {
                             if has_tools {
                                 let held = match hold_chat_sse(response).await {
                                     Ok(held) => held,
                                     Err(err) => {
-                                        warn!(
+                                        warn!(request_id = %request_id,
                                             provider = %attempt.name,
                                             error = %err,
                                             "读取 Codex 上游流失败"
@@ -2479,7 +2592,7 @@ async fn proxy_responses_via_chat(
                                         paid_text_total(attempt, &effects),
                                     ) {
                                         crate::upstream_resilience::TextOnlyStep::RetrySame => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2488,7 +2601,7 @@ async fn proxy_responses_via_chat(
                                             continue;
                                         }
                                         crate::upstream_resilience::TextOnlyStep::NextRoute => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2497,7 +2610,7 @@ async fn proxy_responses_via_chat(
                                             break;
                                         }
                                         crate::upstream_resilience::TextOnlyStep::Forward => {
-                                            warn!(
+                                            warn!(request_id = %request_id,
                                                 provider = %attempt.name,
                                                 model = %attempt.model_name,
                                                 try_index = text_tries,
@@ -2517,6 +2630,7 @@ async fn proxy_responses_via_chat(
                                         "chat_completions_adapter",
                                         true,
                                         rules_injected,
+                                        inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                                     )
                                     .await;
                                 if let Some(box_id) = box_id.as_deref() {
@@ -2532,7 +2646,6 @@ async fn proxy_responses_via_chat(
                                     held,
                                     client_model.clone(),
                                     tool_meta,
-                                    estimated_input,
                                     Some(state.stats.clone()),
                                     Some(token_attr_from(&headers, attempt)),
                                     state.clone(),
@@ -2551,6 +2664,7 @@ async fn proxy_responses_via_chat(
                                     "chat_completions_adapter",
                                     true,
                                     rules_injected,
+                                    inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                                 )
                                 .await;
                             if let Some(box_id) = box_id.as_deref() {
@@ -2563,11 +2677,12 @@ async fn proxy_responses_via_chat(
                                     .await;
                             }
                             let model = client_model.clone();
+                            // 期望：入站字符估算不进统计，传 0 禁用适配器合成 usage 的估算 input。
                             let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
                                 response.bytes_stream(),
                                 model,
                                 tool_meta,
-                                estimated_input,
+                                0,
                             );
                             let tapped = tap_stream_for_token_stats(
                                 mapped,
@@ -2587,7 +2702,7 @@ async fn proxy_responses_via_chat(
                                 && !command_mode_retried
                                 && crate::command_mode::tools_unsupported_hint(&text)
                             {
-                                warn!(
+                                warn!(request_id = %request_id,
                                     provider = %attempt.name,
                                     model = %attempt.model_name,
                                     %status,
@@ -2604,7 +2719,7 @@ async fn proxy_responses_via_chat(
                                 own_key,
                                 is_free,
                             );
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
@@ -2641,7 +2756,7 @@ async fn proxy_responses_via_chat(
                             let status = response.status();
                             let retry_after = header_str(response.headers(), "retry-after");
                             let text = response.text().await.unwrap_or_default();
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
@@ -2682,7 +2797,7 @@ async fn proxy_responses_via_chat(
                             break;
                         }
                         Err(err) => {
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 error = %err,
                                 "codex chat stream request error"
@@ -2711,7 +2826,7 @@ async fn proxy_responses_via_chat(
                     }
                 } else {
                 let sent = builder.body(chat_body).send().await;
-                note_key_attempt(&state, attempt).await;
+                note_key_attempt(&state, attempt, inbound.as_ref().map(|t| t.request_id.as_str())).await;
                 match sent {
                     Ok(response)
                         if response.status().is_success() || response.status().as_u16() < 500 =>
@@ -2728,7 +2843,7 @@ async fn proxy_responses_via_chat(
                             && !command_mode_retried
                             && crate::command_mode::tools_unsupported_hint(&body_text)
                         {
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
@@ -2739,7 +2854,7 @@ async fn proxy_responses_via_chat(
                             continue;
                         }
                         if looks_error && !status.is_success() {
-                            warn!(
+                            warn!(request_id = %request_id,
                                 provider = %attempt.name,
                                 model = %attempt.model_name,
                                 %status,
@@ -2805,7 +2920,7 @@ async fn proxy_responses_via_chat(
                                 paid_text_total(attempt, &effects),
                             ) {
                                 crate::upstream_resilience::TextOnlyStep::RetrySame => {
-                                    warn!(
+                                    warn!(request_id = %request_id,
                                         provider = %attempt.name,
                                         model = %attempt.model_name,
                                         try_index = text_tries,
@@ -2814,7 +2929,7 @@ async fn proxy_responses_via_chat(
                                     continue;
                                 }
                                 crate::upstream_resilience::TextOnlyStep::NextRoute => {
-                                    warn!(
+                                    warn!(request_id = %request_id,
                                         provider = %attempt.name,
                                         model = %attempt.model_name,
                                         try_index = text_tries,
@@ -2823,7 +2938,7 @@ async fn proxy_responses_via_chat(
                                     break;
                                 }
                                 crate::upstream_resilience::TextOnlyStep::Forward => {
-                                    warn!(
+                                    warn!(request_id = %request_id,
                                         provider = %attempt.name,
                                         model = %attempt.model_name,
                                         try_index = text_tries,
@@ -2843,36 +2958,53 @@ async fn proxy_responses_via_chat(
                                 "chat_completions_adapter",
                                 status.is_success(),
                                 rules_injected,
+                                inbound.as_ref().map(|t| t.request_id.as_str()).unwrap_or("-"),
                             )
                             .await;
                         if status.is_success() {
-                            let (input, output) = parse_usage_from_bytes(body_text.as_bytes())
-                                .unwrap_or_else(|| {
-                                    (
-                                        estimated_input,
-                                        crate::quick_chat::estimate_output_tokens(&body_text),
-                                    )
-                                });
-                            if input > 0 || output > 0 {
-                                let attr = token_attr_from(&headers, attempt);
-                                state
-                                    .stats
-                                    .record_tokens_attributed(
-                                        input,
-                                        output,
-                                        Some(attr.0.as_str()),
-                                        Some(attr.1.as_str()),
-                                    )
-                                    .await;
-                                if let Some(target) = key_target_of(attempt) {
+                            // 期望：无真实 usage 时不写统计，估算只进日志——避免冒充实测。
+                            if let Some((input, output, estimated)) =
+                                parse_usage_from_bytes(body_text.as_bytes())
+                            {
+                                if estimated {
+                                    info!(request_id = %request_id,
+                                        provider = %attempt.name,
+                                        model = %attempt.model_name,
+                                        estimated_input_tokens = input,
+                                        estimated_output_tokens = output,
+                                        "usage is an estimated fallback; not counted"
+                                    );
+                                } else if input > 0 || output > 0 {
+                                    let attr = token_attr_from(&headers, attempt);
                                     state
-                                        .record_key_tokens(
-                                            &target.provider_id,
-                                            &target.key,
-                                            input + output,
+                                        .stats
+                                        .record_tokens_attributed(
+                                            input,
+                                            output,
+                                            Some(attr.0.as_str()),
+                                            Some(attr.1.as_str()),
                                         )
                                         .await;
+                                    if let Some(target) = key_target_of(attempt) {
+                                        state
+                                            .record_key_tokens(
+                                                &target.provider_id,
+                                                &target.key,
+                                                input + output,
+                                            )
+                                            .await;
+                                    }
                                 }
+                            } else {
+                                let estimated_output_tokens =
+                                    crate::quick_chat::estimate_output_tokens(&body_text);
+                                info!(request_id = %request_id,
+                                    provider = %attempt.name,
+                                    model = %attempt.model_name,
+                                    estimated_input_tokens = estimated_input,
+                                    estimated_output_tokens,
+                                    "usage missing, not counted; estimated values are log-only"
+                                );
                             }
                         }
                         let bytes = if status.is_success() {
@@ -2936,7 +3068,7 @@ async fn proxy_responses_via_chat(
                         break;
                     }
                     Err(err) => {
-                        warn!(provider = %attempt.name, error = %err, "codex responses request error");
+                        warn!(request_id = %request_id, provider = %attempt.name, error = %err, "codex responses request error");
                         note_key_error(&state, attempt, &err.to_string()).await;
                         if let Some(box_id) = box_id.as_deref() {
                             state
@@ -2978,6 +3110,7 @@ async fn proxy_responses_via_chat(
             &client_model,
             crate::upstream_resilience::Wire::Responses,
             stream,
+            &request_id,
         )
         .await
         {
@@ -3050,10 +3183,11 @@ async fn finish_pass(
     client_model: &str,
     wire: crate::upstream_resilience::Wire,
     stream: bool,
+    request_id: &str,
 ) -> Option<Response<Body>> {
     match memory.finish(budget, pass) {
         crate::upstream_resilience::PassFinish::Sleep(wait) => {
-            info!(
+            info!(request_id = %request_id,
                 wait_ms = wait.as_millis() as u64,
                 pass,
                 "上游失败，同一次请求内等待后重试"
@@ -3384,19 +3518,19 @@ fn rule_default_max_tokens(effects: &RuleEffects, is_codex: bool) -> Option<u64>
 
 /// 把规则的 body_fields 写进出站 JSON 对象；值先按 JSON 解析（数字/布尔/对象），
 /// 解析失败再按字符串写入。请求体不是 JSON 对象时跳过并告警。
-fn apply_rule_body_fields(body: Bytes, effects: &RuleEffects) -> Bytes {
+fn apply_rule_body_fields(body: Bytes, effects: &RuleEffects, request_id: &str) -> Bytes {
     if body.is_empty() || effects.body_fields.is_empty() {
         return body;
     }
     let mut value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(err) => {
-            warn!(error = %err, "请求体不是合法 JSON，跳过规则 body_fields");
+            warn!(request_id = %request_id, error = %err, "请求体不是合法 JSON，跳过规则 body_fields");
             return body;
         }
     };
     let Some(object) = value.as_object_mut() else {
-        warn!("请求体不是 JSON 对象，跳过规则 body_fields");
+        warn!(request_id = %request_id, "请求体不是 JSON 对象，跳过规则 body_fields");
         return body;
     };
     for (key, raw) in &effects.body_fields {
@@ -3407,7 +3541,7 @@ fn apply_rule_body_fields(body: Bytes, effects: &RuleEffects) -> Bytes {
     Bytes::from(serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec()))
 }
 
-fn rewrite_model(body: Bytes, model_name: &str, default_max: Option<u64>) -> Bytes {
+fn rewrite_model(body: Bytes, model_name: &str, default_max: Option<u64>, request_id: &str) -> Bytes {
     if body.is_empty() {
         return body;
     }
@@ -3423,7 +3557,7 @@ fn rewrite_model(body: Bytes, model_name: &str, default_max: Option<u64>) -> Byt
                 if !has_max {
                     if let Some(default_max) = default_max {
                         object.insert("max_tokens".to_string(), json!(default_max));
-                        warn!(
+                        warn!(request_id = %request_id,
                             default_max,
                             "Chat 请求未指定 max_tokens，网关填充默认值以防上游截断"
                         );
@@ -3447,6 +3581,7 @@ fn copy_forward_headers(
     api_key: &str,
     auth_mode: AuthMode,
     rule_headers: &[(String, String)],
+    request_id: &str,
 ) -> Result<reqwest::RequestBuilder> {
     // 先合并成一张表：客户端转发头 → 规则头同名覆盖（追加同名会让上游收到两个值）。
     let mut forwarded = HeaderMap::new();
@@ -3469,20 +3604,20 @@ fn copy_forward_headers(
     for (key, value) in rule_headers {
         let lower = key.to_ascii_lowercase();
         if RULE_PROTECTED_HEADERS.contains(&lower.as_str()) {
-            warn!(header = %key, "请求改写规则试图覆盖鉴权/协议头，已忽略");
+            warn!(request_id = %request_id, header = %key, "请求改写规则试图覆盖鉴权/协议头，已忽略");
             continue;
         }
         let name = match http::HeaderName::from_bytes(key.as_bytes()) {
             Ok(name) => name,
             Err(err) => {
-                warn!(header = %key, error = %err, "规则请求头名称非法，已忽略");
+                warn!(request_id = %request_id, header = %key, error = %err, "规则请求头名称非法，已忽略");
                 continue;
             }
         };
         let parsed = match HeaderValue::from_str(value) {
             Ok(parsed) => parsed,
             Err(err) => {
-                warn!(header = %key, error = %err, "规则请求头值非法，已忽略");
+                warn!(request_id = %request_id, header = %key, error = %err, "规则请求头值非法，已忽略");
                 continue;
             }
         };
@@ -3630,37 +3765,56 @@ fn json_from_hold(
     state: GatewayState,
     key_target: Option<KeyTarget>,
     inbound: Option<InboundTarget>,
+    token_attr: Option<(String, String)>,
 ) -> Result<Response<Body>> {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     let mut raw = Vec::new();
     for chunk in held.prefix {
         raw.extend_from_slice(&chunk);
     }
-    // 非流式 Chat 没有 tap 流可挂，这里直接把 usage 记到池 key / 入站 key 上
-    //（取不到就估 output）。
-    let (input, output) = parse_usage_from_bytes(&raw).unwrap_or_else(|| {
-        (
-            0,
-            crate::quick_chat::estimate_output_tokens(&String::from_utf8_lossy(&raw)),
-        )
-    });
-    let tokens = input + output;
-    if tokens > 0 {
-        if let Some(target) = key_target {
-            let state = state.clone();
-            tokio::spawn(async move {
-                state
-                    .record_key_tokens(&target.provider_id, &target.key, tokens)
-                    .await;
-            });
+    // 期望：total_tokens 只记上游真实 usage——估算值一旦写进统计就无法与实测区分，
+    // 用户会看到假数。无 usage 时宁可显示无数据，估算值只落日志（estimated_ 前缀）。
+    let (usage, estimated_output_tokens) = split_usage_for_stats(&raw);
+    if let Some((input, output)) = usage {
+        let tokens = input + output;
+        if tokens > 0 {
+            // WB-011：与其它路径一致，按客户端/通道归因写全局统计，
+            // 否则按 clients / models 维度对账时会少这一截用量。
+            if let Some((client, provider)) = token_attr.as_ref() {
+                let stats = state.stats.clone();
+                let (client, provider) = (client.clone(), provider.clone());
+                tokio::spawn(async move {
+                    stats
+                        .record_tokens_attributed(input, output, Some(&client), Some(&provider))
+                        .await;
+                });
+            }
+            if let Some(target) = key_target {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    state
+                        .record_key_tokens(&target.provider_id, &target.key, tokens)
+                        .await;
+                });
+            }
+            if let Some(target) = inbound {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    state
+                        .record_client_tokens(&target.key, &target.label, &target.ip, tokens)
+                        .await;
+                });
+            }
         }
-        if let Some(target) = inbound {
-            let state = state.clone();
-            tokio::spawn(async move {
-                state
-                    .record_client_tokens(&target.key, &target.label, &target.ip, tokens)
-                    .await;
-            });
-        }
+    } else {
+        info!(request_id = %request_id,
+            estimated_output_tokens,
+            "usage missing, not counted; estimated value is log-only"
+        );
     }
     let rewritten = crate::upstream_resilience::rewrite_json_model(&raw, client_model);
     Ok(Response::builder()
@@ -3673,7 +3827,6 @@ fn responses_stream_from_hold(
     held: ChatHold,
     model: String,
     tool_meta: crate::openai_responses_adapter::ChatToolMeta,
-    estimated_input: u64,
     stats: Option<GatewayStatsCollector>,
     token_attr: Option<(String, String)>,
     state: GatewayState,
@@ -3681,11 +3834,13 @@ fn responses_stream_from_hold(
     inbound: Option<InboundTarget>,
 ) -> Result<Response<Body>> {
     let replay = replay_upstream(held.prefix, held.rest);
+    // 期望：不把字符估算注入适配器合成 usage——它会经 tap 流写进统计，造成估算冒充实测。
+    // 上游真给了 usage 时适配器仍会如实透传；这里 0 仅表示「无可信入站估算」。
     let mapped = crate::openai_responses_adapter::chat_sse_to_responses_sse_with_meta(
         replay,
         model,
         tool_meta,
-        estimated_input,
+        0,
     );
     let tapped = tap_stream_for_token_stats(
         mapped,
@@ -3813,8 +3968,21 @@ async fn note_key_error(state: &GatewayState, provider: &ProviderConfig, message
 }
 
 /// 记一次真实发往上游的尝试（每个 send 点调用一次，Ok / Err 都要计）。
-async fn note_key_attempt(state: &GatewayState, provider: &ProviderConfig) {
+/// `request_id` 来自入站日志，用于把上游 key 选择与同一次请求串起来；无入站身份时写 "-"，
+/// 绝不把完整 key / token 写进日志（只写脱敏标识）。
+async fn note_key_attempt(
+    state: &GatewayState,
+    provider: &ProviderConfig,
+    request_id: Option<&str>,
+) {
     if let Some(target) = key_target_of(provider) {
+        info!(
+            request_id = request_id.unwrap_or("-"),
+            provider_id = %target.provider_id,
+            model = %provider.model_name,
+            upstream_key = %crate::model::mask_secret(&target.key),
+            "upstream key selected"
+        );
         state
             .record_key_request(&target.provider_id, &target.key)
             .await;
@@ -3939,9 +4107,24 @@ fn tap_stream_for_token_stats<S>(
 where
     S: Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
 {
+    let request_id = inbound
+        .as_ref()
+        .map(|t| t.request_id.as_str())
+        .unwrap_or("-")
+        .to_string();
     stream.map(move |item| {
         let bytes = item?;
-        if let Some((input, output)) = parse_usage_from_bytes(&bytes) {
+        if let Some((input, output, estimated)) = parse_usage_from_bytes(&bytes) {
+            if estimated {
+                // 期望：带 sugt_estimated 标记的 usage 是网关合成的估算值，
+                // 只能进日志，不能进统计——否则用量面板上的数字无法与实测区分。
+                tracing::debug!(request_id = %request_id,
+                    estimated_input_tokens = input,
+                    estimated_output_tokens = output,
+                    "usage is an estimated fallback; not counted in usage stats"
+                );
+                return Ok::<Bytes, std::io::Error>(bytes);
+            }
             if let Some(collector) = stats.clone() {
                 let attr = token_attr.clone();
                 tokio::spawn(async move {
@@ -4044,7 +4227,22 @@ pub async fn list_openai_models(
     Ok(models)
 }
 
-fn parse_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64)> {
+/// 把原始响应拆成「可入统计的真实 usage」与「仅日志的估算 output」。
+/// 期望：上游无 usage、或上游 usage 是网关合成的估算值时，统计侧都为 None（宁可显示无数据），
+/// 估算值只用于日志——因为估算一旦写进 total_tokens 就无法与实测区分。
+fn split_usage_for_stats(bytes: &[u8]) -> (Option<(u64, u64)>, u64) {
+    match parse_usage_from_bytes(bytes) {
+        Some((input, output, false)) => (Some((input, output)), 0),
+        // 上游缺 usage 后由适配器合成的估算值：只进日志，不入统计。
+        Some((_, output, true)) => (None, output),
+        None => (
+            None,
+            crate::quick_chat::estimate_output_tokens(&String::from_utf8_lossy(bytes)),
+        ),
+    }
+}
+
+fn parse_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64, bool)> {
     if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
         if let Some(usage) = extract_usage_from_json(&value) {
             return Some(usage);
@@ -4070,8 +4268,17 @@ fn parse_usage_from_bytes(bytes: &[u8]) -> Option<(u64, u64)> {
     None
 }
 
-fn extract_usage_from_json(value: &Value) -> Option<(u64, u64)> {
-    let usage = value.get("usage")?;
+/// 解析 usage 段，返回 `(input, output, estimated)`。
+///
+/// `estimated` 来自 `sugt_estimated` 标记：Responses 适配器在上游缺 usage 时会用字符数
+/// 兜底合成一组数字，并打上这个标记。统计侧必须读它，否则估算值会被当成实测写进用量。
+fn extract_usage_from_json(value: &Value) -> Option<(u64, u64, bool)> {
+    // 期望：`usage` 既可能在响应顶层（OpenAI Chat），也可能嵌在 `response` 下
+    // （原生 Responses 的 `response.completed` 事件）。两处都读，避免实测用量漏统计；
+    // `sugt_estimated` 判别对两处一视同仁——估算值只进日志，绝不冒充实测。
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("response").and_then(|response| response.get("usage")))?;
     let input = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
@@ -4082,10 +4289,14 @@ fn extract_usage_from_json(value: &Value) -> Option<(u64, u64)> {
         .or_else(|| usage.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let estimated = usage
+        .get("sugt_estimated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if input == 0 && output == 0 {
         None
     } else {
-        Some((input, output))
+        Some((input, output, estimated))
     }
 }
 
@@ -4121,19 +4332,6 @@ fn anthropic_error(status: StatusCode, message: &str) -> Response<Body> {
 
 /// 探测上游是否可用，只保留 `Result` 形态（`GatewayState::test_provider` 现在直接用
 /// `probe::probe_llm_connectivity` 拿到完整报告，这里留给只需要成败的调用方）。
-pub async fn test_provider_connection(client: &Client, provider: &ProviderConfig) -> Result<()> {
-    let report = crate::probe::probe_llm_connectivity(client, provider).await;
-    if report.ok {
-        Ok(())
-    } else {
-        bail!(
-            report
-                .error
-                .unwrap_or_else(|| "上游未返回可读的回复内容".to_string())
-        )
-    }
-}
-
 pub fn save_runtime_config(paths: &config::AppPaths, config: &AppConfig) -> Result<()> {
     let mut copy = config.clone();
     config::normalize_config(&mut copy);

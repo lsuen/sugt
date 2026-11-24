@@ -4,11 +4,18 @@ use tracing::{info, warn};
 
 use crate::{commands::AppRuntime, gateway_daemon};
 
+/// 看门狗轮询间隔。期望 20 秒一轮，因为过短会频繁探测网关、过长会让故障恢复太慢。
+const WATCHDOG_POLL_INTERVAL_SECS: u64 = 20;
+/// 嵌入式网关启动后等待可达的秒数。期望 6 秒，因为本地进程启动通常秒级完成。
+const EMBEDDED_START_WAIT_SECS: u32 = 6;
+/// 候选口短探的秒数。期望 4 秒，因为备选口要尽快失败并换下一个。
+const CANDIDATE_PROBE_WAIT_SECS: u32 = 4;
+
 /// 后台循环：网关不可达时自动拉起（嵌入式 +  detached 双路径）。
 pub fn spawn(runtime: Arc<AppRuntime>) {
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(20)).await;
+            tokio::time::sleep(Duration::from_secs(WATCHDOG_POLL_INTERVAL_SECS)).await;
             let config = runtime.config.read().await.clone();
             if !config.gateway_watchdog_enabled {
                 continue;
@@ -39,7 +46,7 @@ async fn recover_gateway(runtime: &AppRuntime) -> Result<(), String> {
     }
 
     let after_embed = crate::commands::config_with_listen_port(runtime).await;
-    if gateway_daemon::wait_reachable(&client_host, after_embed.port, 6).await {
+    if gateway_daemon::wait_reachable(&client_host, after_embed.port, EMBEDDED_START_WAIT_SECS).await {
         let _ = crate::commands::sync_client_endpoints_to_listen_port(runtime).await;
         return Ok(());
     }
@@ -50,7 +57,7 @@ async fn recover_gateway(runtime: &AppRuntime) -> Result<(), String> {
     // 扫候选口；成功只刷新接管脚本，不把临时口写进首选 port。
     let mut found = false;
     for port in preferred.port_candidates() {
-        if gateway_daemon::wait_reachable(&client_host, port, 4).await {
+        if gateway_daemon::wait_reachable(&client_host, port, CANDIDATE_PROBE_WAIT_SECS).await {
             found = true;
             break;
         }

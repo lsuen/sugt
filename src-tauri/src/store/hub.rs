@@ -3,7 +3,7 @@ use crate::store::catalog::{
     MountedSkillRecord, StagedSkillRecord,
 };
 use crate::store::install::{
-    mount_folder_name, mount_to_dir, now_secs, remove_mounted_folder, MountTarget,
+    mount_folder_name, mount_to_dir, now_secs, remove_mounted_folder,
 };
 use crate::store::paths::{validate_folder_name, validate_skill_id, StorePaths};
 use crate::takeover_profiles::{self, TakeoverProfile};
@@ -362,15 +362,6 @@ fn unmount_from_custom_path(store_paths: &StorePaths, skill_id: &str, raw_path: 
     }
     save_mounted_meta(store_paths, &mounted)?;
     Ok(true)
-}
-
-/// 兼容旧 MountTarget API
-pub fn mount_target_to_agent_ids(target: MountTarget) -> Vec<String> {
-    match target {
-        MountTarget::Claude => vec!["claude-code".into()],
-        MountTarget::Codex => vec!["codex".into()],
-        MountTarget::Both => vec!["claude-code".into(), "codex".into()],
-    }
 }
 
 pub fn create_local_skill(store_paths: &StorePaths, name: &str) -> Result<LocalSkillView> {

@@ -42,6 +42,29 @@ pub fn validate_client_request_with_keys(
     }
 }
 
+/// 非环回来源的强校验：与绑定地址无关，必须携带有效入站 key。
+///
+/// 内部端点按「连接来源 IP」鉴权时要用本函数，而不是
+/// [`validate_client_request_with_keys`]——后者在绑定回环时会允许无头请求，
+/// 一旦通过端口转发暴露给局域网就会放行匿名访问。空 key 永不匹配。
+pub fn validate_remote_request(
+    headers: &HeaderMap,
+    config: &AppConfig,
+    extra_keys: &[String],
+) -> bool {
+    let expected = effective_client_key(config);
+    match extract_client_api_key(headers) {
+        Some(key) => {
+            key == expected
+                || extra_keys.iter().any(|extra| {
+                    let extra = extra.trim();
+                    !extra.is_empty() && extra == key
+                })
+        }
+        None => false,
+    }
+}
+
 pub const DUMMY_LOCAL_KEY: &str = "sugt-local-key";
 
 fn effective_client_key(config: &AppConfig) -> String {
@@ -145,6 +168,28 @@ mod tests {
         };
         assert!(config.binds_non_loopback());
         assert!(!validate_client_request(&HeaderMap::new(), &config));
+    }
+
+    /// WB-002：即使绑定回环，非本机来源也必须有 key——不能沿用「本机免 key」规则。
+    #[test]
+    fn remote_request_requires_key_even_when_bound_loopback() {
+        let config = config_local();
+        assert!(
+            !validate_remote_request(&HeaderMap::new(), &config, &[]),
+            "非本机来源无 key 必须拒绝"
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("sugt-local-key"));
+        assert!(validate_remote_request(&headers, &config, &[]));
+
+        let extra = vec!["sk-pooled".to_string()];
+        let mut pooled = HeaderMap::new();
+        pooled.insert("authorization", HeaderValue::from_static("Bearer sk-pooled"));
+        assert!(validate_remote_request(&pooled, &config, &extra));
+
+        let mut wrong = HeaderMap::new();
+        wrong.insert("x-api-key", HeaderValue::from_static("wrong"));
+        assert!(!validate_remote_request(&wrong, &config, &extra));
     }
 
     #[test]

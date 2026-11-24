@@ -1,10 +1,8 @@
-use crate::{config::AppPaths, model::AppConfig};
+use crate::{config::AppPaths, gateway_auth::DUMMY_LOCAL_KEY, model::AppConfig};
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
-
-const DUMMY_KEY: &str = "sugt-local-key";
 
 fn client_api_key(config: &AppConfig) -> String {
     client_api_key_for_config(config)
@@ -13,7 +11,7 @@ fn client_api_key(config: &AppConfig) -> String {
 pub fn client_api_key_for_config(config: &AppConfig) -> String {
     let key = config.gateway_client_api_key.trim();
     if key.is_empty() {
-        DUMMY_KEY.to_string()
+        DUMMY_LOCAL_KEY.to_string()
     } else {
         key.to_string()
     }
@@ -39,83 +37,6 @@ pub struct ClientsEnvStatus {
     pub claude: ClientEnvStatus,
     pub codex: ClientEnvStatus,
     pub has_issues: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TakeoverPreviewEntry {
-    pub name: String,
-    pub new_value: String,
-    pub current_value: String,
-    /// set | clear | keep
-    pub action: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TakeoverPreview {
-    pub listen_url: String,
-    pub entries: Vec<TakeoverPreviewEntry>,
-    pub issues: Vec<String>,
-    pub recovery_hint: String,
-}
-
-pub fn preview_install(config_dir: &Path, config: &AppConfig) -> TakeoverPreview {
-    let listen_url = listen_url(config);
-    let status = status(config_dir, config);
-    let mut issues = Vec::new();
-    if !status.claude.issues.is_empty() {
-        issues.extend(status.claude.issues.clone());
-    }
-    if !status.codex.issues.is_empty() {
-        issues.extend(status.codex.issues.clone());
-    }
-
-    let mut entries = Vec::new();
-    for (name, value) in claude_vars(&listen_url, &client_api_key(config))
-        .into_iter()
-        .chain(codex_vars(&listen_url, &client_api_key(config)))
-    {
-        let current = std::env::var(&name).unwrap_or_default();
-        let action = if current.is_empty() {
-            "set".to_string()
-        } else if current == value {
-            "keep".to_string()
-        } else {
-            "set".to_string()
-        };
-        let current_display = mask_env_for_preview(&name, &current);
-        entries.push(TakeoverPreviewEntry {
-            name,
-            new_value: value,
-            current_value: current_display,
-            action,
-        });
-    }
-
-    for name in CLAUDE_CONFLICTING_VARS {
-        let current = std::env::var(name).unwrap_or_default();
-        if !current.is_empty() {
-            entries.push(TakeoverPreviewEntry {
-                name: (*name).to_string(),
-                new_value: String::new(),
-                current_value: mask_env_for_preview(name, &current),
-                action: "clear".to_string(),
-            });
-        }
-    }
-
-    TakeoverPreview {
-        listen_url,
-        entries,
-        issues,
-        recovery_hint: "如需恢复：在客户端页点击「关闭接管」后新开终端；或手动删除/改回原环境变量".to_string(),
-    }
-}
-
-fn mask_env_for_preview(name: &str, value: &str) -> String {
-    if value.is_empty() {
-        return "（未设置）".to_string();
-    }
-    mask_env_value(name, value)
 }
 
 pub fn status(config_dir: &Path, config: &AppConfig) -> ClientsEnvStatus {
@@ -199,17 +120,6 @@ pub fn repair(config_dir: &Path, config: &AppConfig) -> Result<ClientsEnvStatus>
     Ok(status(config_dir, config))
 }
 
-/// 若未显式启用任何 OPENAI_* 接管，清除历史上误写入的 OPENAI_* / Codex 覆盖。
-pub fn reconcile_non_claude_takeover(
-    config_dir: &Path,
-    config: &AppConfig,
-) -> Result<ClientsEnvStatus> {
-    if !openai_takeover_active(config_dir, config) {
-        let _ = uninstall_for(config_dir, config, "codex");
-    }
-    Ok(status(config_dir, config))
-}
-
 pub fn uninstall(config_dir: &Path, config: &AppConfig) -> Result<ClientsEnvStatus> {
     uninstall_for(config_dir, config, "all")
 }
@@ -263,7 +173,7 @@ pub(crate) fn should_clear_takeover_env(actual: &str, expected: &str, listen_url
     if actual.is_empty() {
         return false;
     }
-    if actual == expected || actual == key || actual == DUMMY_KEY {
+    if actual == expected || actual == key || actual == DUMMY_LOCAL_KEY {
         return true;
     }
     let lower = actual.to_ascii_lowercase();

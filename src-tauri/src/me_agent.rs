@@ -2690,6 +2690,15 @@ async fn speak(
         &store_paths,
         &config.active_takeover_ids,
     );
+    let traffic = runtime.gateway.traffic_stats().await;
+    let facts = crate::soul_context::GatewayFacts::collect(
+        &config,
+        Some(&provider),
+        &traffic,
+        &listen,
+        &runtime.paths.log_file,
+    );
+    brief.push_str(&crate::soul_context::gateway_facts_block(zh, &facts));
     brief.push_str(&crate::soul_context::skill_hints_for_ask(
         zh,
         &ask,

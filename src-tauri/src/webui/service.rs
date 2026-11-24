@@ -99,7 +99,11 @@ async fn ensure_gateway_listening(runtime: &AppRuntime, auto_start: bool) -> Res
 
     if !runtime.gateway.is_running().await {
         if let Err(err) = runtime.gateway.start().await {
-            tracing::warn!(error = %err, "embedded gateway start failed, trying detached serve");
+            tracing::warn!(
+                product = crate::logging::LOG_TARGET,
+                error = %err,
+                "embedded gateway start failed, trying detached serve"
+            );
         }
     }
     let after_embed = crate::commands::config_with_listen_port(runtime).await;
@@ -110,7 +114,11 @@ async fn ensure_gateway_listening(runtime: &AppRuntime, auto_start: bool) -> Res
     }
 
     if let Err(err) = crate::gateway_daemon::spawn_detached(&runtime.paths.config_dir) {
-        tracing::warn!(error = %err, "detached gateway spawn failed");
+        tracing::warn!(
+            product = crate::logging::LOG_TARGET,
+            error = %err,
+            "detached gateway spawn failed"
+        );
     }
     let preferred = runtime.config.read().await.clone();
     for port in preferred.port_candidates() {
@@ -120,10 +128,10 @@ async fn ensure_gateway_listening(runtime: &AppRuntime, auto_start: bool) -> Res
         }
     }
 
-    Err(
-        "启动网关失败：端口可能被占用或系统拒绝监听。请检查配置端口、关闭占用程序，或改用 9878 等端口后点击「修复接管」"
-            .to_string(),
-    )
+    Err(format!(
+        "启动网关失败：端口可能被占用或系统拒绝监听。请检查配置端口、关闭占用程序，或改用 {} 等端口后点击「修复接管」",
+        crate::commands::DEFAULT_PORT_FALLBACK_PORTS[0]
+    ))
 }
 
 async fn ensure_gateway_for_takeover(runtime: &AppRuntime, auto_start: bool) -> Result<(), String> {

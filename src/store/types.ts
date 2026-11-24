@@ -50,29 +50,7 @@ export type PluginInstallGuide = {
   plugins_path?: string | null;
 };
 
-export type PluginPanelView = {
-  items: PluginItemView[];
-  guide: PluginInstallGuide;
-};
-
 export type StoreSettings = {
   editor_command: string;
   github_proxy_prefix: string;
 };
-
-export type StoreClientPaths = {
-  staging_dir: string;
-  claude_skills: string;
-  codex_skills: string;
-  claude_plugins: string;
-};
-
-export type StoreSubview = 'main' | 'discover' | 'repos';
-
-export type StoreClientTab = 'claude' | 'codex';
-
-export type StoreContentTab = 'env' | 'templates' | 'skills' | 'plugins';
-
-export type DiscoverFilter = 'all' | 'available' | 'staged' | 'mounted';
-
-export type MountTarget = 'claude' | 'codex' | 'both';

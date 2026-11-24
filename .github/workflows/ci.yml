@@ -2,7 +2,8 @@ name: ci
 
 on:
   push:
-    branches: [main, master, dev-feature]
+    # WB-005：覆盖当前开发分支族，避免 dev-master-* 直接 push 时门禁裸奔
+    branches: [main, master, dev-feature, "dev-master-*"]
   pull_request:
     branches: [main, master]
 
@@ -19,6 +20,21 @@ jobs:
         run: npm ci
       - name: Theme contract and typecheck
         run: npm test
+      # D04：check_pet_overlay.py 的 dist 断言依赖构建产物，必须先 build 再校验，
+      # 否则会把「未构建」误报成「精灵契约漂移」。
+      - name: Build frontend (produces dist for overlay checks)
+        run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: No fake data / no hardcoded business literals
+        run: python docs/孙测测/scripts/check_no_fake_data.py --root .
+      - name: Pet overlay contract (孙测测 copy)
+        run: python docs/孙测测/scripts/check_pet_overlay.py --root .
+      - name: Pet overlay contract (小精灵维护 copy)
+        run: python docs/小精灵维护/scripts/check_pet_overlay.py --root .
+      - name: Version keys consistency
+        run: python docs/孙测测/scripts/check_version_consistency.py --root .
 
   rust:
     runs-on: windows-latest
@@ -28,5 +44,11 @@ jobs:
       - name: Library and integration tests
         working-directory: src-tauri
         run: cargo test
+        env:
+          SUGT_PRODUCT: feature
+      # WB-004 的运行时语义守卫：默认主密钥用量必须被记录（R6 静态判定之外的第二道门）
+      - name: Default local key usage E2E gate
+        working-directory: src-tauri
+        run: cargo test --test client_keys_e2e default_local_key_usage_is_recorded
         env:
           SUGT_PRODUCT: feature

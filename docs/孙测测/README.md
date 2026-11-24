@@ -39,7 +39,8 @@ docs/孙测测/
 │   ├── comfyui_pet_action_series.py   ← SCR-019 v1.3 动作注册表 1000 帧批量生产线（关键姿态 / H3 补间 / 朝向门禁 / 自适应色键 / 统一 bbox / 断点续跑）
 │   ├── check_pet_final_frames.py      ← SCR-020 落包 1000 帧逐帧验收（尺寸 / 帧数 / alpha / 脚部留白 / 独立位图 / poster 一致性 / blink 去重 / 体积）
 │   ├── pet_v14_pad_canvas.py          ← SCR-022 v1.4 画布扩边（180×297 → 240×297，逐帧纯 paste 补 30px 全透明）
-│   └── pet_v14_finalize_assets.py     ← SCR-023 v1.4 挑版 / 锁定 h_ref 归一化 + 同高量测 / 落包桥接
+│   ├── pet_v14_finalize_assets.py     ← SCR-023 v1.4 挑版 / 锁定 h_ref 归一化 + 同高量测 / 落包桥接
+│   └── check_no_fake_data.py          ← SCR-025 生产代码禁止假数据 / 硬绑数据门禁（R1~R6）
 ├── traces/                        ← 运行留痕（脚本自动落盘，文件名带时间戳）
 ├── handoff/
 │   └── HANDOFF.md                 ← 对接文档：给开发的缺陷单 / 给用户的放行结论
@@ -50,6 +51,8 @@ docs/孙测测/
 ```
 
 **查找顺序**：先看 `README.md` 定规范 → 查 `MAP.md` 找可复用脚本 → 到 `traces/` 找历史执行证据 → 到 `reports/` 找版本结论 → 到 `handoff/` 找对接记录。
+
+> **SCR-025 门禁（`scripts/check_no_fake_data.py`）**：扫描 `src/**/*.{ts,tsx}` 与 `src-tauri/src/**/*.rs`（排除测试目录 / 测试文件 / 注释 / `#[cfg(test)]` 块），执行 R1 假数据标识、R2 硬绑品牌 / 占位 key、R3 token 估算冒充实测、R4 两份 `check_pet_overlay.py` sha256 一致、R5 deepseek 文档地址前后端一致、R6 默认主密钥不得直接 `return None`；`--root` 默认当前目录（从项目根执行），`--out` 默认写入 `traces/`；**退出码 0 通过 / 1 有命中 / 2 读取解析失败**，每次执行自动落盘 `traces/禁止假数据硬绑数据检查-<时间戳>.md`，索引见 `MAP.md` SCR-025。
 
 ---
 

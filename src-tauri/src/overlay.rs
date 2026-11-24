@@ -268,8 +268,11 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
             }
             w.set_always_on_top(true)
                 .map_err(|e| format!("设置置顶失败: {e}"))?;
-            // 透明窗关掉系统阴影，否则移动时整窗矩形阴影拖成「背景边框」重影
-            let _ = w.set_shadow(false);
+            // 透明窗关掉系统阴影，否则移动时整窗矩形阴影拖成「背景边框」重影。
+            // 期望只告警不中断，因为阴影设置失败不影响窗口可用性。
+            if let Err(err) = w.set_shadow(false) {
+                tracing::warn!(error = %err, operation = "set_shadow", "overlay window shadow disable failed");
+            }
             w.set_size(LogicalSize::new(cfg.width, cfg.height))
                 .map_err(|e| format!("调整悬浮窗尺寸失败: {e}"))?;
             let prev = (cfg.x, cfg.y);
@@ -295,7 +298,9 @@ pub async fn apply(app: &AppHandle, cfg: &mut OverlayConfig) -> Result<(), Strin
                 .map_err(|e| format!("创建悬浮窗失败: {e}"))?;
             w.set_position(PhysicalPosition::new(cfg.x, cfg.y))
                 .map_err(|e| format!("移动悬浮窗失败: {e}"))?;
-            let _ = w.set_shadow(false);
+            if let Err(err) = w.set_shadow(false) {
+                tracing::warn!(error = %err, operation = "set_shadow", "overlay window shadow disable failed");
+            }
             // 透明区始终穿透：新建窗口先忽略光标，再由命中框解开。
             // 编辑态强制可点击（保存按钮 / 拖柄需要接收事件）。
             let ignore = !cfg.edit;
