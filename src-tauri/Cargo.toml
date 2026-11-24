@@ -1,6 +1,6 @@
 [package]
 name = "sugt"
-version = "1.2.1"
+version = "1.2.2"
 description = "SUGT - su gateway"
 authors = ["孙文龙"]
 edition = "2021"
@@ -33,10 +33,11 @@ http = "1.1"
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 sha2 = "0.10"
 tauri = { version = "2.9.1", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-shell = "2.3.1"
-tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal", "sync", "net"] }
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "signal", "sync", "net", "time"] }
 toml = "1"
 toml_edit = "0.25"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }

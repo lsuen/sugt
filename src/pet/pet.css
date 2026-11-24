@@ -617,11 +617,8 @@
 /* 眼神高光会在透明窗上铺一层雾，关掉。选择器留着，避免旧样式回潮。 */
 .pet-gaze { display: none; }
 
-/* ---- 右键菜单：独立小窗里铺满，不再挂进精灵透明窗 ---- */
+/* ---- 右键菜单：独立小窗里铺满；颜色走主题 token（menu.tsx 设 data-theme） ---- */
 .pet-menu {
-  --pet-panel-solid: #101d2b;
-  --pet-ink: #eaf6ff;
-  --pet-line-strong: rgba(140, 200, 232, 0.46);
   position: static;
   width: 100%;
   height: 100%;
@@ -632,12 +629,13 @@
   flex-direction: column;
   gap: 3px;
   padding: 7px;
-  /* v1.4：与气泡同一套扁平语言——实底 + 描边，无模糊、无阴影 */
-  border: 1px solid var(--pet-line-strong);
-  border-radius: 12px;
-  background: var(--pet-panel-solid);
-  color: var(--pet-ink);
-  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 扁平：实底 + 描边，无 box-shadow / backdrop-filter；圆角外由透明窗露出 */
+  border: 1px solid var(--border-strong, rgba(140, 200, 232, 0.46));
+  border-radius: var(--radius-sm, 12px);
+  /* 菜单窗本身透明：surface 半透明会透出桌面，用 bg 垫实底再叠 surface */
+  background: color-mix(in srgb, var(--surface, #101d2b) 88%, var(--bg, #070b14));
+  color: var(--text, #eaf6ff);
+  font-family: var(--font-ui, Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif);
   pointer-events: auto;
   animation: pet-menu-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -649,8 +647,8 @@
   padding: 4px 8px;
   border: 0;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--pet-ink);
+  background: var(--chip-bg, rgba(255, 255, 255, 0.06));
+  color: var(--text, #eaf6ff);
   font-size: 11px;
   line-height: 1.4;
   text-align: left;
@@ -658,11 +656,14 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 .pet-menu-item:hover {
-  background: rgba(94, 200, 255, 0.16);
-  color: #fff;
+  background: var(--accent-soft, rgba(94, 200, 255, 0.16));
+  color: var(--text, #fff);
 }
-.pet-menu-item--danger { color: #f87171; }
-.pet-menu-item--danger:hover { background: rgba(248, 113, 113, 0.14); color: #ff9b9b; }
+.pet-menu-item--danger { color: var(--danger, #f87171); }
+.pet-menu-item--danger:hover {
+  background: var(--danger-soft, rgba(248, 113, 113, 0.14));
+  color: var(--danger, #ff9b9b);
+}
 .pet-menu-size {
   display: flex;
   align-items: center;
@@ -671,7 +672,7 @@
 }
 .pet-menu-label {
   flex: 0 0 auto;
-  color: #8fa3b8;
+  color: var(--muted, #8fa3b8);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -687,8 +688,8 @@
   padding: 4px 2px;
 }
 .pet-menu-size-btn.is-active {
-  background: rgba(94, 200, 255, 0.16);
-  color: #5ec8ff;
+  background: var(--chip-active, rgba(94, 200, 255, 0.16));
+  color: var(--accent, #5ec8ff);
 }
 
 /* 编辑态按钮/拖柄必须显式恢复命中：父级 .pet-stage 是 pointer-events:none */

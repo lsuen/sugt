@@ -130,6 +130,9 @@ pub struct AppConfig {
     pub autostart_gateway: bool,
     #[serde(default)]
     pub quit_behavior: QuitBehavior,
+    /// 关闭主窗口时最小化到托盘（false = 关窗即按托盘「退出」清理并退出进程）
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
     /// 端口被占用时自动尝试备选端口
     #[serde(default = "default_port_fallback_enabled")]
     pub port_fallback_enabled: bool,
@@ -632,6 +635,7 @@ impl Default for AppConfig {
             autostart: false,
             autostart_gateway: false,
             quit_behavior: QuitBehavior::default(),
+            close_to_tray: true,
             port_fallback_enabled: default_port_fallback_enabled(),
             port_fallback_ports: default_port_fallback_ports(),
             gateway_watchdog_enabled: default_gateway_watchdog_enabled(),

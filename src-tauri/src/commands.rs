@@ -506,10 +506,17 @@ pub fn list_experimental_free_candidates() -> Vec<crate::experimental_free::Free
     list_experimental_free_candidates_core()
 }
 
-pub(crate) async fn probe_experimental_free_models_core(
+#[tauri::command]
+pub fn list_experimental_free_probe_cache(
+    runtime: State<'_, AppRuntime>,
+) -> Vec<crate::experimental_free::FreeModelProbe> {
+    crate::experimental_free::list_cached_probes(&runtime.paths.config_dir)
+}
+
+async fn apply_free_probe_outcome(
     runtime: &AppRuntime,
-) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
-    let probes = crate::experimental_free::test_free_models(runtime.gateway.http_client()).await;
+    probes: &[crate::experimental_free::FreeModelProbe],
+) -> Result<(), String> {
     {
         let mut config = runtime.config.write().await;
         let auto_rotate = config.experimental_free_auto_rotate;
@@ -532,13 +539,29 @@ pub(crate) async fn probe_experimental_free_models_core(
                 provider.status = ProviderStatus::Available;
                 // 默认不擅自改首选；开启 auto_rotate 时按 t/s（其次延迟）切最优路由。
                 if auto_rotate {
-                    let _ = crate::experimental_free::apply_best_from_probes(provider, &probes);
+                    let _ = crate::experimental_free::apply_best_from_probes(provider, probes);
                 }
             }
             provider.last_checked_at = Some(chrono::Utc::now());
         }
     }
-    runtime.persist().await.map_err(|err| err.to_string())?;
+    runtime.persist().await.map_err(|err| err.to_string())
+}
+
+pub(crate) async fn probe_experimental_free_models_core(
+    runtime: &AppRuntime,
+) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
+    // 用户点「获取并测试」：强制重测，忽略缓存。
+    let probes = crate::experimental_free::test_free_models(
+        runtime.gateway.http_client(),
+        &runtime.paths.config_dir,
+        crate::experimental_free::TestFreeOpts {
+            force: true,
+            only_model: None,
+        },
+    )
+    .await;
+    apply_free_probe_outcome(runtime, &probes).await?;
     Ok(probes)
 }
 
@@ -547,6 +570,77 @@ pub async fn probe_experimental_free_models(
     runtime: State<'_, AppRuntime>,
 ) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
     probe_experimental_free_models_core(runtime.inner()).await
+}
+
+/// 只重测一条免费路由（强制打网），写回分级缓存。
+/// 不因单条失败把整通道标 Unavailable——通道可用性看全量/缓存池。
+#[tauri::command]
+pub async fn probe_experimental_free_model(
+    runtime: State<'_, AppRuntime>,
+    model: String,
+) -> Result<crate::experimental_free::FreeModelProbe, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("模型名不能为空".into());
+    }
+    if crate::experimental_free::route_for_model(&model).is_none() {
+        return Err(format!("未知免费路由：{model}"));
+    }
+    let probes = crate::experimental_free::test_free_models(
+        runtime.gateway.http_client(),
+        &runtime.paths.config_dir,
+        crate::experimental_free::TestFreeOpts {
+            force: true,
+            only_model: Some(model.clone()),
+        },
+    )
+    .await;
+    let probe = probes
+        .into_iter()
+        .find(|p| p.name.eq_ignore_ascii_case(&model))
+        .ok_or_else(|| format!("探测未返回：{model}"))?;
+
+    let auto_rotate = runtime.config.read().await.experimental_free_auto_rotate;
+    if auto_rotate && probe.available {
+        // 用「缓存全表 + 本条最新」选优，避免单条结果当全集。
+        let mut pool =
+            crate::experimental_free::list_cached_probes(&runtime.paths.config_dir);
+        if let Some(slot) = pool
+            .iter_mut()
+            .find(|p| p.name.eq_ignore_ascii_case(&probe.name))
+        {
+            *slot = probe.clone();
+        } else {
+            pool.push(probe.clone());
+        }
+        let mut config = runtime.config.write().await;
+        if let Some(provider) = config
+            .providers
+            .iter_mut()
+            .find(|p| crate::experimental_free::is_experimental_free(p))
+        {
+            let _ = crate::experimental_free::apply_best_from_probes(provider, &pool);
+            provider.last_checked_at = Some(chrono::Utc::now());
+            if provider.status != ProviderStatus::Available {
+                provider.status = ProviderStatus::Available;
+                provider.last_error = None;
+            }
+        }
+        drop(config);
+        runtime.persist().await.map_err(|err| err.to_string())?;
+    } else {
+        let mut config = runtime.config.write().await;
+        if let Some(provider) = config
+            .providers
+            .iter_mut()
+            .find(|p| crate::experimental_free::is_experimental_free(p))
+        {
+            provider.last_checked_at = Some(chrono::Utc::now());
+        }
+        drop(config);
+        let _ = runtime.persist().await;
+    }
+    Ok(probe)
 }
 
 pub(crate) async fn set_active_provider_core(
@@ -911,6 +1005,17 @@ pub(crate) async fn probe_models_core(
             target.model_name = model_name.clone();
             async move {
                 let report = probe::probe_llm_connectivity(&client, &target).await;
+                // 仅实验免费通道：聊天通后再探 tools；其它服务商不臆造能力位。
+                let chat_only = if report.ok
+                    && crate::experimental_free::is_experimental_free(&target)
+                {
+                    matches!(
+                        crate::experimental_free::probe_tools_capability(&client, &target).await,
+                        crate::experimental_free::ToolsVerdict::ChatOnly
+                    )
+                } else {
+                    false
+                };
                 (
                     model_name,
                     ModelProbe {
@@ -921,6 +1026,7 @@ pub(crate) async fn probe_models_core(
                         estimated: report.estimated,
                         probed_at: chrono::Utc::now(),
                         error: report.error,
+                        chat_only,
                     },
                 )
             }
@@ -2160,6 +2266,15 @@ pub async fn set_quit_behavior(
     runtime.persist().await.map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+pub async fn set_close_to_tray(
+    runtime: State<'_, AppRuntime>,
+    enabled: bool,
+) -> Result<(), String> {
+    runtime.config.write().await.close_to_tray = enabled;
+    runtime.persist().await.map_err(|err| err.to_string())
+}
+
 async fn clear_takeover_writes(runtime: &AppRuntime) -> Result<(), String> {
     let config = runtime.config.read().await.clone();
     // 方案 B：只清系统写入，保留 active_takeover_ids 偏好
@@ -2372,6 +2487,28 @@ pub async fn list_takeover_profiles(
 ) -> Result<Vec<TakeoverProfileView>, String> {
     let config = runtime.config.read().await.clone();
     Ok(takeover_profiles::list_profile_views(&runtime.paths.config_dir, &config))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeoverDriftView {
+    pub drifted: bool,
+    pub detail: String,
+}
+
+#[tauri::command]
+pub async fn probe_takeover_drift(
+    runtime: State<'_, AppRuntime>,
+    profile_id: String,
+) -> Result<TakeoverDriftView, String> {
+    let config = runtime.config.read().await.clone();
+    let (drifted, detail) = takeover_profiles::probe_profile_drift(
+        &runtime.paths.config_dir,
+        &config,
+        &profile_id,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(TakeoverDriftView { drifted, detail })
 }
 
 #[tauri::command]

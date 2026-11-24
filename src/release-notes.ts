@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.2.1';
+export const CURRENT_VERSION = '1.2.2';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,7 +6,13 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
-  { type: 'feat', text: '配置预设：内置稳定工作 / 省钱省流 / 极速响应三档一键切换，应用前预览字段改动；支持自定义预设的保存、覆盖、导入导出与删除' },
+  { type: 'feat', text: '实验免费通道：分级探测缓存、仅对话能力标记、单路由重测；控制台指标紧凑展示' },
+  { type: 'feat', text: '模型列表：能力徽章、截断轮播、一键禁用不可用模型' },
+  { type: 'feat', text: '接入默认加入 WorkBuddy / DSH；接管写入可用 model id 与网关 API Key，偏离可预警并修复' },
+  { type: 'feat', text: 'SOUL：轻任务提示、选图、伪 tool_call 一键改写 bash；Windows 精灵菜单开关态可追踪' },
+  { type: 'feat', text: 'Key 池 / 接入密钥达配额时 toast 告警（仍不拦截请求）' },
+  { type: 'fix', text: '免费通道欢迎条文案缩短；关窗托盘策略可配置' },
+{ type: 'feat', text: '配置预设：内置稳定工作 / 省钱省流 / 极速响应三档一键切换，应用前预览字段改动；支持自定义预设的保存、覆盖、导入导出与删除' },
   { type: 'feat', text: '连通性测试改为真实 LLM 探测：返回内容、延迟与 t/s，网络通但模型失效不再误报成功' },
   { type: 'feat', text: '模型列表：按服务商批量获取、并发测试、启用/禁用，禁用即从控制台隐藏' },
   { type: 'feat', text: '策略盒子：优先级 / 权重 / 轮换 / 速度阈值四种路由，统一 model id 对外暴露' },

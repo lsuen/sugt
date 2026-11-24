@@ -1428,7 +1428,7 @@ where
     let mut corrections = Vec::new();
     if let Some(command) = pending_command {
         if cancelled() {
-            return Ok(stopped_result(zh, steps));
+            return Ok(stopped_result(zh, steps, None));
         }
         notify(LoopNotice {
             kind: "running",
@@ -1444,7 +1444,7 @@ where
         notify(ran_notice(&step));
         steps.push(step);
         if cancelled() {
-            return Ok(stopped_result(zh, steps));
+            return Ok(stopped_result(zh, steps, None));
         }
         let mut used = steps.len();
         if let Some(last) = steps.last().cloned() {
@@ -1461,7 +1461,7 @@ where
             );
         }
         if cancelled() {
-            return Ok(stopped_result(zh, steps));
+            return Ok(stopped_result(zh, steps, None));
         }
     }
 
@@ -1469,7 +1469,7 @@ where
     let mut used_steps = steps.len();
     loop {
         if cancelled() {
-            return Ok(stopped_result(zh, steps));
+            return Ok(stopped_result(zh, steps, None));
         }
         if used_steps >= limits.steps {
             return Ok(LoopResult {
@@ -1494,12 +1494,13 @@ where
         let text = match ask(messages).await {
             Ok(text) => text,
             Err(err) if err == STOPPED || cancelled() => {
-                return Ok(stopped_result(zh, steps));
+                return Ok(stopped_result(zh, steps, None));
             }
             Err(err) => return Err(err),
         };
         if cancelled() {
-            return Ok(stopped_result(zh, steps));
+            // 流式中途点停止时 ask 会带着已生成正文返回 Ok；保留到会话里，别只留一句「先停下」。
+            return Ok(stopped_result(zh, steps, Some(text)));
         }
         match parse_model_action(&text) {
             Err(()) => {
@@ -1664,7 +1665,7 @@ where
                     });
                 }
                 if cancelled() {
-                    return Ok(stopped_result(zh, steps));
+                    return Ok(stopped_result(zh, steps, None));
                 }
                 if needs_confirm && auth_mode.auto_approves_writes() {
                     notify(LoopNotice {
@@ -1723,18 +1724,46 @@ where
                 }
                 corrections.clear();
                 if cancelled() {
-                    return Ok(stopped_result(zh, steps));
+                    return Ok(stopped_result(zh, steps, None));
                 }
             }
         }
     }
 }
 
-fn stopped_result(zh: bool, steps: Vec<MeStep>) -> LoopResult {
+fn stopped_result(zh: bool, steps: Vec<MeStep>, partial: Option<String>) -> LoopResult {
+    let stop_note = say(zh, "好，我先停下。", "All right, I'll stop.");
+    let content = match partial
+        .as_deref()
+        .map(scrub_assistant_prose)
+        .filter(|text| !text.trim().is_empty())
+    {
+        Some(text) => format!("{}\n\n— {stop_note}", text.trim_end()),
+        None => stop_note,
+    };
     LoopResult {
-        content: say(zh, "好，我先停下。", "All right, I'll stop."),
+        content,
         steps,
         pending: None,
+    }
+}
+
+#[cfg(test)]
+mod stop_partial_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_keeps_streamed_prose() {
+        let result = stopped_result(true, Vec::new(), Some("从前有座山，山里有座庙。".into()));
+        assert!(result.content.contains("从前有座山"), "{}", result.content);
+        assert!(result.content.contains("停下"), "{}", result.content);
+        assert!(result.pending.is_none());
+    }
+
+    #[test]
+    fn stopped_without_partial_is_just_note() {
+        let result = stopped_result(false, Vec::new(), None);
+        assert_eq!(result.content, "All right, I'll stop.");
     }
 }
 
@@ -2356,13 +2385,22 @@ async fn stream_via_gateway(
     let mut reasoning_only = String::new();
     let mut saw_done = false;
 
+    let stop_with_partial = |assembled: &str| -> Result<String, String> {
+        let cleaned = strip_thinking_blocks(assembled.trim());
+        if cleaned.is_empty() {
+            Err(STOPPED.to_string())
+        } else {
+            Ok(cleaned)
+        }
+    };
+
     loop {
         if is_cancelled() {
-            return Err(STOPPED.to_string());
+            return stop_with_partial(&assembled);
         }
         let next = tokio::select! {
             item = byte_stream.next() => item,
-            _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
+            _ = wait_until_cancelled() => return stop_with_partial(&assembled),
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|err| format!("模型流式读取失败：{err}"))?;
@@ -2891,6 +2929,29 @@ pub async fn me_create_project(
 pub async fn me_clear(runtime: State<'_, AppRuntime>) -> Result<MeView, String> {
     with_session(&runtime, |config_dir, session| {
         session.messages.clear();
+        session.pending = None;
+        view_of(config_dir, session)
+    })
+}
+
+/// 删掉最近一轮：末尾 assistant（若有）+ 其前的 user，并清掉 pending。
+#[tauri::command]
+pub async fn me_truncate_last_turn(runtime: State<'_, AppRuntime>) -> Result<MeView, String> {
+    with_session(&runtime, |config_dir, session| {
+        if session
+            .messages
+            .last()
+            .is_some_and(|message| message.role == "assistant")
+        {
+            session.messages.pop();
+        }
+        if session
+            .messages
+            .last()
+            .is_some_and(|message| message.role == "user")
+        {
+            session.messages.pop();
+        }
         session.pending = None;
         view_of(config_dir, session)
     })

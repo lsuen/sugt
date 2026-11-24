@@ -52,6 +52,8 @@ fn kind_label(kind: ConfigKind) -> &'static str {
     match kind {
         ConfigKind::UserEnv => "user_env",
         ConfigKind::CodexToml => "codex_toml",
+        ConfigKind::WorkBuddyJson => "workbuddy_json",
+        ConfigKind::DshPatchYaml => "dsh_patch_yaml",
         ConfigKind::None => "none",
     }
 }

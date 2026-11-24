@@ -18,6 +18,10 @@ pub enum ConfigKind {
     UserEnv,
     /// Codex 专用：`~/.codex/config.toml` + `auth.json`
     CodexToml,
+    /// WorkBuddy：`~/.workbuddy/models.json` 归属合并
+    WorkBuddyJson,
+    /// DSH：`~/.dsh/profiles/*/cordis.patch.yml` provider=sugt
+    DshPatchYaml,
     /// 暂无写入能力
     None,
 }
@@ -132,6 +136,42 @@ static ADAPTERS: &[AgentAdapter] = &[
             clear_vars: &[],
             revertable: true,
             note: "写 config.toml 与 auth.json（保留原有登录态字段）；model 使用 sugt- 前缀别名，可用 SUGT_CODEX_MODEL_ALIAS=off 关闭；声明第三方能力与本地压缩；不改 mcp_servers，MCP server 由客户端自行配置；接管前备份并快照，释放时完整还原",
+        },
+    },
+    AgentAdapter {
+        id: "workbuddy",
+        name: "WorkBuddy",
+        vendor: "WorkBuddy",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.workbuddy"],
+        skill_dirs: &["~/.agents/skills"],
+        project_skill_dirs: &[".agents/skills"],
+        config: ConfigCapability {
+            kind: ConfigKind::WorkBuddyJson,
+            config_path: Some("~/.workbuddy/models.json"),
+            writable_fields: &["models.json[sugtOwner=sugt-v1]"],
+            clear_vars: &[],
+            revertable: true,
+            note: "写入 ~/.workbuddy/models.json：只维护带 sugtOwner 的条目（模型 id + 网关 API Key + chat/completions URL），不碰用户手写模型",
+        },
+    },
+    AgentAdapter {
+        id: "dsh",
+        name: "DSH",
+        vendor: "DeepSeek",
+        protocol: "openai",
+        commands: &[],
+        settings_dirs: &["~/.dsh"],
+        skill_dirs: &["~/.agents/skills"],
+        project_skill_dirs: &[".agents/skills"],
+        config: ConfigCapability {
+            kind: ConfigKind::DshPatchYaml,
+            config_path: Some("~/.dsh/profiles/*/cordis.patch.yml"),
+            writable_fields: &["cordis.patch.yml providers.sugt"],
+            clear_vars: &[],
+            revertable: true,
+            note: "写入各 DSH profile 的 cordis.patch.yml：只维护 providers.sugt（baseURL + Bearer + 模型列表），不碰其它 provider",
         },
     },
     AgentAdapter {

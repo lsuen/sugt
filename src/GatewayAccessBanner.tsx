@@ -79,6 +79,7 @@ type Props = {
   onActiveProviderChange: (id: string) => void
   run: (action: () => Promise<unknown>, ok?: string) => Promise<void>
   pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void
+  onOpenFreeSettings?: () => void
 }
 
 function pythonExample(
@@ -119,6 +120,7 @@ export function GatewayAccessBanner({
   onActiveProviderChange,
   run,
   pushToast,
+  onOpenFreeSettings,
 }: Props) {
   const [codeOpen, setCodeOpen] = useState(false)
   const [codeSample, setCodeSample] = useState('')
@@ -223,6 +225,7 @@ export function GatewayAccessBanner({
             run={run}
             pushToast={pushToast}
             onCycleMode={() => void cycleMode()}
+            onOpenFreeSettings={onOpenFreeSettings}
           />
         </div>
 

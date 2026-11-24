@@ -4,7 +4,7 @@
 use crate::model::{AppConfig, ProviderConfig, ProviderProtocol, ProviderStatus};
 use futures_util::future::join_all;
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 pub const EXPERIMENTAL_FREE_ID: &str = "sugt-free";
@@ -251,8 +251,10 @@ pub fn ensure_experimental_free(config: &mut AppConfig) -> bool {
     }
 
     let mut provider = make_experimental_free_provider();
-    // 新植入默认禁用，需在设置弹窗确认免责后再启用。
-    provider.enabled = false;
+    // 新用户首次安装：默认启用实验免费通道并设为当前上游，免责视为安装时接受；
+    // 设置弹窗仍可关闭通道或重新确认。用户主动「恢复」走 restore_experimental_free，会重新要求免责。
+    provider.enabled = true;
+    config.experimental_free_disclaimer_accepted = true;
     if config.active_provider_id.is_none() {
         config.active_provider_id = Some(provider.id.clone());
     }
@@ -308,6 +310,23 @@ pub fn restore_experimental_free(config: &mut AppConfig) -> bool {
     changed
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ProbeSource {
+    #[default]
+    Live,
+    Cache,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeCategory {
+    Ok,
+    ChatOnly,
+    Transient,
+    Reject,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreeModelProbe {
@@ -315,6 +334,34 @@ pub struct FreeModelProbe {
     pub available: bool,
     pub latency_ms: Option<u64>,
     pub tokens_per_sec: Option<f64>,
+    /// 聊天可用但工具调用探测未产生 tool_calls / 上游明确不支持 tools
+    #[serde(default)]
+    pub chat_only: bool,
+    #[serde(default)]
+    pub source: ProbeSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<ProbeCategory>,
+}
+
+impl FreeModelProbe {
+    fn live(
+        name: String,
+        available: bool,
+        latency_ms: Option<u64>,
+        tokens_per_sec: Option<f64>,
+        chat_only: bool,
+        category: ProbeCategory,
+    ) -> Self {
+        Self {
+            name,
+            available,
+            latency_ms,
+            tokens_per_sec,
+            chat_only,
+            source: ProbeSource::Live,
+            category: Some(category),
+        }
+    }
 }
 
 /// 并发探测候选模型；4xx / 网络失败标为不可用。有可用即保留，不做无限重试。
@@ -327,94 +374,281 @@ pub async fn probe_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> 
         let model = route.model.to_string();
         async move {
             let available = probe_one(&client, &base, &model).await;
-            FreeModelProbe {
+            FreeModelProbe::live(
                 name,
                 available,
-                latency_ms: None,
-                tokens_per_sec: None,
-            }
+                None,
+                None,
+                false,
+                if available {
+                    ProbeCategory::Ok
+                } else {
+                    ProbeCategory::Transient
+                },
+            )
         }
     });
     join_all(futs).await
 }
 
-/// 逐路由真实 LLM 测速：复用 probe_llm_connectivity 发一条真实消息，
-/// 返回可用性 + 延迟 + 生成速度。并发上限 4，避免瞬时打满公开免费上游。
-pub async fn test_free_models(client: &reqwest::Client) -> Vec<FreeModelProbe> {
-    // 先落成 owned 列表并带路由序号，避免闭包参数引用生命周期在 boxed future 里触发 HRTB 限制。
-    // route_id 用 ROUTES 下标：期望它稳定标识一条免费路由，因为模型名可能重复而下标不会。
+#[derive(Debug, Clone, Default)]
+pub struct TestFreeOpts {
+    /// true：忽略缓存，全量或单条重测
+    pub force: bool,
+    /// 仅测这一条模型名（大小写不敏感）；None = 全部 ROUTES
+    pub only_model: Option<String>,
+}
+
+/// 逐路由真实 LLM 测速：复用 probe_llm_connectivity；成功后再做一轮轻量 tools 探测。
+/// 并发上限 4。`force=false` 时新鲜缓存直接返回（source=cache）。
+pub async fn test_free_models(
+    client: &reqwest::Client,
+    config_dir: &std::path::Path,
+    opts: TestFreeOpts,
+) -> Vec<FreeModelProbe> {
+    use crate::experimental_free_cache as cache;
+
+    let path = cache::cache_path(config_dir);
+    let mut entries = cache::load(&path);
+    let alive: Vec<&str> = ROUTES.iter().map(|r| r.model).collect();
+    cache::prune(&mut entries, &alive);
+
+    let only = opts
+        .only_model
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let routes: Vec<(usize, String, String)> = ROUTES
         .iter()
         .enumerate()
+        .filter(|(_, route)| {
+            only.as_ref()
+                .map(|m| route.model.eq_ignore_ascii_case(m))
+                .unwrap_or(true)
+        })
         .map(|(idx, route)| (idx, route.base_url.to_string(), route.model.to_string()))
         .collect();
-    futures_util::stream::iter(routes.into_iter().map(|(route_id, base_url, model)| {
-        let client = client.clone();
-        let name = model.clone();
-        // 临时 provider 只用于探测：不取 sugt-free id，避免 prepare_upstream_provider 再改绑路由。
-        let provider = ProviderConfig {
-            id: "free-route-probe".to_string(),
-            name: "免费路由探测".to_string(),
-            provider: "free-route-probe".to_string(),
-            base_url: base_url.clone(),
-            // LLM7.io 需要公开匿名 key "unused"，其余通道免 key（与 apply_route 一致）
-            api_key: if base_url.contains("llm7.io") {
-                "unused".to_string()
-            } else {
-                String::new()
-            },
-            model_name: model,
-            protocol: ProviderProtocol::OpenAi,
-            enabled: true,
-            status: ProviderStatus::Unknown,
-            last_checked_at: None,
-            last_error: None,
-            model_alias: None,
-            auto_adapt_base_url: false,
-            tool_text_retry_enabled: false,
-            tool_text_retry_extra: 0,
-        };
-        async move {
-            let report = crate::probe::probe_llm_connectivity(&client, &provider).await;
-            // 期望 key 一律脱敏后再入日志，因为免费通道的匿名 key 也是凭据形态，
-            // 直接打印会被日志采集当成真 key 误报泄漏。
-            let api_key = crate::model::mask_secret(&provider.api_key);
-            if report.ok {
+
+    let mut out: Vec<FreeModelProbe> = Vec::with_capacity(routes.len());
+    let mut to_probe: Vec<(usize, String, String)> = Vec::new();
+
+    for (route_id, base_url, model) in routes {
+        let fp = cache::route_fingerprint(&base_url, &model);
+        if !opts.force {
+            if let Some(hit) = cache::fresh(&entries, &model, &fp) {
+                out.push(cache::to_probe(&model, hit));
+                continue;
+            }
+        }
+        to_probe.push((route_id, base_url, model));
+    }
+
+    let live: Vec<FreeModelProbe> = futures_util::stream::iter(to_probe.into_iter().map(
+        |(route_id, base_url, model)| {
+            let client = client.clone();
+            let name = model.clone();
+            let provider = probe_provider(&base_url, &model);
+            async move {
+                let report = crate::probe::probe_llm_connectivity(&client, &provider).await;
+                let api_key = crate::model::mask_secret(&provider.api_key);
+                if !report.ok {
+                    let category =
+                        cache::classify_failure(report.error.as_deref());
+                    warn!(
+                        action = "free_route_probe",
+                        provider = %provider.provider,
+                        model = %name,
+                        route_id,
+                        status = "fail",
+                        category = ?category,
+                        latency_ms = report.latency_ms,
+                        api_key = %api_key,
+                        error = report.error.as_deref().unwrap_or_default(),
+                        "free route probe failed"
+                    );
+                    return FreeModelProbe::live(
+                        name,
+                        false,
+                        Some(report.latency_ms),
+                        None,
+                        false,
+                        category,
+                    );
+                }
+
+                let tools = probe_tools_capability(&client, &provider).await;
+                let (chat_only, category) = match tools {
+                    ToolsVerdict::Supported => (false, ProbeCategory::Ok),
+                    ToolsVerdict::ChatOnly => (true, ProbeCategory::ChatOnly),
+                    ToolsVerdict::Inconclusive => (false, ProbeCategory::Ok),
+                };
                 info!(
                     action = "free_route_probe",
                     provider = %provider.provider,
                     model = %name,
                     route_id,
                     status = "ok",
+                    chat_only,
+                    category = ?category,
                     latency_ms = report.latency_ms,
                     tokens_per_sec = report.tokens_per_sec,
                     api_key = %api_key,
                     "free route probe succeeded"
                 );
-            } else {
-                warn!(
-                    action = "free_route_probe",
-                    provider = %provider.provider,
-                    model = %name,
-                    route_id,
-                    status = "fail",
-                    latency_ms = report.latency_ms,
-                    api_key = %api_key,
-                    error = report.error.as_deref().unwrap_or_default(),
-                    "free route probe failed"
-                );
+                FreeModelProbe::live(
+                    name,
+                    true,
+                    Some(report.latency_ms),
+                    Some(report.tokens_per_sec),
+                    chat_only,
+                    category,
+                )
             }
-            FreeModelProbe {
-                name,
-                available: report.ok,
-                latency_ms: Some(report.latency_ms),
-                tokens_per_sec: report.ok.then_some(report.tokens_per_sec),
-            }
-        }
-    }))
+        },
+    ))
     .buffer_unordered(4)
-    .collect::<Vec<_>>()
-    .await
+    .collect()
+    .await;
+
+    for probe in &live {
+        if let Some((base, model)) = route_for_model(&probe.name) {
+            cache::record(
+                &mut entries,
+                model,
+                cache::route_fingerprint(base, model),
+                probe,
+            );
+        }
+    }
+    cache::save(&path, &entries);
+
+    out.extend(live);
+    // 保持 ROUTES 顺序，方便 UI / auto_rotate
+    out.sort_by_key(|p| {
+        ROUTES
+            .iter()
+            .position(|r| r.model.eq_ignore_ascii_case(&p.name))
+            .unwrap_or(usize::MAX)
+    });
+    out
+}
+
+/// 读缓存新鲜判定（不发网），供控制台打开时展示上次结果。
+pub fn list_cached_probes(config_dir: &std::path::Path) -> Vec<FreeModelProbe> {
+    use crate::experimental_free_cache as cache;
+    let entries = cache::load(&cache::cache_path(config_dir));
+    ROUTES
+        .iter()
+        .filter_map(|route| {
+            let fp = cache::route_fingerprint(route.base_url, route.model);
+            cache::fresh(&entries, route.model, &fp).map(|v| cache::to_probe(route.model, v))
+        })
+        .collect()
+}
+
+fn probe_provider(base_url: &str, model: &str) -> ProviderConfig {
+    ProviderConfig {
+        id: "free-route-probe".to_string(),
+        name: "免费路由探测".to_string(),
+        provider: "free-route-probe".to_string(),
+        base_url: base_url.to_string(),
+        api_key: if base_url.contains("llm7.io") {
+            "unused".to_string()
+        } else {
+            String::new()
+        },
+        model_name: model.to_string(),
+        protocol: ProviderProtocol::OpenAi,
+        enabled: true,
+        status: ProviderStatus::Unknown,
+        last_checked_at: None,
+        last_error: None,
+        model_alias: None,
+        auto_adapt_base_url: false,
+        tool_text_retry_enabled: false,
+        tool_text_retry_extra: 0,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolsVerdict {
+    Supported,
+    ChatOnly,
+    Inconclusive,
+}
+
+/// 聊天已通后：带一个 function 工具，看模型会不会产出 tool_calls。
+/// 明确「只回文本」或上游拒绝 tools → ChatOnly；超时/网络 → Inconclusive（不误伤）。
+pub async fn probe_tools_capability(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+) -> ToolsVerdict {
+    use crate::gateway::build_target_url;
+    use serde_json::json;
+
+    let url = build_target_url(&provider.base_url, "v1/chat/completions", "");
+    let body = json!({
+        "model": provider.model_name,
+        "messages": [{
+            "role": "user",
+            "content": "Call the tool named ping_probe with argument note=\"ok\". Do not answer in plain text."
+        }],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "ping_probe",
+                "description": "Connectivity probe tool; call it once.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "note": { "type": "string" }
+                    },
+                    "required": ["note"]
+                }
+            }
+        }],
+        "tool_choice": "auto",
+        "max_tokens": 64,
+        "stream": false
+    });
+
+    let mut req = client
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(25));
+    if !provider.api_key.trim().is_empty() {
+        req = req.bearer_auth(&provider.api_key);
+    }
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(_) => return ToolsVerdict::Inconclusive,
+    };
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let lower = text.to_lowercase();
+        if lower.contains("tool")
+            || lower.contains("function")
+            || lower.contains("not support")
+            || lower.contains("unsupported")
+            || status.as_u16() == 400
+        {
+            return ToolsVerdict::ChatOnly;
+        }
+        return ToolsVerdict::Inconclusive;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return ToolsVerdict::Inconclusive;
+    };
+    let calls = value
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|v| v.as_array());
+    if calls.map(|a| !a.is_empty()).unwrap_or(false) {
+        return ToolsVerdict::Supported;
+    }
+    // 成功 HTTP 但只有文本 → 诚实标仅对话
+    ToolsVerdict::ChatOnly
 }
 
 async fn probe_one(client: &reqwest::Client, base_url: &str, model: &str) -> bool {
@@ -573,6 +807,21 @@ mod tests {
     }
 
     #[test]
+    fn fresh_install_enables_free_channel_by_default() {
+        let mut cfg = AppConfig::default();
+        assert!(cfg.providers.is_empty());
+        assert!(ensure_experimental_free(&mut cfg));
+        let free = cfg
+            .providers
+            .iter()
+            .find(|p| p.id == EXPERIMENTAL_FREE_ID)
+            .expect("sugt-free");
+        assert!(free.enabled, "新用户应默认启用实验免费通道");
+        assert!(cfg.experimental_free_disclaimer_accepted);
+        assert_eq!(cfg.active_provider_id.as_deref(), Some(EXPERIMENTAL_FREE_ID));
+    }
+
+    #[test]
     fn candidates_nonempty() {
         let models = candidate_models();
         assert!(!models.is_empty());
@@ -593,39 +842,14 @@ mod tests {
     #[test]
     fn pick_best_probe_prefers_speed_then_latency() {
         let probes = vec![
-            FreeModelProbe {
-                name: "slow".into(),
-                available: true,
-                latency_ms: Some(50),
-                tokens_per_sec: Some(10.0),
-            },
-            FreeModelProbe {
-                name: "fast".into(),
-                available: true,
-                latency_ms: Some(80),
-                tokens_per_sec: Some(40.0),
-            },
-            FreeModelProbe {
-                name: "down".into(),
-                available: false,
-                latency_ms: None,
-                tokens_per_sec: None,
-            },
+            FreeModelProbe::live("slow".into(), true, Some(50), Some(10.0), false, ProbeCategory::Ok),
+            FreeModelProbe::live("fast".into(), true, Some(80), Some(40.0), false, ProbeCategory::Ok),
+            FreeModelProbe::live("down".into(), false, None, None, false, ProbeCategory::Reject),
         ];
         assert_eq!(pick_best_probe(&probes).map(|p| p.name.as_str()), Some("fast"));
         let tie = vec![
-            FreeModelProbe {
-                name: "a".into(),
-                available: true,
-                latency_ms: Some(120),
-                tokens_per_sec: Some(20.0),
-            },
-            FreeModelProbe {
-                name: "b".into(),
-                available: true,
-                latency_ms: Some(40),
-                tokens_per_sec: Some(20.0),
-            },
+            FreeModelProbe::live("a".into(), true, Some(120), Some(20.0), false, ProbeCategory::Ok),
+            FreeModelProbe::live("b".into(), true, Some(40), Some(20.0), false, ProbeCategory::Ok),
         ];
         assert_eq!(pick_best_probe(&tie).map(|p| p.name.as_str()), Some("b"));
     }
@@ -651,30 +875,38 @@ mod tests {
 
     #[test]
     fn free_model_probe_serializes_as_camel_case() {
-        let value = serde_json::to_value(FreeModelProbe {
-            name: "kilo-auto/free".into(),
-            available: true,
-            latency_ms: Some(1234),
-            tokens_per_sec: Some(12.5),
-        })
+        let value = serde_json::to_value(FreeModelProbe::live(
+            "kilo-auto/free".into(),
+            true,
+            Some(1234),
+            Some(12.5),
+            true,
+            ProbeCategory::ChatOnly,
+        ))
         .expect("to_value");
         assert_eq!(value["name"], "kilo-auto/free");
         assert_eq!(value["available"], true);
         assert_eq!(value["latencyMs"], 1234);
         assert_eq!(value["tokensPerSec"], 12.5);
+        assert_eq!(value["chatOnly"], true);
+        assert_eq!(value["source"], "live");
+        assert_eq!(value["category"], "chat_only");
         assert!(value.get("latency_ms").is_none());
         assert!(value.get("tokens_per_sec").is_none());
 
         // 廉价探测路径：指标缺省序列化为 null，字段名仍是 camelCase
-        let value = serde_json::to_value(FreeModelProbe {
-            name: "openai-fast".into(),
-            available: false,
-            latency_ms: None,
-            tokens_per_sec: None,
-        })
+        let value = serde_json::to_value(FreeModelProbe::live(
+            "openai-fast".into(),
+            false,
+            None,
+            None,
+            false,
+            ProbeCategory::Transient,
+        ))
         .expect("to_value");
         assert!(value["latencyMs"].is_null());
         assert!(value["tokensPerSec"].is_null());
+        assert_eq!(value["chatOnly"], false);
     }
 
     #[test]

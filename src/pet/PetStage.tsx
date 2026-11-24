@@ -470,12 +470,6 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     void invoke('focus_main_window').catch(() => undefined);
   }, []);
 
-  const onFigurePointerDown = (e: ReactMouseEvent<HTMLDivElement>) => {
-    preemptRef.current();
-    clearIdlePose();
-    onFigureMouseDown(e);
-  };
-
   const cancelPendingClicks = () => {
     pendingClicks.current.forEach((timer) => window.clearTimeout(timer));
     pendingClicks.current = [];
@@ -553,13 +547,50 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     pendingClicks.current.push(timer);
   };
 
-  const onFigureContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openPetMenu = () => {
     if (!interactive || cfg.edit) return;
     lastUserTouch.current = Date.now();
     preemptRef.current();
-    void invoke('pet_open_menu').catch(() => undefined);
+    // 打开前强制解穿透：Windows 上右键按下时轮询可能还没把 ignore_cursor_events 关掉，
+    // 菜单窗会建起来却立刻被穿透/失焦逻辑掐掉。
+    void invoke('pet_set_clickable', { enabled: true }).catch(() => undefined);
+    menuOpenRef.current = true;
+    void invoke('pet_open_menu')
+      .catch(() => {
+        menuOpenRef.current = false;
+      });
+  };
+
+  useEffect(() => {
+    const opened = listen('sugt://pet-menu-opened', () => {
+      menuOpenRef.current = true;
+    });
+    const closed = listen('sugt://pet-menu-closed', () => {
+      menuOpenRef.current = false;
+    });
+    return () => {
+      opened.then((fn) => fn()).catch(() => undefined);
+      closed.then((fn) => fn()).catch(() => undefined);
+    };
+  }, []);
+
+  const onFigureContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPetMenu();
+  };
+
+  const onFigurePointerDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    // Windows WebView2 偶发不冒泡 contextmenu；右键 mousedown 作兜底。
+    if (e.button === 2) {
+      e.preventDefault();
+      e.stopPropagation();
+      openPetMenu();
+      return;
+    }
+    preemptRef.current();
+    clearIdlePose();
+    onFigureMouseDown(e);
   };
 
   const activeFrame = resolvePetPose({
@@ -672,6 +703,13 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
         onMouseMove={onFigureMouseMove}
         onContextMenu={onFigureContextMenu}
         onClick={onFigureClick}
+        onAuxClick={(e) => {
+          if (e.button === 2) {
+            e.preventDefault();
+            e.stopPropagation();
+            openPetMenu();
+          }
+        }}
         role={interactive ? 'button' : undefined}
         aria-label={interactive ? t(PET_LABEL[petState]) : undefined}
       >

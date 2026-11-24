@@ -282,6 +282,7 @@ type AppConfig = {
   claude_takeover_enabled?: boolean;
   codex_takeover_enabled?: boolean;
   quit_behavior: QuitBehavior;
+  close_to_tray?: boolean;
   port_fallback_enabled?: boolean;
   gateway_watchdog_enabled?: boolean;
   allow_lan_access?: boolean;
@@ -550,6 +551,30 @@ function AppMain() {
       un.then((fn) => fn()).catch(() => undefined);
     };
   }, [setTab]);
+
+  // 首次关窗进托盘提示：Rust emit `sugt://close-to-tray`，localStorage + 进程内标记只弹一次。
+  useEffect(() => {
+    const tipKey = 'sugt_close_tray_tip_seen';
+    let seen = false;
+    try {
+      seen = Boolean(localStorage.getItem(tipKey));
+    } catch {
+      // 隐私模式读失败：本进程仍只提示一次。
+    }
+    const un = listen('sugt://close-to-tray', () => {
+      if (seen) return;
+      seen = true;
+      try {
+        localStorage.setItem(tipKey, '1');
+      } catch {
+        // 写失败不影响提示；seen 已挡住本进程内重复。
+      }
+      pushToast(t('set.closeToTrayToast'), 'info');
+    });
+    return () => {
+      un.then((fn) => fn()).catch(() => undefined);
+    };
+  }, [pushToast]);
 
   // Toast 轻量动作：复用桌面精灵「打开设置子页」的既有事件，由上方 listen('sugt://navigate-settings')
   // 统一完成 setTab/setSettingsTab；此处只发事件、仅跳转，不做任何写操作 / 破坏性操作。 —— 孙文龙 sun
@@ -964,6 +989,10 @@ function AppMain() {
                 onActiveProviderChange={(id) => run(() => invoke('set_active_provider', { id }), t('dash.toastSwitched'))}
                 run={run}
                 pushToast={pushToast}
+                onOpenFreeSettings={() => {
+                  setFreeSettingsRequireAccept(false);
+                  setFreeSettingsOpen(true);
+                }}
               />
             </div>
           </section>

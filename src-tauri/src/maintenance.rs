@@ -114,6 +114,7 @@ mod tests {
                 estimated: false,
                 probed_at: chrono::Utc::now(),
                 error: None,
+                chat_only: false,
             }),
         });
         crate::model_registry::save(&dir, &registry).unwrap();

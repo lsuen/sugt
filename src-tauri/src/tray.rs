@@ -129,10 +129,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                         let _ = app.emit("sugt://status-changed", ());
                     }
                     "quit" => {
-                        if let Some(runtime) = app.try_state::<AppRuntime>() {
-                            let _ = crate::commands::apply_quit_behavior(&runtime).await;
-                        }
-                        app.exit(0);
+                        request_quit(&app);
                     }
                     _ => {}
                 }
@@ -246,8 +243,29 @@ fn show_main_window(app: &tauri::AppHandle) {
 pub fn hide_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
-        let _ = window.set_skip_taskbar(true);
+        // Windows：关窗进托盘时仍留任务栏入口。新装用户托盘图标常被藏进溢出区，
+        // 再 set_skip_taskbar(true) 等于主窗和任务栏双消失，表现为「无法退出」。
+        #[cfg(windows)]
+        {
+            let _ = window.set_skip_taskbar(false);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = window.set_skip_taskbar(true);
+        }
     }
+}
+
+/// 托盘「退出」与关窗即退出共用：清理最多等 3 秒，再 `exit(0)` 收掉含 overlay 的进程。
+pub fn request_quit(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(runtime) = app.try_state::<AppRuntime>() {
+            let cleanup = crate::commands::apply_quit_behavior(&runtime);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), cleanup).await;
+        }
+        app.exit(0);
+    });
 }
 
 fn open_path(path: &std::path::Path) -> anyhow::Result<()> {

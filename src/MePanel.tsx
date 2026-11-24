@@ -8,13 +8,16 @@ import {
   Cpu,
   Eye,
   FolderOpen,
+  ImagePlus,
   type LucideIcon,
   PawPrint,
   Puzzle,
+  RotateCcw,
   ScrollText,
   Send,
   Settings,
   Square,
+  Trash2,
 } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { lang, t, type TKey } from './i18n';
@@ -167,6 +170,7 @@ export type MeApi = {
   dismiss: () => Promise<MeView>;
   stop: () => Promise<void>;
   clear: () => Promise<MeView>;
+  truncateLastTurn: () => Promise<MeView>;
   openDir: () => Promise<void>;
   subscribe: (onStep: (event: MeEvent) => void) => Promise<() => void>;
 };
@@ -198,6 +202,7 @@ export function tauriMeApi(): MeApi {
     dismiss: () => invoke<MeView>('me_dismiss', { lang: language() }),
     stop: () => invoke('me_stop'),
     clear: () => invoke<MeView>('me_clear'),
+    truncateLastTurn: () => invoke<MeView>('me_truncate_last_turn'),
     openDir: () => invoke('me_open_dir'),
     subscribe: async (onStep) => {
       const unlisten = await listen<MeEvent>('sugt://me-step', (event) => onStep(event.payload));
@@ -221,6 +226,14 @@ function looksLikeStepBudgetStop(content: string): boolean {
   return content.includes('这一轮的步数用完了')
     || content.includes('used up its steps')
     || content.includes('步数用完');
+}
+
+function looksLikeContinueable(content: string): boolean {
+  const mark = t('me.stoppedMark');
+  return (mark.length > 0 && content.includes(mark))
+    || content.includes('好，我先停下')
+    || content.includes("I'll stop")
+    || looksLikeStepBudgetStop(content);
 }
 
 function summarizeRunSteps(steps: MeStep[]): { ok: boolean; text: string } | null {
@@ -262,6 +275,24 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const flashTimerRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
+  const liveDraftRef = useRef('');
+  const liveStepsRef = useRef<MeStep[]>([]);
+  const runPromiseRef = useRef<Promise<boolean> | null>(null);
+  const awaitingRef = useRef(false);
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    liveDraftRef.current = liveDraft;
+  }, [liveDraft]);
+  useEffect(() => {
+    liveStepsRef.current = liveSteps;
+  }, [liveSteps]);
+  useEffect(() => {
+    awaitingRef.current = awaiting;
+  }, [awaiting]);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   const refreshStatus = () => {
     void invoke<{
@@ -377,50 +408,74 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     return () => window.removeEventListener('keydown', onKey);
   }, [placeOpen]);
 
-  async function run(task: () => Promise<MeView>, waitForSu = false) {
-    setError('');
-    setBusy(true);
-    setAwaiting(waitForSu);
-    if (waitForSu) {
-      setLive(t('me.thinking'));
-      setLiveDraft('');
-      setLiveSteps([]);
-      showRunFlash(null);
-    }
-    let ok = false;
-    let finished: MeView | null = null;
-    try {
-      const view = await task();
-      finished = view;
-      setSession(view);
-      setHistory(rememberPlace({
-        mode: view.mode,
-        project: view.project,
-        path: view.work_dir,
-      }));
-      ok = true;
-    } catch (err) {
-      setError(errorText(err));
+  async function run(
+    task: () => Promise<MeView>,
+    waitForSu = false,
+    opts?: { rollbackOnFail?: () => void },
+  ) {
+    const work = (async (): Promise<boolean> => {
+      setError('');
+      setBusy(true);
+      busyRef.current = true;
+      setAwaiting(waitForSu);
+      awaitingRef.current = waitForSu;
+      if (waitForSu) {
+        setLive(t('me.thinking'));
+        setLiveDraft('');
+        setLiveSteps([]);
+        showRunFlash(null);
+      }
+      let ok = false;
+      let finished: MeView | null = null;
       try {
-        setSession(await client.load());
-      } catch {
-        /* 保持当前画面 */
+        const view = await task();
+        finished = view;
+        setSession(view);
+        setHistory(rememberPlace({
+          mode: view.mode,
+          project: view.project,
+          path: view.work_dir,
+        }));
+        ok = true;
+      } catch (err) {
+        setError(errorText(err));
+        if (opts?.rollbackOnFail) {
+          opts.rollbackOnFail();
+          setError((prev) => {
+            const hint = t('me.sendFailRestore');
+            return prev ? `${prev} · ${hint}` : hint;
+          });
+        } else {
+          try {
+            setSession(await client.load());
+          } catch {
+            /* 保持当前画面 */
+          }
+        }
+      } finally {
+        if (waitForSu && ok && finished) {
+          const lastAssistant = [...finished.messages].reverse().find((message) => message.role === 'assistant');
+          const flash = summarizeRunSteps(lastAssistant?.steps ?? []);
+          if (flash) showRunFlash(flash);
+        }
+        setBusy(false);
+        busyRef.current = false;
+        setAwaiting(false);
+        awaitingRef.current = false;
+        setLive('');
+        setLiveDraft('');
+        setLiveSteps([]);
+        refreshStatus();
+        inputRef.current?.focus();
       }
+      return ok;
+    })();
+    runPromiseRef.current = work;
+    try {
+      return await work;
     } finally {
-      if (waitForSu && ok && finished) {
-        const lastAssistant = [...finished.messages].reverse().find((message) => message.role === 'assistant');
-        const flash = summarizeRunSteps(lastAssistant?.steps ?? []);
-        if (flash) showRunFlash(flash);
-      }
-      setBusy(false);
-      setAwaiting(false);
-      setLive('');
-      setLiveDraft('');
-      setLiveSteps([]);
-      refreshStatus();
-      inputRef.current?.focus();
+      if (runPromiseRef.current === work) runPromiseRef.current = null;
     }
-    return ok;
   }
 
   async function addImageFiles(files: File[]) {
@@ -441,13 +496,104 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     }
   }
 
+  function appendStoppedOptimistic(content: string, steps: MeStep[]) {
+    const mark = t('me.stoppedMark');
+    const body = content.trimEnd();
+    const withMark = mark && !body.includes(mark) ? `${body}\n\n${mark}` : body;
+    const optimistic: MeMessage = {
+      id: `local-stop-${Date.now()}`,
+      role: 'assistant',
+      content: withMark,
+      steps,
+      created_at: Date.now(),
+    };
+    setSession((prev) => (prev ? { ...prev, messages: [...prev.messages, optimistic] } : prev));
+    // 乐观气泡已上屏：关掉流式气泡，但保留 liveDraft 直到 me_send 返回。
+    setAwaiting(false);
+    awaitingRef.current = false;
+    setLive('');
+  }
+
+  async function handleStop() {
+    if (!awaitingRef.current) return;
+    const snapDraft = liveDraftRef.current;
+    const snapSteps = liveStepsRef.current;
+    void client.stop().catch((err: unknown) => setError(errorText(err)));
+    if (snapDraft.trim()) {
+      appendStoppedOptimistic(snapDraft, snapSteps);
+    }
+  }
+
+  async function stopThenSend(text: string, images = draftImages) {
+    const message = text.trim();
+    if (!message && images.length === 0) return;
+    const savedImages = [...images];
+    await handleStop();
+    const pending = runPromiseRef.current;
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        /* 上一轮已在 run 内消化 */
+      }
+    }
+    await send(message, savedImages);
+  }
+
   async function send(text: string, images = draftImages) {
     const message = text.trim();
-    if ((!message && images.length === 0) || busy) return;
+    if ((!message && images.length === 0) || busyRef.current) return;
+    // 先把用户气泡打进面板，再等网关推理；否则整段等待期间输入像「消失了」。
+    const optimistic: MeMessage = {
+      id: `local-${Date.now()}`,
+      role: 'user',
+      content: message,
+      images: images.length > 0 ? images : undefined,
+      steps: [],
+      created_at: Date.now(),
+    };
+    const savedImages = [...images];
+    setSession((prev) => (prev ? { ...prev, messages: [...prev.messages, optimistic] } : prev));
     setDraft('');
     setDraftImages([]);
     stickToBottomRef.current = true;
-    await run(() => client.send(message, images), true);
+    await run(() => client.send(message, images), true, {
+      rollbackOnFail: () => {
+        setSession((prev) => (prev
+          ? { ...prev, messages: prev.messages.filter((item) => !item.id.startsWith('local-')) }
+          : prev));
+        setDraft(message);
+        setDraftImages(savedImages);
+      },
+    });
+  }
+
+  function regenerateLast() {
+    if (!session || busyRef.current || awaitingRef.current) return;
+    const messages = session.messages;
+    let lastAssistant = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'assistant') {
+        lastAssistant = i;
+        break;
+      }
+    }
+    if (lastAssistant < 0) return;
+    let prevUser = -1;
+    for (let i = lastAssistant - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'user') {
+        prevUser = i;
+        break;
+      }
+    }
+    if (prevUser < 0) return;
+    const user = messages[prevUser];
+    void send(user.content, user.images ?? []);
+  }
+
+  function deleteLastTurn() {
+    if (!session || busyRef.current || awaitingRef.current) return;
+    void run(() => client.truncateLastTurn());
   }
 
   const projects = session
@@ -630,7 +776,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
         )}
 
         <div className="me-desk-actions">
-          <button type="button" className="tiny" disabled={busy || !session} onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}>
+          <button type="button" className="tiny" disabled={!session} onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}>
             <FolderOpen size={14} />{t('me.openDir')}
           </button>
           {onOpenSkills && (
@@ -697,6 +843,9 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
               steps={message.steps ?? []}
               pending={pendingHere ? session.pending : null}
               busy={busy}
+              isLastAssistant={lastAssistant && !awaiting}
+              onRegenerate={lastAssistant && !awaiting ? () => regenerateLast() : undefined}
+              onDeleteTurn={lastAssistant && !awaiting ? () => deleteLastTurn() : undefined}
               onConfirm={() => void run(() => client.confirm(), true)}
               onDismiss={() => void run(() => client.dismiss())}
               onRoute={onRoute}
@@ -730,11 +879,20 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
       </div>
 
       {error && <p className="me-error" role="alert">{error}</p>}
+      <p className="hint compact me-light-hint">{t('me.lightHint')}</p>
 
       <form
         className="me-composer"
         onSubmit={(event) => {
           event.preventDefault();
+          if (awaiting && (draft.trim() || draftImages.length > 0)) {
+            void stopThenSend(draft);
+            return;
+          }
+          if (awaiting) {
+            void handleStop();
+            return;
+          }
           void send(draft);
         }}
       >
@@ -746,7 +904,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
                 <button
                   type="button"
                   className="me-draft-remove"
-                  disabled={busy}
+                  disabled={busy && !awaiting}
                   aria-label={t('me.removeImage')}
                   onClick={() => setDraftImages((prev) => prev.filter((_, i) => i !== index))}
                 >×</button>
@@ -761,7 +919,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
           value={draft}
           placeholder={t('me.placeholder')}
           aria-label={t('me.composerLabel')}
-          disabled={busy}
+          disabled={busy && !awaiting}
           onChange={(event) => setDraft(event.target.value)}
           onPaste={(event) => {
             const items = Array.from(event.clipboardData?.items ?? []);
@@ -775,8 +933,24 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
           }}
           onKeyDown={(event) => {
             const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+            if (event.key === 'Escape') {
+              if (awaiting) {
+                event.preventDefault();
+                void handleStop();
+                return;
+              }
+              if (session?.pending && !busy) {
+                void run(() => client.dismiss());
+              }
+              return;
+            }
             if (event.key === 'Enter' && !event.shiftKey && !composing) {
               event.preventDefault();
+              if (awaiting && (draft.trim() || draftImages.length > 0)) {
+                void stopThenSend(draft);
+                return;
+              }
+              if (awaiting) return;
               if (session?.pending && !busy && !draft.trim() && draftImages.length === 0) {
                 void run(() => client.confirm(), true);
                 return;
@@ -786,12 +960,40 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
             if (event.key === 'Backspace' && !draft && draftImages.length > 0) {
               setDraftImages((prev) => prev.slice(0, -1));
             }
-            if (event.key === 'Escape' && session?.pending && !busy) {
-              void run(() => client.dismiss());
-            }
           }}
         />
         <div className="me-composer-actions">
+          <label className="ghost tiny-btn me-pick-image" title={t('me.pickImage')}>
+            <ImagePlus size={14} />
+            <span className="me-sr-only">{t('me.pickImage')}</span>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              hidden
+              disabled={busy && !awaiting}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = '';
+                if (files.length) void addImageFiles(files);
+              }}
+            />
+          </label>
+          {session?.messages.some(
+            (m) =>
+              m.role === 'assistant' &&
+              /tool_call|<\/?tool|invoke\s+\w+/i.test(m.content),
+          ) && (
+            <button
+              type="button"
+              className="ghost tiny-btn"
+              disabled={busy && !awaiting}
+              title={t('me.rewriteBash')}
+              onClick={() => setDraft(t('me.rewriteBashPrompt'))}
+            >
+              {t('me.rewriteBash')}
+            </button>
+          )}
           <button
             type="button"
             className="ghost"
@@ -808,7 +1010,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
           {(() => {
             const lastAssistant = [...(session?.messages ?? [])].reverse().find((m) => m.role === 'assistant');
             if (!lastAssistant || busy || awaiting) return null;
-            if (!looksLikeStepBudgetStop(lastAssistant.content || '')) return null;
+            if (!looksLikeContinueable(lastAssistant.content || '')) return null;
             return (
               <button
                 type="button"
@@ -834,7 +1036,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
               <button
                 type="button"
                 className="me-status-chip"
-                disabled={busy || !session}
+                disabled={!session}
                 title={session?.work_dir ? `${t('me.openPlaceHint')}\n${session.work_dir}` : t('me.openPlaceHint')}
                 onClick={() => client.openDir().catch((err: unknown) => setError(errorText(err)))}
               >{placeLabel}</button>
@@ -843,7 +1045,6 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
               <button
                 type="button"
                 className="me-status-chip"
-                disabled={!onOpenModels}
                 title={modelLabel ? `${t('me.openModelHint')}\n${modelLabel}` : t('me.openModelHint')}
                 onClick={() => onOpenModels?.()}
               >{modelShort}</button>
@@ -858,13 +1059,12 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
               <select
                 className="me-auth-select"
                 value={authMode}
-                disabled={busy}
                 aria-label={t('me.auth.label')}
                 onChange={(e) => {
                   const next = e.target.value as MeAuthMode;
                   saveMeAuthMode(next);
                   setAuthMode(next);
-                  if (next !== 'ask' && session?.pending) {
+                  if (next !== 'ask' && session?.pending && !busy) {
                     void run(() => client.confirm(), true);
                   }
                 }}
@@ -875,15 +1075,19 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
               </select>
             </label>
             {awaiting ? (
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  void client.stop().catch((err: unknown) => setError(errorText(err)));
-                }}
-              >
-                <Square size={14} />{t('me.stop')}
-              </button>
+              (draft.trim() || draftImages.length > 0) ? (
+                <button type="submit" className="primary">
+                  <Send size={15} />{t('me.stopAndSend')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => { void handleStop(); }}
+                >
+                  <Square size={14} />{t('me.stop')}
+                </button>
+              )
             ) : (
               <button type="submit" className="primary" disabled={busy || (!draft.trim() && draftImages.length === 0)}>
                 <Send size={15} />{t('me.send')}
@@ -903,6 +1107,9 @@ type SuBubbleProps = {
   busy: boolean;
   live?: string;
   streaming?: boolean;
+  isLastAssistant?: boolean;
+  onRegenerate?: () => void;
+  onDeleteTurn?: () => void;
   onConfirm: () => void;
   onDismiss: () => void;
   onRoute?: (route: SoulRoute) => void;
@@ -960,7 +1167,19 @@ function SoulRouteCard({ routes, onRoute }: { routes: SoulRoute[]; onRoute: (rou
   );
 }
 
-function CopyReply({ text }: { text: string }) {
+function BubbleTools({
+  text,
+  showTurnActions,
+  busy,
+  onRegenerate,
+  onDeleteTurn,
+}: {
+  text: string;
+  showTurnActions?: boolean;
+  busy?: boolean;
+  onRegenerate?: () => void;
+  onDeleteTurn?: () => void;
+}) {
   const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle');
   useEffect(() => {
     if (state === 'idle') return;
@@ -982,12 +1201,60 @@ function CopyReply({ text }: { text: string }) {
         {state === 'ok' ? <Check size={13} aria-hidden /> : <Copy size={13} aria-hidden />}
         <span>{label}</span>
       </button>
+      {showTurnActions && onRegenerate && (
+        <button
+          type="button"
+          className="me-tool-btn"
+          disabled={busy}
+          aria-label={t('me.regenerate')}
+          title={t('me.regenerate')}
+          onClick={onRegenerate}
+        >
+          <RotateCcw size={13} aria-hidden />
+          <span>{t('me.regenerate')}</span>
+        </button>
+      )}
+      {showTurnActions && onDeleteTurn && (
+        <button
+          type="button"
+          className="me-tool-btn"
+          disabled={busy}
+          aria-label={t('me.deleteTurn')}
+          title={t('me.deleteTurn')}
+          onClick={onDeleteTurn}
+        >
+          <Trash2 size={13} aria-hidden />
+          <span>{t('me.deleteTurn')}</span>
+        </button>
+      )}
     </div>
   );
 }
 
-function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, onDismiss, onRoute }: SuBubbleProps) {
-  const processOpen = Boolean(live) || Boolean(streaming);
+function SuBubble({
+  content,
+  steps,
+  pending,
+  busy,
+  live,
+  streaming,
+  isLastAssistant,
+  onRegenerate,
+  onDeleteTurn,
+  onConfirm,
+  onDismiss,
+  onRoute,
+}: SuBubbleProps) {
+  const liveProcess = Boolean(live) || Boolean(streaming);
+  const hasFailedStep = steps.some(
+    (step) => step.timed_out || (step.exit_code !== null && step.exit_code !== 0),
+  );
+  // 进行中强制展开；结束后失败默认展开且可折叠，成功默认收起可展开。
+  const processProps = liveProcess
+    ? ({ open: true } as const)
+    : hasFailedStep
+      ? ({ defaultOpen: true } as const)
+      : ({ defaultOpen: false } as const);
   const parsed = useMemo(() => parseSoulRoutes(content), [content]);
   return (
     <article className="me-su">
@@ -1001,9 +1268,17 @@ function SuBubble({ content, steps, pending, busy, live, streaming, onConfirm, o
           </div>
         )}
         {onRoute && <SoulRouteCard routes={parsed.routes} onRoute={onRoute} />}
-        {parsed.text && !live && !streaming && <CopyReply text={parsed.text} />}
+        {parsed.text && !live && !streaming && (
+          <BubbleTools
+            text={parsed.text}
+            showTurnActions={Boolean(isLastAssistant)}
+            busy={busy}
+            onRegenerate={onRegenerate}
+            onDeleteTurn={onDeleteTurn}
+          />
+        )}
         {steps.length > 0 && (
-          <details className="me-process" open={processOpen}>
+          <details className="me-process" {...processProps}>
             <summary>
               {live || streaming
                 ? t('me.stepsLive', { count: steps.length })

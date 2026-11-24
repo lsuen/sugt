@@ -16,6 +16,7 @@ type ModelProbe = {
   estimated: boolean
   probedAt: string
   error: string | null
+  chatOnly?: boolean
 }
 
 type ModelEntry = {
@@ -46,7 +47,16 @@ function formatProbeTime(iso: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  // 缩短列宽：不要年份
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function formatLatency(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+function formatSpeed(tps: number): string {
+  return tps >= 10 ? `${tps.toFixed(0)}t/s` : `${tps.toFixed(1)}t/s`
 }
 
 export function ModelListPanel({ providers, pushToast, run }: Props) {
@@ -196,6 +206,34 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
     }, t('modelList.toastToggled', { count: targets.length }))
   }
 
+  /** 一键禁用探测失败且仍启用的模型；未知（未测）不动。 */
+  const disableUnavailable = async () => {
+    const targets = entries.filter(
+      (entry) => entry.enabled && entry.lastProbe && !entry.lastProbe.ok,
+    )
+    if (targets.length === 0) {
+      pushToast(t('modelList.noSelection'), 'info')
+      return
+    }
+    await run(async () => {
+      setApplying(true)
+      try {
+        for (const entry of targets) {
+          await invoke('set_model_enabled', {
+            input: {
+              provider_id: entry.providerId,
+              model_name: entry.modelName,
+              enabled: false,
+            },
+          })
+        }
+        await load(providerId)
+      } finally {
+        setApplying(false)
+      }
+    }, t('modelList.toastDisabledUnavailable', { count: targets.length }))
+  }
+
   const toggleRow = async (entry: ModelEntry, enabled: boolean) => {
     setRowBusy((prev) => new Set(prev).add(entry.id))
     setEntries((prev) =>
@@ -305,6 +343,15 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
         >
           {t('modelList.disableSelected')}
         </button>
+        <button
+          type="button"
+          className="ghost tiny-btn"
+          disabled={busy || entries.length === 0}
+          onClick={() => void disableUnavailable()}
+          title={t('modelList.disableUnavailable')}
+        >
+          {t('modelList.disableUnavailable')}
+        </button>
         {probing && (
           <span className="hint compact model-list-note">
             {t('modelList.probing')}
@@ -328,11 +375,11 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
                   onChange={toggleSelectAll}
                 />
               </th>
-              <th>{t('modelList.colName')}</th>
+              <th className="model-list-col-name">{t('modelList.colName')}</th>
               <th>{t('modelList.colStatus')}</th>
-              <th>{t('modelList.colLatency')}</th>
-              <th>{t('modelList.colSpeed')}</th>
-              <th>{t('modelList.colTestedAt')}</th>
+              <th className="model-list-col-metric">{t('modelList.colLatency')}</th>
+              <th className="model-list-col-metric">{t('modelList.colSpeed')}</th>
+              <th className="model-list-col-time">{t('modelList.colTestedAt')}</th>
               <th>{t('modelList.colEnabled')}</th>
             </tr>
           </thead>
@@ -366,26 +413,38 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
                       onChange={() => toggleSelect(entry.id)}
                     />
                   </td>
-                  <td>
-                    <code className="model-list-name">{entry.modelName}</code>
+                  <td className="model-list-col-name">
+                    <code className="model-list-name-marquee" title={entry.modelName}>
+                      <span>{entry.modelName}</span>
+                    </code>
+                    {probeResult?.ok && (
+                      <span className="model-list-cap">
+                        {probeResult.chatOnly
+                          ? t('modelList.capChatOnly')
+                          : t('modelList.capTools')}
+                      </span>
+                    )}
                   </td>
                   <td>
-                    <span className="model-list-status" title={statusLabel}>
+                    <span
+                      className="model-list-status"
+                      title={probeResult?.error || statusLabel}
+                    >
                       <span className={`model-list-dot ${statusClass}`} />
                       {statusLabel}
                     </span>
                   </td>
-                  <td>
+                  <td className="model-list-col-metric">
                     {probeResult?.ok && probeResult.latencyMs > 0
-                      ? `${probeResult.latencyMs} ms`
+                      ? formatLatency(probeResult.latencyMs)
                       : '—'}
                   </td>
-                  <td>
+                  <td className="model-list-col-metric">
                     {probeResult?.ok && probeResult.tokensPerSec > 0
-                      ? `${probeResult.tokensPerSec.toFixed(1)} t/s`
+                      ? formatSpeed(probeResult.tokensPerSec)
                       : '—'}
                   </td>
-                  <td>
+                  <td className="model-list-col-time">
                     {probeResult ? formatProbeTime(probeResult.probedAt) : '—'}
                   </td>
                   <td>

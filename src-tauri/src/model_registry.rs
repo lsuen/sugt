@@ -28,6 +28,9 @@ pub struct ModelProbe {
     pub estimated: bool,
     pub probed_at: DateTime<Utc>,
     pub error: Option<String>,
+    /// 聊天可用但工具调用探测未通过；旧缓存缺字段按 false。
+    #[serde(default)]
+    pub chat_only: bool,
 }
 
 /// 单个模型的注册表条目。
@@ -280,6 +283,7 @@ mod tests {
             estimated: false,
             probed_at: Utc::now(),
             error: if ok { None } else { Some("boom".to_string()) },
+            chat_only: false,
         }
     }
 

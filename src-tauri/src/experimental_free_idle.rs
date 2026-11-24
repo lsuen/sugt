@@ -45,8 +45,16 @@ pub fn spawn(runtime: Arc<AppRuntime>) {
 
 async fn run_idle_cycle(runtime: &AppRuntime, auto_rotate: bool) -> Result<(), String> {
     info!("experimental free idle probe: starting");
-    let probes =
-        experimental_free::test_free_models(runtime.gateway.http_client()).await;
+    // 闲时探测吃缓存：新鲜成功/失败判定不重复打网；过期的才重测。
+    let probes = experimental_free::test_free_models(
+        runtime.gateway.http_client(),
+        &runtime.paths.config_dir,
+        experimental_free::TestFreeOpts {
+            force: false,
+            only_model: None,
+        },
+    )
+    .await;
     if !auto_rotate {
         return Ok(());
     }

@@ -189,7 +189,20 @@ export function ApiKeyPoolPanel({ providers, pushToast, run }: Props) {
     setLoadError(null)
     try {
       const list = await invoke<ApiKeyPoolView[]>('list_api_key_pools')
-      setPools(list.map(toDraftPool))
+      const drafts = list.map(toDraftPool)
+      setPools(drafts)
+      // 达限只告警不拦截：进入面板时 toast 一次，避免用户只看见行内红标。
+      for (const pool of drafts) {
+        for (const key of pool.keys) {
+          if (!keyOverQuota(key)) continue
+          pushToast(
+            t('keyPool.quotaWarnToast', {
+              label: key.keyMasked || key.id || pool.name,
+            }),
+            'info',
+          )
+        }
+      }
     } catch (error) {
       // 刷新失败保留错误行，由上层提示重试，而不是白屏。
       setPools([])
@@ -197,7 +210,7 @@ export function ApiKeyPoolPanel({ providers, pushToast, run }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [pushToast])
 
   // 切 tab 会卸载再挂载，挂载拉一次即等价于切回来刷新。
   useEffect(() => {

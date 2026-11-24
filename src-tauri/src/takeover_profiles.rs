@@ -100,6 +100,26 @@ pub fn builtin_profiles() -> Vec<TakeoverProfile> {
             vec![],
             Some("codex"),
         ),
+        profile(
+            "workbuddy",
+            "WorkBuddy",
+            "WorkBuddy",
+            "~/.workbuddy/models.json：写入可用 model id + 网关 API Key（归属 sugtOwner）",
+            "openai",
+            BTreeMap::new(),
+            vec![],
+            None,
+        ),
+        profile(
+            "dsh",
+            "DSH",
+            "DeepSeek",
+            "~/.dsh/profiles/*/cordis.patch.yml：providers.sugt 写入 baseURL + Bearer + 模型",
+            "openai",
+            BTreeMap::new(),
+            vec![],
+            None,
+        ),
     ]
 }
 
@@ -615,6 +635,123 @@ fn profile_writes_codex_toml(profile: &TakeoverProfile) -> bool {
     profile.launch_command.as_deref() == Some("codex")
 }
 
+fn profile_config_kind(profile: &TakeoverProfile) -> Option<agent_adapters::ConfigKind> {
+    agent_adapters::by_id(&profile.id).map(|a| a.config.kind)
+}
+
+fn enabled_public_models(config: &AppConfig) -> Vec<crate::workbuddy_config::SugtModelSpec> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for provider in config.providers.iter().filter(|p| p.enabled) {
+        let id = provider.public_model_id();
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        // 能力位：免费通道看探测缓存 chat_only；其它默认可工具。
+        let chat_only = if crate::experimental_free::is_experimental_free(provider) {
+            crate::experimental_free::list_cached_probes(
+                // config_dir 未知时退化为「可工具」；调用方在 apply 时用真实路径再补一次更准
+                Path::new("."),
+            )
+            .into_iter()
+            .find(|p| p.name.eq_ignore_ascii_case(&provider.model_name))
+            .map(|p| p.chat_only)
+            .unwrap_or(false)
+        } else {
+            false
+        };
+        out.push(crate::workbuddy_config::SugtModelSpec { id, chat_only });
+    }
+    if out.is_empty() {
+        out.push(crate::workbuddy_config::SugtModelSpec {
+            id: crate::model::CLIENT_MODEL_ID.to_string(),
+            chat_only: false,
+        });
+    }
+    out
+}
+
+fn gateway_endpoint_and_key(config: &AppConfig) -> (String, String, String) {
+    let anthropic_base = config.listen_url();
+    let openai_base = format!("{}/v1", anthropic_base.trim_end_matches('/'));
+    let chat_url = format!("{openai_base}/chat/completions");
+    let key = {
+        let k = config.gateway_client_api_key.trim();
+        if k.is_empty() {
+            DUMMY_LOCAL_KEY.to_string()
+        } else {
+            k.to_string()
+        }
+    };
+    (openai_base, chat_url, key)
+}
+
+fn apply_file_config(config_dir: &Path, config: &AppConfig, profile: &TakeoverProfile) -> Result<()> {
+    let models = {
+        let mut models = enabled_public_models(config);
+        // 用真实 config_dir 刷新免费通道 chat_only
+        let cached = crate::experimental_free::list_cached_probes(config_dir);
+        for m in &mut models {
+            if let Some(hit) = cached.iter().find(|p| {
+                // public id 可能是 sutai；用任意匹配 chat_only 的免费路由作参考不够准，
+                // 这里仅当模型 id 本身就是路由名时套用。
+                p.name.eq_ignore_ascii_case(&m.id)
+            }) {
+                m.chat_only = hit.chat_only;
+            }
+        }
+        models
+    };
+    let (openai_base, chat_url, key) = gateway_endpoint_and_key(config);
+    match profile_config_kind(profile) {
+        Some(agent_adapters::ConfigKind::WorkBuddyJson) => {
+            let file = crate::workbuddy_config::default_models_file()
+                .ok_or_else(|| anyhow!("无法解析 WorkBuddy models.json 路径"))?;
+            crate::workbuddy_config::sync_models(&file, &models, &chat_url, &key)?;
+        }
+        Some(agent_adapters::ConfigKind::DshPatchYaml) => {
+            let home = crate::dsh_config::locate_dsh_home();
+            crate::dsh_config::sync_all(&home, &models, &openai_base, &key)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn release_file_config(profile: &TakeoverProfile) -> Result<()> {
+    match profile_config_kind(profile) {
+        Some(agent_adapters::ConfigKind::WorkBuddyJson) => {
+            if let Some(file) = crate::workbuddy_config::default_models_file() {
+                crate::workbuddy_config::clear_owned(&file)?;
+            }
+        }
+        Some(agent_adapters::ConfigKind::DshPatchYaml) => {
+            crate::dsh_config::clear_all(&crate::dsh_config::locate_dsh_home())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 探测文件写入是否仍与 SUGT 期望一致。
+pub fn probe_profile_drift(config_dir: &Path, config: &AppConfig, id: &str) -> Result<(bool, String)> {
+    let profile = find_profile(config_dir, id).ok_or_else(|| anyhow!("未找到接管模板：{}", id))?;
+    let models = enabled_public_models(config);
+    let (openai_base, chat_url, key) = gateway_endpoint_and_key(config);
+    match profile_config_kind(&profile) {
+        Some(agent_adapters::ConfigKind::WorkBuddyJson) => {
+            let Some(file) = crate::workbuddy_config::default_models_file() else {
+                return Ok((true, "无法解析 WorkBuddy 路径".into()));
+            };
+            crate::workbuddy_config::probe_drift(&file, &models, &chat_url, &key)
+        }
+        Some(agent_adapters::ConfigKind::DshPatchYaml) => {
+            crate::dsh_config::probe_drift(&crate::dsh_config::locate_dsh_home(), &models, &openai_base, &key)
+        }
+        _ => Ok((false, String::new())),
+    }
+}
+
 pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<TakeoverProfileView> {
     let profile = find_profile(config_dir, id).ok_or_else(|| anyhow!("未找到接管模板：{}", id))?;
     let env = resolve_env(config, &profile);
@@ -627,6 +764,7 @@ pub fn apply_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Result<
     if profile_writes_codex_toml(&profile) {
         crate::codex_config::apply_codex_config(config)?;
     }
+    apply_file_config(config_dir, config, &profile)?;
     // 注入 SUGT 自带 skill，让 Agent 能调用 sugt-cli
     let targets = crate::sugt_skill::inject_targets_for_profile(&profile);
     let _ = crate::sugt_skill::inject_sugt_skill(&targets);
@@ -645,6 +783,7 @@ pub fn release_profile(config_dir: &Path, config: &AppConfig, id: &str) -> Resul
     if profile_writes_codex_toml(&profile) {
         crate::codex_config::clear_sugt_codex_overrides(config)?;
     }
+    release_file_config(&profile)?;
     // 清理 SUGT skill（仅在没有任何其他 active 接管时才完全移除）
     let still_active = config
         .active_takeover_ids
@@ -721,11 +860,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_profiles_include_claude_and_codex() {
+    fn builtin_profiles_include_claude_codex_workbuddy_dsh() {
         let ids: Vec<String> = builtin_profiles().into_iter().map(|p| p.id).collect();
         assert!(ids.contains(&"claude-code".to_string()));
         assert!(ids.contains(&"codex".to_string()));
-        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"workbuddy".to_string()));
+        assert!(ids.contains(&"dsh".to_string()));
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]

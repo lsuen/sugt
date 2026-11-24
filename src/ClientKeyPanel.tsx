@@ -156,6 +156,14 @@ export function ClientKeyPanel({ pushToast }: Props) {
     try {
       const list = await invoke<ClientKeyView[]>('list_client_keys')
       setKeys(list)
+      for (const item of list) {
+        const quota = quotaOf(item)
+        const over =
+          (quota.requestLimit !== null && item.usage.requestCount > quota.requestLimit) ||
+          (quota.tokenLimit !== null && item.usage.totalTokens > quota.tokenLimit)
+        if (!over) continue
+        pushToast(t('clientKeys.quotaWarnToast', { name: item.name }), 'info')
+      }
     } catch (error) {
       // 读取失败保留错误行供重试，不清空已展示数据之外的任何本地状态。
       setKeys([])
@@ -163,7 +171,7 @@ export function ClientKeyPanel({ pushToast }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [pushToast])
 
   // 切 tab 会卸载再挂载，挂载拉一次即等价于切回来刷新。
   useEffect(() => {

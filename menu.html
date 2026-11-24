@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <title>小su</title>
     <style>
+      /* !important：盖过 theme/shell-theme.css 对 html/body/#root 的 --bg 实底，圆角外露桌面。 */
       html, body, #root {
         margin: 0;
         width: 100%;
         height: 100%;
-        background: #101d2b;
+        background: transparent !important;
         overflow: hidden;
       }
     </style>

@@ -44,6 +44,16 @@ description = "Enables the probe_experimental_free_models command"
 commands.allow = ["probe_experimental_free_models"]
 
 [[permission]]
+identifier = "allow-probe-experimental-free-model"
+description = "Enables the probe_experimental_free_model command"
+commands.allow = ["probe_experimental_free_model"]
+
+[[permission]]
+identifier = "allow-list-experimental-free-probe-cache"
+description = "Enables the list_experimental_free_probe_cache command"
+commands.allow = ["list_experimental_free_probe_cache"]
+
+[[permission]]
 identifier = "allow-set-active-provider"
 description = "Enables the set_active_provider command"
 commands.allow = ["set_active_provider"]
@@ -262,6 +272,7 @@ commands.allow = [
   "me_dismiss",
   "me_stop",
   "me_clear",
+  "me_truncate_last_turn",
   "me_open_dir"
 ]
 
@@ -282,6 +293,7 @@ commands.allow = [
   "can_ai_parse_takeover",
   "parse_takeover_config_path",
   "save_takeover_profile",
+  "probe_takeover_drift",
   "discover_agents",
   "add_discovered_agents",
   "preview_takeover",

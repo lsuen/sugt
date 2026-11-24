@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from './transport';
-import { ChevronDown, Play, RefreshCw, Shuffle } from 'lucide-react'
+import { ChevronDown, Play, RefreshCw, RotateCcw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
+import { FreeChannelWelcome } from './FreeChannelWelcome'
 
 /**
  * 实验免费通道：打开控制台只列出路由和主机，不打真实补全。
@@ -35,6 +36,9 @@ type FreeModelProbe = {
   available: boolean
   latencyMs: number | null
   tokensPerSec: number | null
+  chatOnly?: boolean
+  source?: 'live' | 'cache'
+  category?: string
 }
 type FreeRouteChoice = { model: string; host: string }
 
@@ -53,6 +57,8 @@ type ModelOption = {
   boxName?: string
   latencyMs?: number | null
   tokensPerSec?: number | null
+  chatOnly?: boolean
+  source?: 'live' | 'cache'
 }
 
 /** get_config 里本组件只关心「获取模型行为」两个开关（snake_case，缺省按产品默认） */
@@ -94,20 +100,52 @@ type Props = {
   pushToast: (msg: string, type: 'ok' | 'error' | 'info') => void
   /** 行尾右对齐的协议循环切换按钮回调（auto → openai → anthropic） */
   onCycleMode: () => void
+  /** 首启欢迎条「打开通道设置」→ 打开 FreeChannelSettingsModal */
+  onOpenFreeSettings?: () => void
 }
 
-/** 行文本拼装规则与原生 option 时代一致：●/○ 点 + name + 盒子 tag + · host */
+/** 触发器/行主文案：只留点 + id + 短 host，能力与指标放右侧徽章，避免撑破容器 */
 function modelRowLabel(m: ModelOption): string {
+  const host = m.host ? ` · ${shortHost(m.host)}` : ''
   return `${m.available === true ? '● ' : m.available === false ? '○ ' : ''}${m.name}${
     m.boxName ? t('upstream.strategyBoxTag') : ''
-  }${m.host ? ` · ${m.host}` : ''}`
+  }${host}`
 }
 
-/** 指标区只在 latencyMs 有值时出现；tokensPerSec 缺失则只展示延迟 */
+function shortHost(host: string): string {
+  return host.replace(/^api\./, '').replace(/\.ai$/, '').slice(0, 18)
+}
+
+/** 紧凑指标：≥1s 用秒，否则 ms；速度取整 */
 function modelMetricsLabel(m: ModelOption): string | null {
-  if (m.latencyMs == null) return null
-  const speed = m.tokensPerSec != null ? ` ${m.tokensPerSec.toFixed(1)}t/s` : ''
-  return `${m.latencyMs}ms${speed}`
+  if (m.latencyMs == null && !m.chatOnly && m.source !== 'cache') return null
+  const parts: string[] = []
+  if (m.latencyMs != null) {
+    parts.push(
+      m.latencyMs >= 1000
+        ? `${(m.latencyMs / 1000).toFixed(1)}s`
+        : `${m.latencyMs}ms`,
+    )
+  }
+  if (m.tokensPerSec != null && m.tokensPerSec > 0) {
+    parts.push(`${m.tokensPerSec >= 10 ? m.tokensPerSec.toFixed(0) : m.tokensPerSec.toFixed(1)}t/s`)
+  }
+  if (m.chatOnly) parts.push(t('upstream.chatOnlyShort'))
+  if (m.source === 'cache') parts.push(t('upstream.cacheShort'))
+  return parts.length ? parts.join(' · ') : null
+}
+
+function probeToModelFields(probe: FreeModelProbe | undefined): Pick<
+  ModelOption,
+  'available' | 'latencyMs' | 'tokensPerSec' | 'chatOnly' | 'source'
+> {
+  return {
+    available: probe?.available ?? false,
+    latencyMs: probe?.latencyMs ?? null,
+    tokensPerSec: probe?.tokensPerSec ?? null,
+    chatOnly: Boolean(probe?.chatOnly),
+    source: probe?.source,
+  }
 }
 
 /**
@@ -193,6 +231,7 @@ function ModelListbox({
                 aria-selected={m.name === selectValue}
                 tabIndex={0}
                 className="model-listbox-option"
+                title={isPlaceholder ? m.name : `${m.name}${m.host ? ` @ ${m.host}` : ''}${metrics ? ` · ${metrics}` : ''}`}
                 onClick={() => choose(m.name)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -223,6 +262,7 @@ export function UpstreamSelector({
   run,
   pushToast,
   onCycleMode,
+  onOpenFreeSettings,
 }: Props) {
   const [upstreamProviderId, setUpstreamProviderId] = useState('')
   const [models, setModels] = useState<ModelOption[]>([])
@@ -294,16 +334,27 @@ export function UpstreamSelector({
 
   const loadFreeRoutes = async () => {
     const disabled = await loadDisabledModels(FREE_PROVIDER_ID)
-    const choices = await invoke<FreeRouteChoice[]>('list_experimental_free_candidates')
+    const [choices, cached] = await Promise.all([
+      invoke<FreeRouteChoice[]>('list_experimental_free_candidates'),
+      invoke<FreeModelProbe[]>('list_experimental_free_probe_cache').catch(() => [] as FreeModelProbe[]),
+    ])
     const visible = disabled
       ? choices.filter((choice) => !disabled.has(choice.model))
       : choices
+    const byName = new Map(cached.map((probe) => [probe.name, probe]))
     setModels(
-      visible.map((choice) => ({
-        name: choice.model,
-        host: choice.host,
-        available: null,
-      })),
+      visible.map((choice) => {
+        const probe = byName.get(choice.model)
+        return {
+          name: choice.model,
+          host: choice.host,
+          available: probe ? probe.available : null,
+          latencyMs: probe?.latencyMs ?? null,
+          tokensPerSec: probe?.tokensPerSec ?? null,
+          chatOnly: Boolean(probe?.chatOnly),
+          source: probe?.source,
+        }
+      }),
     )
     setModelsLoaded(true)
   }
@@ -337,9 +388,7 @@ export function UpstreamSelector({
             return {
               name: choice.model,
               host: choice.host,
-              available: probe?.available ?? false,
-              latencyMs: probe?.latencyMs ?? null,
-              tokensPerSec: probe?.tokensPerSec ?? null,
+              ...probeToModelFields(probe),
             }
           }),
         )
@@ -439,6 +488,38 @@ export function UpstreamSelector({
     }
   }
 
+  /** 只强制重测当前选中的免费路由，不全量打网。 */
+  const reprobeCurrent = async () => {
+    const model = activeProvider?.model_name
+    if (!model || !isExperimental || modelsBusy) return
+    setModelsBusy(true)
+    try {
+      const probe = await invoke<FreeModelProbe>('probe_experimental_free_model', { model })
+      setModels((prev) =>
+        prev.map((row) =>
+          row.name === probe.name
+            ? { ...row, ...probeToModelFields(probe) }
+            : row,
+        ),
+      )
+      if (probe.available) {
+        pushToast(
+          probe.chatOnly
+            ? t('upstream.reprobeChatOnly', { model: probe.name })
+            : t('upstream.reprobeOk', { model: probe.name }),
+          'ok',
+        )
+      } else {
+        pushToast(t('upstream.reprobeFail', { model: probe.name }), 'error')
+      }
+      onRefresh()
+    } catch (e) {
+      pushToast(String(e), 'error')
+    } finally {
+      setModelsBusy(false)
+    }
+  }
+
   const selectValue =
     allModels.find((m) => m.name === activeProvider?.model_name)?.name ??
     activeProvider?.model_name ??
@@ -453,6 +534,7 @@ export function UpstreamSelector({
 
   return (
     <>
+      <FreeChannelWelcome providers={providers} onOpenFreeSettings={onOpenFreeSettings} />
       <div className="access-mode-row">
         <select
           className="app-select upstream-select"
@@ -513,9 +595,22 @@ export function UpstreamSelector({
               disabled={modelsBusy}
               onClick={() => void fetchModels()}
               aria-label={t('upstream.fetchModels')}
+              title={t('upstream.fetchModels')}
             >
               <RefreshCw size={14} className={modelsBusy ? 'spin' : ''} />
             </button>
+            {isExperimental && (
+              <button
+                type="button"
+                className="tiny icon-only"
+                disabled={modelsBusy || !activeProvider?.model_name}
+                onClick={() => void reprobeCurrent()}
+                aria-label={t('upstream.reprobeOne')}
+                title={t('upstream.reprobeOneTitle')}
+              >
+                <RotateCcw size={14} className={modelsBusy ? 'spin' : ''} />
+              </button>
+            )}
             <button
               type="button"
               className="tiny icon-only"

@@ -43,6 +43,7 @@ type AppConfigView = {
   failover_enabled?: boolean;
   autostart_gateway?: boolean;
   quit_behavior?: QuitBehavior;
+  close_to_tray?: boolean;
   port?: number;
   port_fallback_enabled?: boolean;
   port_fallback_ports?: number[];
@@ -508,6 +509,24 @@ export function SettingsPanel({
                 <option value="exit_only">{t('set.quitExit')}</option>
                 <option value="stop_gateway">{t('set.quitStop')}</option>
                 <option value="stop_all">{t('set.quitStopAll')}</option>
+              </select>
+            </label>
+            <label className="switch-line select-line">
+              <span>
+                {t('set.closeToTray')}
+                <span className="hint">{t('set.closeToTrayHint')}</span>
+              </span>
+              <select
+                value={(config?.close_to_tray ?? true) ? 'tray' : 'exit'}
+                onChange={(e) =>
+                  run(
+                    () => invoke('set_close_to_tray', { enabled: e.target.value === 'tray' }),
+                    t('common.update'),
+                  )
+                }
+              >
+                <option value="tray">{t('set.closeToTray')}</option>
+                <option value="exit">{t('set.closeExits')}</option>
               </select>
             </label>
           </div>

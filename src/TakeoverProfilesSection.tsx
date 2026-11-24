@@ -78,12 +78,37 @@ export function TakeoverProfilesSection({
   const [envSaving, setEnvSaving] = useState(false);
   // 删除接管档案：用 state 驱动应用内确认框，替换原生 window.confirm。
   const [deleteTarget, setDeleteTarget] = useState<TakeoverProfileView | null>(null);
+  /** workbuddy / dsh 等文件写入客户端：配置偏离 SUGT 写入时的预警文案 */
+  const [driftById, setDriftById] = useState<Record<string, string>>({});
 
-  const reload = () =>
-    invoke<TakeoverProfileView[]>('list_takeover_profiles').then(setProfiles).catch(() => undefined);
+  const reload = async () => {
+    try {
+      const list = await invoke<TakeoverProfileView[]>('list_takeover_profiles')
+      setProfiles(list)
+      const fileIds = list
+        .filter((p) => p.configured && (p.id === 'workbuddy' || p.id === 'dsh'))
+        .map((p) => p.id)
+      const next: Record<string, string> = {}
+      await Promise.all(
+        fileIds.map(async (id) => {
+          try {
+            const drift = await invoke<{ drifted: boolean; detail: string }>('probe_takeover_drift', {
+              profileId: id,
+            })
+            if (drift.drifted) next[id] = drift.detail || t('client.driftWarn')
+          } catch {
+            /* 探测失败不挡列表 */
+          }
+        }),
+      )
+      setDriftById(next)
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
-    reload();
+    void reload();
     invoke<boolean>('can_ai_parse_takeover').then(setAiEnabled).catch(() => undefined);
   }, []);
 
@@ -233,12 +258,14 @@ export function TakeoverProfilesSection({
             key={p.id}
             profile={p}
             busy={busy}
+            driftDetail={driftById[p.id]}
             onRelease={() => release(p.id, p.name)}
             onEdit={() => openEdit(p)}
             onDelete={() => requestRemove(p)}
             onEnv={() => openEnv(p)}
             onAdvanced={() => setAdvancedId(p.id)}
             onPreview={() => setPreviewTarget(p)}
+            onRepair={() => apply(p.id, p.name)}
           />
         ))}
         {profiles.length === 0 && <p className="hint compact">{t('client.noAgents')}</p>}
@@ -386,21 +413,25 @@ export function TakeoverProfilesSection({
 function TakeoverProfileRow({
   profile: p,
   busy,
+  driftDetail,
   onRelease,
   onEdit,
   onDelete,
   onEnv,
   onAdvanced,
   onPreview,
+  onRepair,
 }: {
   profile: TakeoverProfileView;
   busy: boolean;
+  driftDetail?: string;
   onRelease: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onEnv: () => void;
   onAdvanced: () => void;
   onPreview: () => void;
+  onRepair?: () => void;
 }) {
   const discovered = isDiscovered(p);
 
@@ -420,6 +451,19 @@ function TakeoverProfileRow({
           <span className={discovered ? 'badge ok inline' : 'badge inline'}>{discovered ? t('client.discovered') : t('client.notDiscovered')}</span>
         </div>
         <span className="hint compact takeover-profile-row-meta">{metaParts.join(' · ')}</span>
+        {driftDetail && (
+          <p className="hint compact agent-discover-warn" title={driftDetail}>
+            {t('client.driftWarn')}
+            {onRepair && (
+              <>
+                {' '}
+                <button type="button" className="tiny ghost" disabled={busy} onClick={onRepair}>
+                  {t('client.repair')}
+                </button>
+              </>
+            )}
+          </p>
+        )}
       </div>
       <div className="takeover-profile-row-actions">
         {/* 已接管时保留旁路预览（可在模态内确认释放）；未接管时主按钮即预览，避免两套入口 */}

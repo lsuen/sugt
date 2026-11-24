@@ -9,6 +9,8 @@
 
 use crate::commands::AppRuntime;
 use crate::model::OverlayConfig;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::{
@@ -132,6 +134,8 @@ fn dismiss_menu(app: &AppHandle) {
         // destroy 不走 CloseRequested。主窗口会拦住 close，菜单用 close 会留在屏幕上。
         let _ = window.destroy();
     }
+    // 通知 overlay：独立菜单窗已关，穿透/视线逻辑不要再猜 DOM 里有没有 .pet-menu。
+    let _ = app.emit("sugt://pet-menu-closed", ());
 }
 
 /// 右键菜单是独立小窗，不改精灵透明窗的大小和底色。再点一次则关掉。
@@ -179,10 +183,12 @@ pub fn pet_open_menu(app: AppHandle) -> Result<(), String> {
             y = (bottom - MENU_H).max(top);
         }
     }
+    // 透明窗 + 菜单面板自带圆角实底：否则窗口不透明矩形会盖住 CSS border-radius，
+    // macOS 上会看起来是方角；Windows 上透明圆角与命中也更干净。
     let window = WebviewWindowBuilder::new(&app, MENU_LABEL, WebviewUrl::App("menu.html".into()))
         .title("小su")
         .decorations(false)
-        .transparent(false)
+        .transparent(true)
         .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
@@ -190,24 +196,38 @@ pub fn pet_open_menu(app: AppHandle) -> Result<(), String> {
         .accept_first_mouse(true)
         .inner_size(MENU_W, MENU_H)
         .position(x, y)
-        .background_color(Color(16, 29, 43, 255))
+        .background_color(Color(0, 0, 0, 0))
         .build()
         .map_err(|e| format!("打开菜单失败: {e}"))?;
     let app_for_blur = app.clone();
     let opened = Instant::now();
-    window.on_window_event(move |event| {
-        if !matches!(event, WindowEvent::Focused(false)) {
-            return;
+    // Windows 上新建窗常先抛 Focused(false)；必须等真正拿到过焦点后再允许失焦关闭，
+    // 否则菜单会在刚弹出时被立刻 destroy，表现为「右键没反应」。
+    let saw_focus = Arc::new(AtomicBool::new(false));
+    let grace = if cfg!(windows) {
+        Duration::from_millis(900)
+    } else {
+        Duration::from_millis(400)
+    };
+    window.on_window_event(move |event| match event {
+        WindowEvent::Focused(true) => {
+            saw_focus.store(true, Ordering::SeqCst);
         }
-        // 刚打开时焦点还会在精灵窗上晃一下，这段时间丢掉焦点不算点到外面。
-        if opened.elapsed() < Duration::from_millis(400) {
-            return;
+        WindowEvent::Focused(false) => {
+            if !saw_focus.load(Ordering::SeqCst) {
+                return;
+            }
+            if opened.elapsed() < grace {
+                return;
+            }
+            let app = app_for_blur.clone();
+            let target = app.clone();
+            let _ = app.run_on_main_thread(move || dismiss_menu(&target));
         }
-        let app = app_for_blur.clone();
-        let target = app.clone();
-        let _ = app.run_on_main_thread(move || dismiss_menu(&target));
+        _ => {}
     });
     let _ = window.set_focus();
+    let _ = app.emit("sugt://pet-menu-opened", ());
     Ok(())
 }
 

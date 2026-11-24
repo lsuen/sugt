@@ -19,7 +19,9 @@ pub fn run() {
             commands::delete_provider,
             commands::restore_experimental_free,
             commands::probe_experimental_free_models,
+            commands::probe_experimental_free_model,
             commands::list_experimental_free_candidates,
+            commands::list_experimental_free_probe_cache,
             commands::set_active_provider,
             commands::set_provider_enabled,
             commands::test_provider,
@@ -56,6 +58,7 @@ pub fn run() {
             commands::set_autostart_gateway,
             commands::set_auto_takeover,
             commands::set_quit_behavior,
+            commands::set_close_to_tray,
             commands::read_logs,
             commands::clear_cache,
             commands::get_maintenance_settings,
@@ -93,6 +96,7 @@ pub fn run() {
             me_agent::me_dismiss,
             me_agent::me_stop,
             me_agent::me_clear,
+            me_agent::me_truncate_last_turn,
             me_agent::me_open_dir,
             commands::get_quick_chat_history,
             commands::save_quick_chat_history,
@@ -102,6 +106,7 @@ pub fn run() {
             commands::repair_clients_env,
             commands::uninstall_clients_env,
             commands::list_takeover_profiles,
+            commands::probe_takeover_drift,
             commands::apply_takeover_profile,
             commands::release_takeover_profile,
             commands::delete_takeover_profile,
@@ -217,12 +222,24 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
-                // 只有主窗口关到托盘。菜单和悬浮窗是临时窗，关闭请求必须放行。
+                // 只有主窗口受 close_to_tray 影响。菜单和悬浮窗是临时窗，关闭请求必须放行。
                 if window.label() != "main" {
                     return;
                 }
                 api.prevent_close();
-                tray::hide_main_window(window.app_handle());
+                let close_to_tray = window
+                    .app_handle()
+                    .try_state::<AppRuntime>()
+                    .and_then(|rt| rt.config.try_read().ok().map(|cfg| cfg.close_to_tray))
+                    .unwrap_or(true);
+                if close_to_tray {
+                    // 先发 tip 再 hide：webview 仍在时入队 toast；前端用 localStorage 只弹一次。
+                    let _ = window.app_handle().emit("sugt://close-to-tray", ());
+                    tray::hide_main_window(window.app_handle());
+                } else {
+                    // 与托盘「退出」同一路径：apply_quit_behavior（≤3s）后 exit，含 overlay。
+                    tray::request_quit(window.app_handle());
+                }
             }
             WindowEvent::Resized(size) => {
                 // 尺寸记忆只属于主窗口。菜单开合也会触发 Resized，不能写进主窗口记录。

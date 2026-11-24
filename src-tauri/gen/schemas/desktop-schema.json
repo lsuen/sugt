@@ -489,6 +489,12 @@
           "markdownDescription": "Enables the list_experimental_free_candidates command"
         },
         {
+          "description": "Enables the list_experimental_free_probe_cache command",
+          "type": "string",
+          "const": "allow-list-experimental-free-probe-cache",
+          "markdownDescription": "Enables the list_experimental_free_probe_cache command"
+        },
+        {
           "description": "Enables the list_model_registry command",
           "type": "string",
           "const": "allow-list-model-registry",
@@ -535,6 +541,12 @@
           "type": "string",
           "const": "allow-overlay-commands",
           "markdownDescription": "Enables desktop companion (pet) window commands"
+        },
+        {
+          "description": "Enables the probe_experimental_free_model command",
+          "type": "string",
+          "const": "allow-probe-experimental-free-model",
+          "markdownDescription": "Enables the probe_experimental_free_model command"
         },
         {
           "description": "Enables the probe_experimental_free_models command",
