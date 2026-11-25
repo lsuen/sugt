@@ -8,12 +8,12 @@
 | --- | --- | --- |
 | `src/assets/pet/manifest.json` | 动作、画布、节奏槽的唯一真相源 | `autoActions.welcome` 开场挥手，`autoActions.greeting` 靠近点头 |
 | `src/pet/petState.ts` | 按优先级选动作；时长从帧数据派生；自动表演租约 | `selectPetAction` / `canBeginAuto` |
-| `menu.html` / `src/menu.tsx` | 右键菜单独立小窗，不改精灵透明窗 | `pet_open_menu` / `pet_close_menu` |
+| `menu.html` / `src/menu.tsx` | 右键菜单独立小窗，不改精灵透明窗 | `pet_open_menu`（async command）/ `pet_close_menu` |
 | `src/pet/hooks/usePetBehaviors.ts` | 开场、靠近、闲置、漂移 | 自动来源等租约；指针可以打断 |
 | `src/pet/hooks/usePetGaze.ts` | 视线与命中 | 透明区始终穿透，只认身体、菜单、拖动 |
 | `src/pet/config.ts` | 窗口档位与模式切换 | `petSizePatch` 只改宽高；`petModePatch` 在精灵和流量窗 `280×108` 之间切换 |
 | `src/PetSettingsSection.tsx` / `src/menu.tsx` | 设置页和右键菜单共用上面两个补丁 | 菜单不写入档位 |
-| `src-tauri/src/pet.rs` | 光标、拖动、独立菜单窗、一次性迁移 | `pet_open_menu` 不改精灵窗 |
+| `src-tauri/src/pet.rs` | 光标、拖动、独立菜单窗、一次性迁移 | `pet_open_menu` 必须是 async command，同步建 WebView2 窗口会死锁 |
 
 ## 实验免费通道与上游重试
 

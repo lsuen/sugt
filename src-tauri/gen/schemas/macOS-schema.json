@@ -633,6 +633,12 @@
           "markdownDescription": "Enables the set_autostart_gateway command"
         },
         {
+          "description": "Enables the set_close_to_tray command",
+          "type": "string",
+          "const": "allow-set-close-to-tray",
+          "markdownDescription": "Enables the set_close_to_tray command"
+        },
+        {
           "description": "Enables the set_failover command",
           "type": "string",
           "const": "allow-set-failover",
