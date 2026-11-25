@@ -263,6 +263,9 @@ pub fn run() {
         .run(|app_handle, event| {
             // 主窗关到托盘不触发 Exit，WebUI 继续跑；仅真正退出进程时才停监听。
             if let RunEvent::Exit = event {
+                // 无论从哪条路径真正退出，都置位退出标志：watchdog 立即停止，
+                // 避免退出收尾阶段又把网关拉起来拖住进程。
+                commands::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
                 if let Some(slot) = app_handle
                     .try_state::<commands::WebUiHandle>()
                     .map(|state| state.inner().clone())

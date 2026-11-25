@@ -24,10 +24,11 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{Mutex, RwLock};
-use tracing::warn;
+use tracing::{info, warn};
 
 /// `read_logs` 单次返回上限。期望一次拉取量有硬上限，因为整份日志经 IPC 回传会拖垮前端。
 const READ_LOGS_MAX_LINES: usize = 500;
@@ -164,6 +165,10 @@ pub(crate) async fn sync_client_endpoints_to_listen_port(
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// 进程正在退出。watchdog 与退出清理都读它：一旦置位，watchdog 立刻停止拉起网关，
+/// 避免「退出流程刚 gateway.stop()，watchdog 20s 后又 recovery 复活」导致进程退不掉。
+pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 pub struct AppRuntime {
@@ -547,7 +552,14 @@ async fn apply_free_probe_outcome(
                 .filter(|p| p.available)
                 .map(|p| p.name.as_str())
                 .collect();
-            if available.is_empty() {
+            if probes.is_empty() {
+                // 预算内一条真实结果都没有时不能臆断「不可用」：保持原状态，只留日志。
+                warn!(
+                    action = "fetch_models",
+                    channel = "free",
+                    "no probe result within budget; provider status left unchanged"
+                );
+            } else if available.is_empty() {
                 provider.last_error =
                     Some("免费实验通道暂无可用模型，请稍后重试".into());
                 provider.status = ProviderStatus::Unavailable;
@@ -568,17 +580,49 @@ async fn apply_free_probe_outcome(
 pub(crate) async fn probe_experimental_free_models_core(
     runtime: &AppRuntime,
 ) -> Result<Vec<crate::experimental_free::FreeModelProbe>, String> {
-    // 用户点「获取并测试」：强制重测，忽略缓存。
+    let request_id = crate::gateway::next_request_id();
+    let started = Instant::now();
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "free",
+        stage = "start",
+        "fetch free model list started"
+    );
+    // 用户点「获取并测试」：强制重测，忽略缓存；整次操作有 20s 预算，
+    // 未完成的路由在 test_free_models 内部回退到新鲜缓存，不让界面无限转圈。
     let probes = crate::experimental_free::test_free_models(
         runtime.gateway.http_client(),
         &runtime.paths.config_dir,
         crate::experimental_free::TestFreeOpts {
             force: true,
             only_model: None,
+            total_timeout: Some(std::time::Duration::from_secs(20)),
         },
     )
     .await;
-    apply_free_probe_outcome(runtime, &probes).await?;
+    apply_free_probe_outcome(runtime, &probes)
+        .await
+        .map_err(|err| {
+            warn!(
+                request_id = %request_id,
+                action = "fetch_models",
+                channel = "free",
+                error = %err,
+                "fetch free model list failed to persist provider status"
+            );
+            err
+        })?;
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "free",
+        stage = "done",
+        model_count = probes.len(),
+        available = probes.iter().filter(|p| p.available).count(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "fetch free model list finished"
+    );
     Ok(probes)
 }
 
@@ -609,6 +653,7 @@ pub async fn probe_experimental_free_model(
         crate::experimental_free::TestFreeOpts {
             force: true,
             only_model: Some(model.clone()),
+            total_timeout: Some(std::time::Duration::from_secs(20)),
         },
     )
     .await;
@@ -930,8 +975,27 @@ pub(crate) async fn list_model_registry_core(
     runtime: &AppRuntime,
     input: ListModelRegistryInput,
 ) -> Result<Vec<ModelEntry>, String> {
+    let request_id = crate::gateway::next_request_id();
+    let started = Instant::now();
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "upstream",
+        stage = "start",
+        provider_id = %input.provider_id,
+        "fetch upstream model list started"
+    );
     let config = runtime.config.read().await.clone();
-    let provider = find_provider(&config, &input.provider_id)?;
+    let provider = find_provider(&config, &input.provider_id).map_err(|err| {
+        warn!(
+            request_id = %request_id,
+            action = "fetch_models",
+            provider_id = %input.provider_id,
+            error = %err,
+            "fetch upstream model list: provider not found"
+        );
+        err
+    })?;
     let upstream_models: Vec<String> = if crate::experimental_free::is_experimental_free(&provider) {
         crate::experimental_free::candidate_models()
             .into_iter()
@@ -947,18 +1011,38 @@ pub(crate) async fn list_model_registry_core(
             .gateway
             .list_provider_models(base_url.trim(), provider.api_key.trim(), None)
             .await
-            .map_err(|err| err.to_string())?
+            .map_err(|err| {
+                let message = err.to_string();
+                warn!(
+                    request_id = %request_id,
+                    action = "fetch_models",
+                    provider_id = %input.provider_id,
+                    base_url = %base_url,
+                    error = %message,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "fetch upstream model list failed"
+                );
+                message
+            })?
     };
 
     let config_dir = runtime.paths.config_dir.clone();
     let existing = model_registry::load(&config_dir);
     let merged = model_registry::merge_entries(&existing, &provider.id, &upstream_models);
     model_registry::save(&config_dir, &merged).map_err(|err| err.to_string())?;
-    Ok(model_registry::entries_for_provider(
-        &merged,
-        &provider.id,
-        &upstream_models,
-    ))
+    let entries = model_registry::entries_for_provider(&merged, &provider.id, &upstream_models);
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "upstream",
+        stage = "done",
+        provider_id = %input.provider_id,
+        upstream_count = upstream_models.len(),
+        enabled_count = entries.iter().filter(|entry| entry.enabled).count(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "fetch upstream model list finished"
+    );
+    Ok(entries)
 }
 
 #[tauri::command]
@@ -1093,6 +1177,16 @@ pub(crate) async fn test_provider_models_core(
     runtime: &AppRuntime,
     id: String,
 ) -> Result<Vec<ModelTestResult>, String> {
+    let request_id = crate::gateway::next_request_id();
+    let started = Instant::now();
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "custom",
+        stage = "start",
+        provider_id = %id,
+        "test provider models started"
+    );
     let config = runtime.config.read().await.clone();
     let provider = config
         .providers
@@ -1129,6 +1223,17 @@ pub(crate) async fn test_provider_models_core(
     .buffer_unordered(4)
     .collect::<Vec<_>>()
     .await;
+    info!(
+        request_id = %request_id,
+        action = "fetch_models",
+        channel = "custom",
+        stage = "done",
+        provider_id = %id,
+        model_count = results.len(),
+        available = results.iter().filter(|item| item.available).count(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "test provider models finished"
+    );
     Ok(results)
 }
 

@@ -40,6 +40,7 @@
     "allow-set-autostart-gateway",
     "allow-set-auto-takeover",
     "allow-set-quit-behavior",
+    "allow-set-close-to-tray",
     "allow-read-logs",
     "allow-clear-cache",
     "allow-get-maintenance-settings",

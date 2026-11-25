@@ -260,6 +260,9 @@ pub fn hide_main_window(app: &tauri::AppHandle) {
 /// 注意：清理里的 setx/reg 已放进 spawn_blocking；timeout 只等 JoinHandle，
 /// 超时后仍立刻 exit，不再被同步子进程拖死。
 pub fn request_quit(app: &tauri::AppHandle) {
+    // 立刻置位：watchdog 见到后停止网关恢复，避免退出过程中网关被复活。
+    crate::commands::QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(runtime) = app.try_state::<AppRuntime>() {
@@ -271,6 +274,15 @@ pub fn request_quit(app: &tauri::AppHandle) {
             }
         }
         app.exit(0);
+
+        // Windows 上 app.exit(0) 只是向事件循环投递 RequestExit 消息：若主线程/
+        // WebView2 任一环节阻塞，消息永远得不到处理，进程就残留成「点退出没反应」。
+        // 兜底：独立 OS 线程等 6s，进程若还活着就强制 process::exit，确保一定能退。
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+            tracing::warn!("quit fallback: app.exit did not terminate within 6s, forcing exit");
+            std::process::exit(0);
+        });
     });
 }
 

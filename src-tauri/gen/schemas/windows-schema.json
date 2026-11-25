@@ -387,10 +387,40 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the clear_cache command",
+          "type": "string",
+          "const": "allow-clear-cache",
+          "markdownDescription": "Enables the clear_cache command"
+        },
+        {
+          "description": "Enables config preset commands",
+          "type": "string",
+          "const": "allow-config-preset-commands",
+          "markdownDescription": "Enables config preset commands"
+        },
+        {
           "description": "Enables the delete_provider command",
           "type": "string",
           "const": "allow-delete-provider",
           "markdownDescription": "Enables the delete_provider command"
+        },
+        {
+          "description": "Enables the delete_request_rule command",
+          "type": "string",
+          "const": "allow-delete-request-rule",
+          "markdownDescription": "Enables the delete_request_rule command"
+        },
+        {
+          "description": "Enables the delete_strategy_box command",
+          "type": "string",
+          "const": "allow-delete-strategy-box",
+          "markdownDescription": "Enables the delete_strategy_box command"
+        },
+        {
+          "description": "Enables the fetch_local_models command",
+          "type": "string",
+          "const": "allow-fetch-local-models",
+          "markdownDescription": "Enables the fetch_local_models command"
         },
         {
           "description": "Enables the get_clients_env_status command",
@@ -405,10 +435,40 @@
           "markdownDescription": "Enables the get_config command"
         },
         {
+          "description": "Enables the get_lan_share_info command",
+          "type": "string",
+          "const": "allow-get-lan-share-info",
+          "markdownDescription": "Enables the get_lan_share_info command"
+        },
+        {
+          "description": "Enables the get_local_access_info command",
+          "type": "string",
+          "const": "allow-get-local-access-info",
+          "markdownDescription": "Enables the get_local_access_info command"
+        },
+        {
+          "description": "Enables the get_maintenance_settings command",
+          "type": "string",
+          "const": "allow-get-maintenance-settings",
+          "markdownDescription": "Enables the get_maintenance_settings command"
+        },
+        {
           "description": "Enables the get_status command",
           "type": "string",
           "const": "allow-get-status",
           "markdownDescription": "Enables the get_status command"
+        },
+        {
+          "description": "Enables the get_strategy_box_status command",
+          "type": "string",
+          "const": "allow-get-strategy-box-status",
+          "markdownDescription": "Enables the get_strategy_box_status command"
+        },
+        {
+          "description": "Enables the get_webui_settings command",
+          "type": "string",
+          "const": "allow-get-webui-settings",
+          "markdownDescription": "Enables the get_webui_settings command"
         },
         {
           "description": "Enables the install_clients_env command",
@@ -417,10 +477,28 @@
           "markdownDescription": "Enables the install_clients_env command"
         },
         {
+          "description": "Enables upstream key rotation and inbound client key commands",
+          "type": "string",
+          "const": "allow-key-pool-commands",
+          "markdownDescription": "Enables upstream key rotation and inbound client key commands"
+        },
+        {
           "description": "Enables the list_experimental_free_candidates command",
           "type": "string",
           "const": "allow-list-experimental-free-candidates",
           "markdownDescription": "Enables the list_experimental_free_candidates command"
+        },
+        {
+          "description": "Enables the list_experimental_free_probe_cache command",
+          "type": "string",
+          "const": "allow-list-experimental-free-probe-cache",
+          "markdownDescription": "Enables the list_experimental_free_probe_cache command"
+        },
+        {
+          "description": "Enables the list_model_registry command",
+          "type": "string",
+          "const": "allow-list-model-registry",
+          "markdownDescription": "Enables the list_model_registry command"
         },
         {
           "description": "Enables the list_provider_models command",
@@ -435,22 +513,58 @@
           "markdownDescription": "Enables the list_providers command"
         },
         {
+          "description": "Enables the list_request_rules command",
+          "type": "string",
+          "const": "allow-list-request-rules",
+          "markdownDescription": "Enables the list_request_rules command"
+        },
+        {
+          "description": "Enables the list_strategy_boxes command",
+          "type": "string",
+          "const": "allow-list-strategy-boxes",
+          "markdownDescription": "Enables the list_strategy_boxes command"
+        },
+        {
+          "description": "Enables the Me tab (小su) commands",
+          "type": "string",
+          "const": "allow-me-commands",
+          "markdownDescription": "Enables the Me tab (小su) commands"
+        },
+        {
           "description": "Enables the open_config_dir command",
           "type": "string",
           "const": "allow-open-config-dir",
           "markdownDescription": "Enables the open_config_dir command"
         },
         {
-          "description": "Enables traffic overlay commands",
+          "description": "Enables desktop companion (pet) window commands",
           "type": "string",
           "const": "allow-overlay-commands",
-          "markdownDescription": "Enables traffic overlay commands"
+          "markdownDescription": "Enables desktop companion (pet) window commands"
+        },
+        {
+          "description": "Enables the probe_experimental_free_model command",
+          "type": "string",
+          "const": "allow-probe-experimental-free-model",
+          "markdownDescription": "Enables the probe_experimental_free_model command"
         },
         {
           "description": "Enables the probe_experimental_free_models command",
           "type": "string",
           "const": "allow-probe-experimental-free-models",
           "markdownDescription": "Enables the probe_experimental_free_models command"
+        },
+        {
+          "description": "Enables the probe_models command",
+          "type": "string",
+          "const": "allow-probe-models",
+          "markdownDescription": "Enables the probe_models command"
+        },
+        {
+          "description": "Enables quick chat history commands",
+          "type": "string",
+          "const": "allow-quick-chat-history",
+          "markdownDescription": "Enables quick chat history commands"
         },
         {
           "description": "Enables the quick_gateway_chat command",
@@ -483,6 +597,18 @@
           "markdownDescription": "Enables the save_provider command"
         },
         {
+          "description": "Enables the save_request_rule command",
+          "type": "string",
+          "const": "allow-save-request-rule",
+          "markdownDescription": "Enables the save_request_rule command"
+        },
+        {
+          "description": "Enables the save_strategy_box command",
+          "type": "string",
+          "const": "allow-save-strategy-box",
+          "markdownDescription": "Enables the save_strategy_box command"
+        },
+        {
           "description": "Enables the set_active_provider command",
           "type": "string",
           "const": "allow-set-active-provider",
@@ -507,10 +633,28 @@
           "markdownDescription": "Enables the set_autostart_gateway command"
         },
         {
+          "description": "Enables the set_close_to_tray command",
+          "type": "string",
+          "const": "allow-set-close-to-tray",
+          "markdownDescription": "Enables the set_close_to_tray command"
+        },
+        {
           "description": "Enables the set_failover command",
           "type": "string",
           "const": "allow-set-failover",
           "markdownDescription": "Enables the set_failover command"
+        },
+        {
+          "description": "Enables the set_maintenance_settings command",
+          "type": "string",
+          "const": "allow-set-maintenance-settings",
+          "markdownDescription": "Enables the set_maintenance_settings command"
+        },
+        {
+          "description": "Enables the set_model_enabled command",
+          "type": "string",
+          "const": "allow-set-model-enabled",
+          "markdownDescription": "Enables the set_model_enabled command"
         },
         {
           "description": "Enables the set_provider_enabled command",
@@ -523,6 +667,12 @@
           "type": "string",
           "const": "allow-set-quit-behavior",
           "markdownDescription": "Enables the set_quit_behavior command"
+        },
+        {
+          "description": "Enables the set_webui_settings command",
+          "type": "string",
+          "const": "allow-set-webui-settings",
+          "markdownDescription": "Enables the set_webui_settings command"
         },
         {
           "description": "Enables the start_gateway command",
@@ -561,10 +711,22 @@
           "markdownDescription": "Enables the test_provider_draft command"
         },
         {
+          "description": "Enables the test_provider_models command",
+          "type": "string",
+          "const": "allow-test-provider-models",
+          "markdownDescription": "Enables the test_provider_models command"
+        },
+        {
           "description": "Enables the uninstall_clients_env command",
           "type": "string",
           "const": "allow-uninstall-clients-env",
           "markdownDescription": "Enables the uninstall_clients_env command"
+        },
+        {
+          "description": "Enables in-app update check and install",
+          "type": "string",
+          "const": "allow-update-commands",
+          "markdownDescription": "Enables in-app update check and install"
         },
         {
           "description": "Enables the update_gateway_settings command",

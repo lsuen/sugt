@@ -211,6 +211,9 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         "list_experimental_free_candidates" => {
             to_value(crate::commands::list_experimental_free_candidates_core())
         }
+        "list_experimental_free_probe_cache" => to_value(
+            crate::experimental_free::list_cached_probes(&runtime.paths.config_dir),
+        ),
         "list_model_registry" => {
             let input: ListModelRegistryInput = field(args, &["input"])?;
             to_value(crate::commands::list_model_registry_core(runtime, input).await?)

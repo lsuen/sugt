@@ -457,6 +457,9 @@ function AppMain() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [providers, setProviders] = useState<ProviderView[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  // 日志内容签名：日志没变化时跳过 setLogs，避免新数组引用触发无谓重渲染。
+  // 与 StatusBar 的 ref 定时器配合，双重切断「拉日志→重渲染→再拉日志」的自激循环。
+  const logsSignatureRef = useRef<string>('');
   const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
@@ -601,6 +604,9 @@ function AppMain() {
 
   const refreshLogs = useCallback(async () => {
     const nextLogs = await invoke<string[]>('read_logs', { lines: 200 });
+    const signature = nextLogs.join('\n');
+    if (signature === logsSignatureRef.current) return;
+    logsSignatureRef.current = signature;
     setLogs(nextLogs);
   }, []);
 

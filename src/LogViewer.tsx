@@ -59,7 +59,9 @@ export function LogViewer({ lines, compact }: Props) {
 
   useEffect(() => {
     if (!autoScroll) return;
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // 用 auto 而非 smooth：日志高频刷新时平滑滚动每轮都会重启动画，
+    // 在 WebView2 上持续占用渲染主线程，叠在自激循环上会放大假死。
+    endRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [entries, autoScroll]);
 
   const onScroll = () => {

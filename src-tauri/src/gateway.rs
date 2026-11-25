@@ -890,7 +890,7 @@ pub struct InboundTarget {
 /// 生成短请求 ID（原子计数 + 毫秒时间戳），不引入新依赖。
 /// 期望：日志可凭 request_id 串起一次网关请求，且 counter 溢出也只是回绕不影响定位。
 static REQUEST_ID_SEQ: AtomicU64 = AtomicU64::new(0);
-fn next_request_id() -> String {
+pub(crate) fn next_request_id() -> String {
     let seq = REQUEST_ID_SEQ.fetch_add(1, Ordering::Relaxed);
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

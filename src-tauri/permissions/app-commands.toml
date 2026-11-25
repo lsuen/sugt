@@ -144,6 +144,11 @@ description = "Enables the set_quit_behavior command"
 commands.allow = ["set_quit_behavior"]
 
 [[permission]]
+identifier = "allow-set-close-to-tray"
+description = "Enables the set_close_to_tray command"
+commands.allow = ["set_close_to_tray"]
+
+[[permission]]
 identifier = "allow-read-logs"
 description = "Enables the read_logs command"
 commands.allow = ["read_logs"]

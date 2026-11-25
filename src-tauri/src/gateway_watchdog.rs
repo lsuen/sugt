@@ -16,6 +16,12 @@ pub fn spawn(runtime: Arc<AppRuntime>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(WATCHDOG_POLL_INTERVAL_SECS)).await;
+            // 退出流程已开始就不要再拉起网关：否则 stop() 刚执行完，
+            // watchdog 20s 后把网关复活，用户看到「点了退出却又活过来、进程还在」。
+            if crate::commands::QUITTING.load(std::sync::atomic::Ordering::SeqCst) {
+                info!("gateway watchdog: quitting, stop watching");
+                break;
+            }
             let config = runtime.config.read().await.clone();
             if !config.gateway_watchdog_enabled {
                 continue;

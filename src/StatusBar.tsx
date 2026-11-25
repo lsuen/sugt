@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { FileText, X } from 'lucide-react';
 import { ModalPortal } from './ModalPortal';
 import { LogViewer } from './LogViewer';
@@ -28,12 +28,17 @@ export function StatusBar({
   onOpenLogsTab,
   onRefreshLogs,
 }: Props) {
+  // 回调用 ref 持有：onRefreshLogs 在父组件是每次渲染新建的内联函数，放进依赖会让
+  // 「拉取→setLogs→重渲染→新函数→effect 重跑→立刻再拉」形成紧密自激循环，把 WebView2
+  // 渲染进程 CPU 打满、界面假死。定时器只应随抽屉开关建立一次。
+  const onRefreshLogsRef = useRef(onRefreshLogs);
+  onRefreshLogsRef.current = onRefreshLogs;
   useEffect(() => {
     if (!drawerOpen) return;
-    onRefreshLogs();
-    const timer = window.setInterval(() => onRefreshLogs(), 2000);
+    onRefreshLogsRef.current();
+    const timer = window.setInterval(() => onRefreshLogsRef.current(), 2000);
     return () => window.clearInterval(timer);
-  }, [drawerOpen, onRefreshLogs]);
+  }, [drawerOpen]);
 
   useEffect(() => {
     if (!drawerOpen) return;

@@ -52,6 +52,8 @@ async fn run_idle_cycle(runtime: &AppRuntime, auto_rotate: bool) -> Result<(), S
         experimental_free::TestFreeOpts {
             force: false,
             only_model: None,
+            // 闲时后台任务不占 UI 等待，保留原有完整探测行为。
+            total_timeout: None,
         },
     )
     .await;
