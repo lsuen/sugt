@@ -1308,6 +1308,7 @@ const zh = {
   'me.shellFold': '命令输出 · {lines} 行（点开查看）',
   'me.cmdFold': '命令块（点开查看）',
   'me.cmdFoldOne': '命令 · {preview}',
+  'me.codeBlock': '代码块 · {lines} 行',
   'me.safetyFold': '安全分类标记（可忽略）',
 
   // 通知模型 1.2.0：分类 / 合并 / 动作 / 状态 / 闲置 / 交互
@@ -2592,6 +2593,7 @@ const en: Record<keyof typeof zh, string> = {
   'me.shellFold': 'Command output · {lines} lines (expand)',
   'me.cmdFold': 'Command block (expand)',
   'me.cmdFoldOne': 'Command · {preview}',
+  'me.codeBlock': 'Code block · {lines} lines',
   'me.safetyFold': 'Safety labels (safe to ignore)',
 
   // Notice model 1.2.0: categories / merging / actions / state / idle / interaction
