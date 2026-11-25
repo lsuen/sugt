@@ -1,10 +1,24 @@
-use crate::{commands::{self, AppRuntime}, gateway_watchdog, logging, me_agent, pet, store, tray, update};
+use crate::{commands::{self, AppRuntime}, gateway_watchdog, instance, logging, me_agent, pet, store, tray, update};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 pub fn run() {
     let runtime = commands::load_runtime().expect("failed to initialize SUGT runtime");
     logging::init(&runtime.paths.log_file).expect("failed to initialize logging");
     spawn_log_retention(&runtime);
+
+    // 单实例闸门必须在建窗、拉起网关之前：重复双开会同时抢端口、重复启动托盘
+    // 与精灵窗口，并共享同一个 WebView2 用户数据目录。
+    let instance_listener = match instance::acquire() {
+        instance::Acquire::Primary(listener) => Some(listener),
+        instance::Acquire::AlreadyRunning => {
+            tracing::info!("已有 SUGT 实例在运行，已请求其显示主窗口，本进程退出");
+            return;
+        }
+        instance::Acquire::Unknown => {
+            tracing::warn!("单实例控制口被占用且无 SUGT 应答，跳过单实例保护继续启动");
+            None
+        }
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -153,7 +167,11 @@ pub fn run() {
             update::commands::apply_app_update,
             update::commands::open_app_release_page,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            // 先挂上单实例应答，后来者请求聚焦时主窗口已存在。
+            if let Some(listener) = instance_listener {
+                instance::serve(listener, app.handle().clone());
+            }
             tray::setup(app)?;
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

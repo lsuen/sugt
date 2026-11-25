@@ -25,6 +25,7 @@ pub mod gateway_daemon;
 pub mod gateway_listen;
 pub mod gateway_stats;
 pub mod gateway_watchdog;
+pub mod instance;
 pub mod lan;
 pub mod logging;
 pub mod maintenance;

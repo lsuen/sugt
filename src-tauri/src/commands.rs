@@ -51,7 +51,13 @@ pub(crate) async fn config_with_listen_port(runtime: &AppRuntime) -> AppConfig {
         cfg.port = listen;
         return cfg;
     }
-    // 独立/detached 进程可能绑在备选口：扫候选表找可达口，仍不改 preferred。
+    // 没有独立网关进程时，候选口一定全空，直接返回首选口。
+    // 期望先看进程再探端口，因为「探测没人监听的端口」要等满超时（本机实测
+    // 单口 2s），而它是 get_status 每 3s 轮询与启动路径的公共前置。
+    if !gateway_daemon::detached_pid_alive(&runtime.paths.config_dir) {
+        return cfg;
+    }
+    // 独立/detached 进程可能绑在备选口：并行扫候选表找可达口，仍不改 preferred。
     if let Some(port) = find_reachable_listen_port(&cfg).await {
         cfg.port = port;
     }
@@ -59,12 +65,7 @@ pub(crate) async fn config_with_listen_port(runtime: &AppRuntime) -> AppConfig {
 }
 
 async fn find_reachable_listen_port(config: &AppConfig) -> Option<u16> {
-    for port in config.port_candidates() {
-        if gateway_daemon::is_reachable(&config.client_host(), port).await {
-            return Some(port);
-        }
-    }
-    None
+    gateway_daemon::probe_first_reachable(&config.client_host(), &config.port_candidates()).await
 }
 
 async fn fetch_live_traffic(config: &AppConfig) -> Option<crate::gateway_stats::TrafficStatsView> {
@@ -86,6 +87,7 @@ async fn fetch_live_traffic(config: &AppConfig) -> Option<crate::gateway_stats::
 async fn clients_env_with_reachability(
     config_dir: &std::path::Path,
     config: &AppConfig,
+    gateway_reachable: bool,
 ) -> ClientsEnvStatus {
     let config_dir_buf = config_dir.to_path_buf();
     let config_for_status = config.clone();
@@ -98,8 +100,15 @@ async fn clients_env_with_reachability(
         Ok(status) => status,
         Err(_) => clients::status(config_dir, config),
     };
-    status.gateway_reachable = gateway_is_reachable(config).await;
+    status.gateway_reachable = gateway_reachable;
     status
+}
+
+/// 写入类命令（安装/卸载/修复接管）结束后取最新状态：这些路径必须重新探测，
+/// 探测本身已改用 250ms 快速客户端，不再是旧的 2s 阻塞。
+async fn clients_env_status_live(runtime: &AppRuntime, config: &AppConfig) -> ClientsEnvStatus {
+    let gateway_reachable = gateway_is_reachable(config).await;
+    clients_env_with_reachability(&runtime.paths.config_dir, config, gateway_reachable).await
 }
 
 async fn ensure_gateway_listening(
@@ -2364,7 +2373,7 @@ pub async fn set_auto_takeover(
             clients::install_for(&runtime.paths.config_dir, &config, "codex")
                 .map_err(|e| e.to_string())?;
         }
-        Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+        Ok(clients_env_status_live(runtime.inner(), &config).await)
     } else {
         {
             let mut config = runtime.config.write().await;
@@ -2375,7 +2384,7 @@ pub async fn set_auto_takeover(
         runtime.persist().await.map_err(|e| e.to_string())?;
         let config = runtime.config.read().await.clone();
         clients::uninstall(&runtime.paths.config_dir, &config).map_err(|e| e.to_string())?;
-        Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+        Ok(clients_env_status_live(runtime.inner(), &config).await)
     }
 }
 
@@ -2518,7 +2527,8 @@ pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
     if !config.autostart_gateway {
         return;
     }
-    if gateway_is_reachable(&config).await || runtime.gateway.is_running().await {
+    // 先看嵌入网关的内存状态，再探一次端口（探测已降到 250ms 连接超时）。
+    if runtime.gateway.is_running().await || gateway_is_reachable(&config).await {
         return;
     }
     if trial::ensure_allowed(&runtime.paths).is_err() {
@@ -2532,7 +2542,9 @@ pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
             warn!(error = %err, "gateway autostart detached failed");
         }
     }
-    if !gateway_daemon::wait_reachable(&config.client_host(), config.port, 20).await {
+    // 启动已成功时第一次探测就命中；给 8 次（约 4s）足够覆盖冷启动慢的机器，
+    // 旧值 20 次（10s）会让「网关起不来」直接把启动卡到十秒级。
+    if !gateway_daemon::wait_reachable(&config.client_host(), config.port, 8).await {
         warn!("gateway autostart: health check still failing after retries");
     }
 }
@@ -3192,7 +3204,8 @@ pub async fn get_clients_env_status(
     runtime: State<'_, AppRuntime>,
 ) -> Result<ClientsEnvStatus, String> {
     let config = runtime.config.read().await.clone();
-    Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+    // 写入/轮询同一口径：直接走快速客户端探测（250ms 连接超时），不再有旧的 2s 阻塞。
+    Ok(clients_env_status_live(runtime.inner(), &config).await)
 }
 
 #[tauri::command]
@@ -3210,7 +3223,7 @@ pub async fn repair_clients_env(
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
-    Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+    Ok(clients_env_status_live(runtime.inner(), &config).await)
 }
 
 #[tauri::command]
@@ -3247,7 +3260,7 @@ pub async fn install_clients_env(
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
-    Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+    Ok(clients_env_status_live(runtime.inner(), &config).await)
 }
 
 #[tauri::command]
@@ -3284,7 +3297,7 @@ pub async fn uninstall_clients_env(
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
-    Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
+    Ok(clients_env_status_live(runtime.inner(), &config).await)
 }
 
 fn validate_provider_input(input: &ProviderInput) -> Result<(), String> {

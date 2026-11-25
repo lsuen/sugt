@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{NaiveDate, Utc};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -13,6 +13,9 @@ pub const LOG_FILE_NAME: &str = "sugt.log";
 pub const LOG_TARGET: &str = "sugt";
 /// 默认过滤级别。期望默认级别只有一份，因为 EnvFilter 指令串复制一份必然漏改。
 const DEFAULT_LOG_LEVEL: &str = "info";
+/// 尾部读取的起始窗口。期望从 64KB 起步按需倍增，因为一次只取 200 行时
+/// 直接读整文件在 MB 级日志上是纯浪费。
+const TAIL_INITIAL_CHUNK: u64 = 64 * 1024;
 
 fn default_env_filter() -> EnvFilter {
     EnvFilter::new(format!(
@@ -80,17 +83,29 @@ pub fn tail(log_file: &Path, lines: usize) -> Result<Vec<String>> {
         return Ok(Vec::new());
     };
 
+    // 期望只读文件尾部：日志面板每 2s 拉一次，整文件 read_to_string 在单日
+    // 19.8MB 的日志上会反复把整个文件读进内存（本仓曾出现过这种日志风暴）。
     let mut file = fs::File::open(path)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-    let mut result: Vec<String> = content
-        .lines()
-        .rev()
-        .take(lines)
-        .map(ToOwned::to_owned)
-        .collect();
-    result.reverse();
-    Ok(result)
+    let len = file.metadata()?.len();
+    let mut chunk = TAIL_INITIAL_CHUNK;
+    loop {
+        let start = len.saturating_sub(chunk);
+        file.seek(SeekFrom::Start(start))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        // 从中间切入时按字节可能切坏一个多字节字符，用有损解码兜底。
+        let content = String::from_utf8_lossy(&buf);
+        let mut rows: Vec<String> = content.lines().map(ToOwned::to_owned).collect();
+        if start > 0 && !rows.is_empty() {
+            // 首行大概率是被截断的半行，丢弃，避免返回半条 JSON 记录。
+            rows.remove(0);
+        }
+        if rows.len() >= lines || start == 0 {
+            let keep = rows.len().saturating_sub(lines);
+            return Ok(rows.split_off(keep));
+        }
+        chunk = chunk.saturating_mul(4);
+    }
 }
 
 /// 删除超过保留期的日志文件，返回删除个数。`retention_days == 0` 表示不自动清理。
