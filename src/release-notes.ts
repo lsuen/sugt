@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.2.3';
+export const CURRENT_VERSION = '1.2.4';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,6 +6,10 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  { type: 'fix', text: 'Windows 首启：端口探测并行 + 250ms 超时，10s 卡死压到 0.3s；重复启动聚焦已有窗口' },
+  { type: 'fix', text: '修复模型列表加载卡死并渐进呈现；长代码/命令预览限高，不再撑破界面' },
+  { type: 'fix', text: 'Windows 退出：置 QUITTING 并加 6s 硬超时；日志抽屉改受控轮询，避免 WebView2 空转' },
+  { type: 'fix', text: '精灵右键菜单命令改为 async，解决 Windows 上右键无反应；首屏面板按路由分片，入口包减 62%' },
   { type: 'fix', text: 'Windows：setx/扫盘移出 async，避免首启卡死、接入列表转圈、关不掉；退出硬超时' },
   { type: 'fix', text: 'Windows：精灵右键菜单改为已存在则聚焦，并防抖连发事件，避免刚开即关' },
   { type: 'feat', text: '实验免费通道：分级探测缓存、仅对话能力标记、单路由重测；控制台指标紧凑展示' },
