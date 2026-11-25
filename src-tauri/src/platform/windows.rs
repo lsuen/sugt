@@ -54,6 +54,12 @@ pub fn set_autostart(enabled: bool, exe_path: &Path) -> Result<()> {
 // ---------- 用户环境变量持久化 ----------
 
 pub fn set_user_env(name: &str, value: &str) -> Result<()> {
+    // 值未变则跳过 setx：启动恢复接管会反复写同一批变量，setx 广播环境变更
+    // 在 Windows 上可卡数秒～极久，把 tokio worker 和前端 IPC 一起饿死。
+    if read_user_env(name).as_deref() == Some(value) {
+        std::env::set_var(name, value);
+        return Ok(());
+    }
     let ok = hidden("setx")
         .arg(name)
         .arg(value)

@@ -257,12 +257,18 @@ pub fn hide_main_window(app: &tauri::AppHandle) {
 }
 
 /// 托盘「退出」与关窗即退出共用：清理最多等 3 秒，再 `exit(0)` 收掉含 overlay 的进程。
+/// 注意：清理里的 setx/reg 已放进 spawn_blocking；timeout 只等 JoinHandle，
+/// 超时后仍立刻 exit，不再被同步子进程拖死。
 pub fn request_quit(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         if let Some(runtime) = app.try_state::<AppRuntime>() {
             let cleanup = crate::commands::apply_quit_behavior(&runtime);
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), cleanup).await;
+            match tokio::time::timeout(std::time::Duration::from_secs(3), cleanup).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::warn!(error = %err, "quit cleanup failed"),
+                Err(_) => tracing::warn!("quit cleanup timed out after 3s; exiting anyway"),
+            }
         }
         app.exit(0);
     });

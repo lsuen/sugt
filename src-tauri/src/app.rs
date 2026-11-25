@@ -267,10 +267,20 @@ pub fn run() {
                     .try_state::<commands::WebUiHandle>()
                     .map(|state| state.inner().clone())
                 {
-                    tauri::async_runtime::block_on(async move {
-                        if let Some(server) = slot.lock().await.take() {
-                            server.stop().await;
-                            tracing::info!("WebUI 已随进程退出停止");
+                    // Windows 上若 async worker 已被 setx/扫盘拖死，无超时的 block_on
+                    // 会让退出永远卡死，只能杀进程。
+                    let _ = tauri::async_runtime::block_on(async move {
+                        let stop = async {
+                            if let Some(server) = slot.lock().await.take() {
+                                server.stop().await;
+                                tracing::info!("WebUI 已随进程退出停止");
+                            }
+                        };
+                        if tokio::time::timeout(std::time::Duration::from_secs(2), stop)
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("WebUI stop timed out on exit; continuing process teardown");
                         }
                     });
                 }

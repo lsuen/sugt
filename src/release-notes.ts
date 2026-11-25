@@ -1,4 +1,4 @@
-export const CURRENT_VERSION = '1.2.2';
+export const CURRENT_VERSION = '1.2.3';
 
 export type ReleaseNote = {
   type: 'fix' | 'feat';
@@ -6,6 +6,8 @@ export type ReleaseNote = {
 };
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  { type: 'fix', text: 'Windows：setx/扫盘移出 async，避免首启卡死、接入列表转圈、关不掉；退出硬超时' },
+  { type: 'fix', text: 'Windows：精灵右键菜单改为已存在则聚焦，并防抖连发事件，避免刚开即关' },
   { type: 'feat', text: '实验免费通道：分级探测缓存、仅对话能力标记、单路由重测；控制台指标紧凑展示' },
   { type: 'feat', text: '模型列表：能力徽章、截断轮播、一键禁用不可用模型' },
   { type: 'feat', text: '接入默认加入 WorkBuddy / DSH；接管写入可用 model id 与网关 API Key，偏离可预警并修复' },

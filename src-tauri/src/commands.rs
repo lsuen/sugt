@@ -86,7 +86,17 @@ async fn clients_env_with_reachability(
     config_dir: &std::path::Path,
     config: &AppConfig,
 ) -> ClientsEnvStatus {
-    let mut status = clients::status(config_dir, config);
+    let config_dir_buf = config_dir.to_path_buf();
+    let config_for_status = config.clone();
+    // status() 在 Windows 上会跑 reg query；放到 blocking，避免与启动 setx 抢 worker。
+    let mut status = match tauri::async_runtime::spawn_blocking(move || {
+        clients::status(&config_dir_buf, &config_for_status)
+    })
+    .await
+    {
+        Ok(status) => status,
+        Err(_) => clients::status(config_dir, config),
+    };
     status.gateway_reachable = gateway_is_reachable(config).await;
     status
 }
@@ -143,8 +153,15 @@ pub(crate) async fn sync_client_endpoints_to_listen_port(
     if effective.port == preferred {
         return Ok(());
     }
-    clients::write_launch_scripts(&runtime.paths, &effective).map_err(|e| e.to_string())?;
-    clients::repair(&runtime.paths.config_dir, &effective).map_err(|e| e.to_string())?;
+    let paths = runtime.paths.clone();
+    let config_dir = runtime.paths.config_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::write_launch_scripts(&paths, &effective)?;
+        clients::repair(&config_dir, &effective)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -2277,9 +2294,14 @@ pub async fn set_close_to_tray(
 
 async fn clear_takeover_writes(runtime: &AppRuntime) -> Result<(), String> {
     let config = runtime.config.read().await.clone();
-    // 方案 B：只清系统写入，保留 active_takeover_ids 偏好
-    takeover_profiles::clear_active_env_writes(&runtime.paths.config_dir, &config)
-        .map_err(|e| e.to_string())?;
+    let config_dir = runtime.paths.config_dir.clone();
+    // 方案 B：只清系统写入，保留 active_takeover_ids 偏好。
+    // Windows setx/reg 必须离开 async worker，否则退出超时砍不断阻塞调用。
+    tauri::async_runtime::spawn_blocking(move || {
+        takeover_profiles::clear_active_env_writes(&config_dir, &config).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     Ok(())
 }
 
@@ -2368,17 +2390,22 @@ pub async fn maybe_autostart_gateway(runtime: &AppRuntime) {
     let _ = runtime.persist().await;
     let config = runtime.config.read().await.clone();
 
-    // 方案 B：按偏好恢复接管环境
+    // 方案 B：按偏好恢复接管环境（setx/写盘放 spawn_blocking，避免堵死启动 IPC）
     if !config.active_takeover_ids.is_empty() {
         if let Err(err) = ensure_gateway_for_takeover(runtime, true).await {
             warn!(error = %err, "restore takeover gateway failed");
         } else {
             let cfg = runtime.config.read().await.clone();
             let _ = clients::write_launch_scripts(&runtime.paths, &cfg);
-            if let Err(err) =
-                takeover_profiles::restore_active_profiles(&runtime.paths.config_dir, &cfg)
+            let config_dir = runtime.paths.config_dir.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                takeover_profiles::restore_active_profiles(&config_dir, &cfg)
+            })
+            .await
             {
-                warn!(error = %err, "restore active takeover profiles failed");
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => warn!(error = %err, "restore active takeover profiles failed"),
+                Err(err) => warn!(error = %err, "restore active takeover join failed"),
             }
         }
     }
@@ -2486,7 +2513,12 @@ pub async fn list_takeover_profiles(
     runtime: State<'_, AppRuntime>,
 ) -> Result<Vec<TakeoverProfileView>, String> {
     let config = runtime.config.read().await.clone();
-    Ok(takeover_profiles::list_profile_views(&runtime.paths.config_dir, &config))
+    let config_dir = runtime.paths.config_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        takeover_profiles::list_profile_views(&config_dir, &config)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2502,13 +2534,14 @@ pub async fn probe_takeover_drift(
     profile_id: String,
 ) -> Result<TakeoverDriftView, String> {
     let config = runtime.config.read().await.clone();
-    let (drifted, detail) = takeover_profiles::probe_profile_drift(
-        &runtime.paths.config_dir,
-        &config,
-        &profile_id,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(TakeoverDriftView { drifted, detail })
+    let config_dir = runtime.paths.config_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        takeover_profiles::probe_profile_drift(&config_dir, &config, &profile_id)
+            .map(|(drifted, detail)| TakeoverDriftView { drifted, detail })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2519,9 +2552,17 @@ pub async fn apply_takeover_profile(
 ) -> Result<TakeoverProfileView, String> {
     ensure_gateway_for_takeover(&runtime, auto_start.unwrap_or(true)).await?;
     let config = runtime.config.read().await.clone();
-    clients::write_launch_scripts(&runtime.paths, &config).map_err(|e| e.to_string())?;
-    takeover_profiles::apply_profile(&runtime.paths.config_dir, &config, &profile_id)
-        .map_err(|e| e.to_string())?;
+    let paths = runtime.paths.clone();
+    let config_dir = runtime.paths.config_dir.clone();
+    let profile_id_for_apply = profile_id.clone();
+    let cfg_for_apply = config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::write_launch_scripts(&paths, &cfg_for_apply)?;
+        takeover_profiles::apply_profile(&config_dir, &cfg_for_apply, &profile_id_for_apply)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
     {
         let mut cfg = runtime.config.write().await;
         add_active_takeover_id(&mut cfg, &profile_id);
@@ -2539,8 +2580,15 @@ pub async fn release_takeover_profile(
     profile_id: String,
 ) -> Result<TakeoverProfileView, String> {
     let config = runtime.config.read().await.clone();
-    takeover_profiles::release_profile(&runtime.paths.config_dir, &config, &profile_id)
-        .map_err(|e| e.to_string())?;
+    let config_dir = runtime.paths.config_dir.clone();
+    let profile_id_for_release = profile_id.clone();
+    let cfg_for_release = config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        takeover_profiles::release_profile(&config_dir, &cfg_for_release, &profile_id_for_release)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     {
         let mut cfg = runtime.config.write().await;
         remove_active_takeover_id(&mut cfg, &profile_id);
@@ -2624,10 +2672,13 @@ pub async fn discover_agents(
     runtime: State<'_, AppRuntime>,
     query: String,
 ) -> Result<Vec<crate::agent_discover::DiscoveredAgent>, String> {
-    Ok(crate::agent_discover::discover_agents(
-        &runtime.paths.config_dir,
-        &query,
-    ))
+    let config_dir = runtime.paths.config_dir.clone();
+    // 扫盘 + PATH 探测在 Windows 上会拖住 async worker，前端 Agent 列表表现为一直转圈。
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::agent_discover::discover_agents(&config_dir, &query)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -3044,8 +3095,16 @@ pub async fn repair_clients_env(
     runtime: State<'_, AppRuntime>,
 ) -> Result<ClientsEnvStatus, String> {
     let config = runtime.config.read().await.clone();
-    clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
-    clients::repair(&runtime.paths.config_dir, &config).map_err(|err| err.to_string())?;
+    let paths = runtime.paths.clone();
+    let config_dir = runtime.paths.config_dir.clone();
+    let cfg = config.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::write_launch_scripts(&paths, &cfg)?;
+        clients::repair(&config_dir, &cfg)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
 }
 
@@ -3072,9 +3131,17 @@ pub async fn install_clients_env(
     }
     runtime.persist().await.map_err(|e| e.to_string())?;
     let config = runtime.config.read().await.clone();
-    clients::write_launch_scripts(&runtime.paths, &config).map_err(|err| err.to_string())?;
-    clients::install_for(&runtime.paths.config_dir, &config, &target)
-        .map_err(|err| err.to_string())?;
+    let paths = runtime.paths.clone();
+    let config_dir = runtime.paths.config_dir.clone();
+    let cfg = config.clone();
+    let target_owned = target.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::write_launch_scripts(&paths, &cfg)?;
+        clients::install_for(&config_dir, &cfg, &target_owned)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
 }
 
@@ -3103,8 +3170,15 @@ pub async fn uninstall_clients_env(
     }
     runtime.persist().await.map_err(|e| e.to_string())?;
     let config = runtime.config.read().await.clone();
-    clients::uninstall_for(&runtime.paths.config_dir, &config, &target)
-        .map_err(|err| err.to_string())?;
+    let config_dir = runtime.paths.config_dir.clone();
+    let cfg = config.clone();
+    let target_owned = target.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        clients::uninstall_for(&config_dir, &cfg, &target_owned)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     Ok(clients_env_with_reachability(&runtime.paths.config_dir, &config).await)
 }
 

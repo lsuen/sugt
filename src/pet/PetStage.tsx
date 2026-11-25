@@ -547,9 +547,14 @@ export function PetStage({ cfg, status, busy, onSave, onDrag }: PetStageProps) {
     pendingClicks.current.push(timer);
   };
 
+  const lastMenuOpenAt = useRef(0);
   const openPetMenu = () => {
     if (!interactive || cfg.edit) return;
-    lastUserTouch.current = Date.now();
+    // Windows 右键会连发 pointerdown(button=2) + contextmenu；400ms 内只开一次。
+    const now = Date.now();
+    if (now - lastMenuOpenAt.current < 400) return;
+    lastMenuOpenAt.current = now;
+    lastUserTouch.current = now;
     preemptRef.current();
     // 打开前强制解穿透：Windows 上右键按下时轮询可能还没把 ignore_cursor_events 关掉，
     // 菜单窗会建起来却立刻被穿透/失焦逻辑掐掉。

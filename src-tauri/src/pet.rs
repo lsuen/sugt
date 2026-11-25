@@ -138,11 +138,14 @@ fn dismiss_menu(app: &AppHandle) {
     let _ = app.emit("sugt://pet-menu-closed", ());
 }
 
-/// 右键菜单是独立小窗，不改精灵透明窗的大小和底色。再点一次则关掉。
+/// 右键菜单是独立小窗，不改精灵透明窗的大小和底色。
+/// 已打开则 focus，不再「再点一次关掉」——Windows 上一次右键会连发
+/// pointerdown + contextmenu + auxclick，toggle 会刚开就关。
 #[tauri::command]
 pub fn pet_open_menu(app: AppHandle) -> Result<(), String> {
-    if app.get_webview_window(MENU_LABEL).is_some() {
-        dismiss_menu(&app);
+    if let Some(existing) = app.get_webview_window(MENU_LABEL) {
+        let _ = existing.set_focus();
+        let _ = app.emit("sugt://pet-menu-opened", ());
         return Ok(());
     }
     let overlay = app
