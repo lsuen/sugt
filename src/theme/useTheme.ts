@@ -111,5 +111,13 @@ export function useTheme(extraThemes: ThemeMeta[] = []) {
 export function bootstrapTheme(): void {
   const id = loadStoredThemeId();
   document.documentElement.dataset.theme = id;
-  bootstrapCustomBg();
+  // 主题 id 必须同步落地（避免闪色），但自定义背景是 base64 大字符串
+  // （上限 1.6MB），解析 + 注入约 2MB CSS 会推迟首帧；放到首帧之后再应用。
+  // useTheme 挂载后也会 applyCustomBg 一次，这里的延后只是让更早的 paint 不被拖慢。
+  const applyBgLater = () => bootstrapCustomBg();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => window.setTimeout(applyBgLater, 0));
+  } else {
+    window.setTimeout(applyBgLater, 0);
+  }
 }

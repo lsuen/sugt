@@ -179,6 +179,34 @@ code { color: var(--code, #8ee8ff); word-break: break-all; }
 }
 .tab-body::-webkit-scrollbar-track { background: rgba(255,255,255,0.04); }
 
+/* 面板 chunk 加载中的骨架：与真实页面同构，避免切换时白屏闪烁 */
+.panel-fallback { display: flex; flex-direction: column; gap: 16px; }
+.panel-fallback-header { display: flex; flex-direction: column; gap: 10px; margin-bottom: 6px; }
+.panel-fallback-bar,
+.panel-fallback-card {
+  display: block;
+  border-radius: 10px;
+  background: rgba(148, 169, 189, 0.09);
+  animation: panelFallbackPulse 1.2s ease-in-out infinite;
+}
+.panel-fallback-bar { height: 18px; }
+.panel-fallback-card {
+  height: 168px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 169, 189, 0.07);
+  animation-delay: .15s;
+}
+.panel-fallback-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted, #94a9bd);
+  letter-spacing: .4px;
+}
+@keyframes panelFallbackPulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-shrink: 0; }
 .topbar h2 { margin: 0 0 4px; font-size: 22px; }
 .topbar p { margin: 0; font-size: 13px; }

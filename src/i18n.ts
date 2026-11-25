@@ -12,13 +12,21 @@ export function langSetting(): LangSetting {
   return v === 'zh' || v === 'en' || v === 'system' ? v : 'system';
 }
 
+// 首屏渲染会调用 t() 数百次，每次都读 localStorage 在 WebView2 上是同步桥接开销；
+// 语言切换本身靠 location.reload() 生效，所以进程内缓存一次即可。
+let cachedLang: Lang | null = null;
+
 export function lang(): Lang {
+  if (cachedLang) return cachedLang;
   const s = langSetting();
-  if (s !== 'system') return s;
-  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  cachedLang = s !== 'system'
+    ? s
+    : (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+  return cachedLang;
 }
 
 export function setLang(s: LangSetting): void {
+  cachedLang = null;
   localStorage.setItem(KEY, s);
   location.reload();
 }

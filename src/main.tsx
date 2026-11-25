@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   invoke, emit, listen,
@@ -14,21 +14,28 @@ import { ModalPortal } from './ModalPortal';
 import { bootstrapTheme, useTheme } from './theme';
 import './styles.css';
 import { GatewayAccessBanner } from './GatewayAccessBanner';
-import { SettingsPanel, type SettingsTab } from './SettingsPanel';
+import type { SettingsTab } from './SettingsPanel';
 import type { OverlayConfigView } from './pet/config';
-import { SkillsPanel } from './SkillsPanel';
 import { TrafficPanel } from './TrafficPanel';
 import { ProviderModal } from './ProviderModal';
-import { TakeoverProfilesSection } from './TakeoverProfilesSection';
-import { WorkspaceRulesPanel, type WorkspaceRulesView } from './WorkspaceRulesPanel';
-import { RequestRulesSection } from './RequestRulesSection';
-import { ModelListPanel } from './ModelListPanel';
-import { StrategyBoxPanel } from './StrategyBoxPanel';
-import { ApiKeyPoolPanel } from './ApiKeyPoolPanel';
-import { ClientKeyPanel } from './ClientKeyPanel';
-import { AccessInfoCard } from './AccessInfoCard';
+import type { WorkspaceRulesView } from './WorkspaceRulesPanel';
 import { FreeChannelSettingsModal } from './FreeChannelSettingsModal';
-import { MePanel } from './MePanel';
+// 面板走独立 chunk：首屏只留控制台需要的组件，其余在空闲时预取。
+import {
+  AccessInfoCard,
+  ApiKeyPoolPanel,
+  ClientKeyPanel,
+  MePanel,
+  ModelListPanel,
+  RequestRulesSection,
+  SettingsPanel,
+  SkillsPanel,
+  StrategyBoxPanel,
+  TakeoverProfilesSection,
+  WorkspaceRulesPanel,
+  preloadPanels,
+  preloadPanelPreview,
+} from './lazyPanels';
 import type { ProviderForm } from './providerPresets';
 import { t, type TKey } from './i18n';
 import { useNoticeQueue } from './notify/useNoticeQueue';
@@ -151,6 +158,12 @@ function storedLeafFor(group: NavGroup): NavLeaf {
     /* localStorage 不可用（隐私模式）时按默认叶子启动 */
   }
   return NAV_DEFAULT_LEAF[group];
+}
+
+/** 哪些导航组有可预取的面板 chunk（overview 全是首屏同步组件，无需预取）。 */
+const PRELOADABLE_GROUPS = new Set<string>(['soul', 'gateway', 'rules', 'access', 'skills', 'settings']);
+function isPreloadableGroup(group: NavGroup): boolean {
+  return PRELOADABLE_GROUPS.has(group);
 }
 
 /**
@@ -406,6 +419,22 @@ function protocolLabel(protocol: ProviderProtocol) {
   return protocol === 'anthropic' ? t('common.protocolAnthropic') : t('common.protocolOpenai');
 }
 
+/** 面板 chunk 尚未就绪时的占位：保持与真实页面同构的骨架，不闪白屏。
+ *  正常路径下首屏会空闲预取，用户点开时通常已经加载完成，几乎看不到它。 */
+function PanelFallback() {
+  return (
+    <div className="tab-body panel-fallback" aria-busy="true">
+      <div className="panel-fallback-header">
+        <span className="panel-fallback-bar" style={{ width: 168 }} />
+        <span className="panel-fallback-bar" style={{ width: 260, height: 10 }} />
+      </div>
+      <div className="panel-fallback-card" />
+      <div className="panel-fallback-card" style={{ height: 132 }} />
+      <span className="panel-fallback-hint">{t('common.loading')}</span>
+    </div>
+  );
+}
+
 function Modal({
   title,
   onClose,
@@ -591,17 +620,20 @@ function AppMain() {
     emit('sugt://navigate-settings', sub).catch(() => undefined);
   }, []);
 
+  // 首屏各数据源独立到达即渲染，不用 Promise.all 等最慢的一项（get_status 含
+  // 1200ms 流量探测、get_clients_env_status 在 Windows 跑 reg query），避免
+  // "窗口出来了但页面空白，过一会才一起出现"。任何一项失败只保留旧值，
+  // 全部失败时向上抛，交由调用方给出一次可见提示。
   const refreshCore = useCallback(async () => {
-    const [nextStatus, nextProviders, nextConfig, nextClients] = await Promise.all([
-      invoke<RuntimeStatus>('get_status'),
-      invoke<ProviderView[]>('list_providers'),
-      invoke<AppConfig>('get_config'),
-      invoke<ClientsEnvStatus>('get_clients_env_status'),
+    const results = await Promise.allSettled([
+      invoke<RuntimeStatus>('get_status').then(setStatus),
+      invoke<ProviderView[]>('list_providers').then(setProviders),
+      invoke<AppConfig>('get_config').then(setConfig),
+      invoke<ClientsEnvStatus>('get_clients_env_status').then(setClients),
     ]);
-    setStatus(nextStatus);
-    setProviders(nextProviders);
-    setConfig(nextConfig);
-    setClients(nextClients);
+    if (results.every((item) => item.status === 'rejected')) {
+      throw new Error('状态数据全部加载失败');
+    }
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -626,6 +658,12 @@ function AppMain() {
     const timer = window.setInterval(() => refresh().catch(() => undefined), 3000);
     return () => window.clearInterval(timer);
   }, [refresh, refreshCore]);
+
+  // 首屏渲染完成后静默预取其余面板 chunk：用户点开任何页面时模块已在内存，
+  // 不用等下载/解析，做到"点击即显示"。
+  useEffect(() => {
+    preloadPanels();
+  }, []);
 
   useEffect(() => {
     if (logsVisible) refreshLogs().catch(() => undefined);
@@ -905,6 +943,12 @@ function AppMain() {
               <button
                 className={className}
                 onClick={() => setTab(storedLeafFor(item.id))}
+                onMouseEnter={() => {
+                  if (isPreloadableGroup(item.id)) preloadPanelPreview(item.id);
+                }}
+                onFocus={() => {
+                  if (isPreloadableGroup(item.id)) preloadPanelPreview(item.id);
+                }}
               >
                 <Icon size={18} />{t(item.labelKey)}
               </button>
@@ -949,6 +993,9 @@ function AppMain() {
           </div>
         ) : null}
 
+        {/* 面板按需加载：dashboard 全是同步组件，立刻渲染；其余面板 chunk
+            通常在空闲预取阶段已就绪，点击即显示，Suspense 只兜底极端情况。 */}
+        <Suspense fallback={<PanelFallback />}>
         {tab === 'dashboard' && (
           <div className="tab-body dashboard-body">
           <section className="page-grid dashboard-layout in-tab">
@@ -1274,6 +1321,7 @@ function AppMain() {
             <ClientKeyPanel pushToast={pushToast} />
           </div>
         )}
+        </Suspense>
 
       </section>
 
