@@ -33,6 +33,9 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
   const dragActive = useRef(false);
   const movedDuringDrag = useRef(false);
   const dragRequested = useRef(false);
+  // 仅用于同一次按下里 overlay_start_drag 的 IPC 去重；
+  // 与 dragRequested（「本次确实拖过」，供点击互斥）语义不同，不能复用。
+  const startDragSent = useRef(false);
   const dragCleanupTimer = useRef(0);
   const snapTimer = useRef(0);
   const pendingDrag = useRef<{ x: number; y: number } | null>(null);
@@ -59,6 +62,7 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
     dragActive.current = true;
     movedDuringDrag.current = false;
     dragRequested.current = false;
+    startDragSent.current = false;
     velocity.current = [];
     window.clearTimeout(dragCleanupTimer.current);
     window.clearTimeout(snapTimer.current);
@@ -247,25 +251,33 @@ export function usePetDrag({ interactive, edit, snapOnUp, stageRef, onTouch }: P
     };
   }, []);
 
-  // 4px 阈值：纯单击不进入原生拖动循环（部分平台会吞掉 click），移动后才真正开始拖。
+  // tao 的 start_dragging 必须在「左键刚按下」的同一事件帧同步发起：
+  // 后端走 GetCursorPos + ReleaseCapture + PostMessage(WM_NCLBUTTONDOWN)，
+  // 异步 IPC 或等 4px 位移后再发，Windows 的模态移动循环就起不来（macOS 不受影响）。
+  // 因此这里按下即请求原生拖动，绝不等 mouseup 前的位移阈值。
   const onFigureMouseDown = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
       if (!interactive || edit || e.button !== 0) return;
       e.preventDefault();
       onTouch();
-      pendingDrag.current = { x: e.clientX, y: e.clientY };
       beginDrag();
+      if (!startDragSent.current) {
+        startDragSent.current = true;
+        void invoke('overlay_start_drag').catch(() => undefined);
+      }
+      pendingDrag.current = { x: e.clientX, y: e.clientY };
     },
     [interactive, edit, onTouch, beginDrag],
   );
 
+  // 4px 阈值只保留给「点击 vs 拖动」互斥（dragRequested 供 PetStage 吞掉迟到 click）与
+  // lifted 视觉判定；原生拖动已在 mousedown 发起，这里绝不再 invoke。
   const onFigureMouseMove = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
     const start = pendingDrag.current;
     if (!start) return;
     if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) < 4) return;
     pendingDrag.current = null;
     dragRequested.current = true;
-    void invoke('overlay_start_drag').catch(() => undefined);
   }, []);
 
   return {

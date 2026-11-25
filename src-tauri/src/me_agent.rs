@@ -2321,14 +2321,33 @@ async fn complete_via_gateway(
     reply_text(&body).ok_or_else(|| format!("模型没有返回文本：{}", clip_chars(&text, 240)))
 }
 
-/// 经本机网关拉流式 chat completions；`on_delta` 收到累计正文（便于 UI 边出边显）。
+/// 流式链路的真实阶段；每个变体都对应一次确切的网络事件，供 UI 展示请求生命周期。
+#[derive(Clone, Copy)]
+enum GatewayStage {
+    /// 即将发出 HTTP 请求（request.send 之前）
+    Sending,
+    /// 请求已发出、拿到响应头，等待正文首字节（TTFB）
+    Waiting,
+    /// 收到首个非空正文分片，模型真正开始生成
+    Generating,
+    /// 流式不可用（上游拒绝或空正文），改走一次性响应
+    StreamFallback,
+}
+
+/// 流式回调：阶段与正文分流，正文仍是累计文本，便于 UI 边出边显。
+enum GatewaySignal<'a> {
+    Stage(GatewayStage),
+    Delta(&'a str),
+}
+
+/// 经本机网关拉流式 chat completions；`on_signal` 收到真实阶段与累计正文。
 /// 流式失败或空结果时回退到非流式，保证行为不比以前差。
 async fn stream_via_gateway(
     listen: &str,
     key: &str,
     model: &str,
     messages: Vec<Value>,
-    mut on_delta: impl FnMut(&str),
+    mut on_signal: impl for<'a> FnMut(GatewaySignal<'a>),
 ) -> Result<String, String> {
     if is_cancelled() {
         return Err(STOPPED.to_string());
@@ -2350,10 +2369,14 @@ async fn stream_via_gateway(
         .header("x-sugt-client", "me")
         .header("x-sugt-skip-workspace-rules", "1")
         .json(&payload);
+    // 真实时刻 1：HTTP 请求即将发出。
+    on_signal(GatewaySignal::Stage(GatewayStage::Sending));
     let response = tokio::select! {
         result = request.send() => result.map_err(|err| format!("模型请求失败：{err}"))?,
         _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
     };
+    // 真实时刻 2：拿到响应头，正在等待正文首字节（TTFB）。
+    on_signal(GatewaySignal::Stage(GatewayStage::Waiting));
     let status = response.status();
     if !status.is_success() {
         let text = tokio::select! {
@@ -2361,6 +2384,7 @@ async fn stream_via_gateway(
             _ = wait_until_cancelled() => return Err(STOPPED.to_string()),
         };
         // 上游拒流式时，退回一次性补全
+        on_signal(GatewaySignal::Stage(GatewayStage::StreamFallback));
         let fallback_messages = payload
             .get("messages")
             .and_then(Value::as_array)
@@ -2384,6 +2408,7 @@ async fn stream_via_gateway(
     let mut assembled = String::new();
     let mut reasoning_only = String::new();
     let mut saw_done = false;
+    let mut first_delta = false;
 
     let stop_with_partial = |assembled: &str| -> Result<String, String> {
         let cleaned = strip_thinking_blocks(assembled.trim());
@@ -2428,8 +2453,13 @@ async fn stream_via_gateway(
             };
             if let Some(piece) = extract_stream_delta(&value) {
                 if !piece.is_empty() {
+                    // 真实时刻 3：首个非空正文分片到达，模型开始生成（只发一次）。
+                    if !first_delta {
+                        first_delta = true;
+                        on_signal(GatewaySignal::Stage(GatewayStage::Generating));
+                    }
                     assembled.push_str(&piece);
-                    on_delta(&assembled);
+                    on_signal(GatewaySignal::Delta(&assembled));
                 }
             } else if let Some(piece) = extract_stream_reasoning_delta(&value) {
                 if !piece.is_empty() {
@@ -2447,6 +2477,7 @@ async fn stream_via_gateway(
         return Ok(cleaned);
     }
     // 正文空：先走非流式（正确优先 content）；仍空才考虑剥离后的 reasoning 兜底。
+    on_signal(GatewaySignal::Stage(GatewayStage::StreamFallback));
     let fallback_messages = payload
         .get("messages")
         .and_then(Value::as_array)
@@ -2763,15 +2794,41 @@ async fn speak(
         let model = model.clone();
         let app_for_delta = app_for_delta.clone();
         let sink_cli = sink_cli;
+        let zh = zh;
         async move {
-            stream_via_gateway(&listen, &key, &model, messages, |acc| {
-                let notice = LoopNotice {
-                    kind: "delta",
-                    text: acc.to_string(),
-                    command: String::new(),
-                    output: String::new(),
-                    exit_code: None,
-                    timed_out: false,
+            stream_via_gateway(&listen, &key, &model, messages, |signal| {
+                let notice = match signal {
+                    GatewaySignal::Stage(stage) => LoopNotice {
+                        kind: "thinking",
+                        text: match stage {
+                            GatewayStage::Sending => {
+                                say(zh, "正在给模型发消息", "Sending your message to the model")
+                            }
+                            GatewayStage::Waiting => {
+                                say(zh, "等待模型开始回应", "Waiting for the model to respond")
+                            }
+                            GatewayStage::Generating => {
+                                say(zh, "模型正在生成回答", "The model is writing its answer")
+                            }
+                            GatewayStage::StreamFallback => say(
+                                zh,
+                                "流式不可用，改用一次性响应",
+                                "Streaming unavailable, using a single response",
+                            ),
+                        },
+                        command: String::new(),
+                        output: String::new(),
+                        exit_code: None,
+                        timed_out: false,
+                    },
+                    GatewaySignal::Delta(acc) => LoopNotice {
+                        kind: "delta",
+                        text: acc.to_string(),
+                        command: String::new(),
+                        output: String::new(),
+                        exit_code: None,
+                        timed_out: false,
+                    },
                 };
                 if let Some(app) = &app_for_delta {
                     emit_step(&StepSink::App(app), &notice);

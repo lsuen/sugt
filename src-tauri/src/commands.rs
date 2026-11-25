@@ -644,9 +644,8 @@ pub async fn probe_experimental_free_models(
 
 /// 只重测一条免费路由（强制打网），写回分级缓存。
 /// 不因单条失败把整通道标 Unavailable——通道可用性看全量/缓存池。
-#[tauri::command]
-pub async fn probe_experimental_free_model(
-    runtime: State<'_, AppRuntime>,
+pub(crate) async fn probe_experimental_free_model_core(
+    runtime: &AppRuntime,
     model: String,
 ) -> Result<crate::experimental_free::FreeModelProbe, String> {
     let model = model.trim().to_string();
@@ -712,6 +711,14 @@ pub async fn probe_experimental_free_model(
         let _ = runtime.persist().await;
     }
     Ok(probe)
+}
+
+#[tauri::command]
+pub async fn probe_experimental_free_model(
+    runtime: State<'_, AppRuntime>,
+    model: String,
+) -> Result<crate::experimental_free::FreeModelProbe, String> {
+    probe_experimental_free_model_core(runtime.inner(), model).await
 }
 
 pub(crate) async fn set_active_provider_core(
@@ -994,64 +1001,98 @@ pub(crate) async fn list_model_registry_core(
         provider_id = %input.provider_id,
         "fetch upstream model list started"
     );
-    let config = runtime.config.read().await.clone();
-    let provider = find_provider(&config, &input.provider_id).map_err(|err| {
-        warn!(
+
+    // 整体兜底 25s：network 段自身已有 20s 预算，这里防止配置读锁等待或同步 IO
+    // 卡住导致 IPC 永不返回、前端 loading 永久 true。上一轮 request_id 日志全部保留。
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(25), async {
+        let config = runtime.config.read().await.clone();
+        let provider = find_provider(&config, &input.provider_id).map_err(|err| {
+            warn!(
+                request_id = %request_id,
+                action = "fetch_models",
+                provider_id = %input.provider_id,
+                error = %err,
+                "fetch upstream model list: provider not found"
+            );
+            err
+        })?;
+        let upstream_models: Vec<String> =
+            if crate::experimental_free::is_experimental_free(&provider) {
+                crate::experimental_free::candidate_models()
+                    .into_iter()
+                    .map(|model| model.to_string())
+                    .collect()
+            } else {
+                let base_url = crate::model::resolve_provider_base_url(
+                    provider.base_url.clone(),
+                    &provider.protocol,
+                    provider.auto_adapt_base_url,
+                );
+                runtime
+                    .gateway
+                    .list_provider_models(base_url.trim(), provider.api_key.trim(), None)
+                    .await
+                    .map_err(|err| {
+                        let message = err.to_string();
+                        warn!(
+                            request_id = %request_id,
+                            action = "fetch_models",
+                            provider_id = %input.provider_id,
+                            base_url = %base_url,
+                            error = %message,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "fetch upstream model list failed"
+                        );
+                        message
+                    })?
+            };
+
+        let config_dir = runtime.paths.config_dir.clone();
+        // 同步磁盘 IO 丢进 blocking 池：否则 blocking IO 卡住执行线程时
+        // tokio::time::timeout 连轮询机会都没有，兜底就形同虚设。
+        let existing = tokio::task::spawn_blocking({
+            let dir = config_dir.clone();
+            move || model_registry::load(&dir)
+        })
+        .await
+        .map_err(|err| format!("读取模型注册表失败：{err}"))?;
+        let merged = model_registry::merge_entries(&existing, &provider.id, &upstream_models);
+        let dir = config_dir.clone();
+        let merged_for_save = merged.clone();
+        tokio::task::spawn_blocking(move || model_registry::save(&dir, &merged_for_save))
+            .await
+            .map_err(|err| format!("写入模型注册表失败：{err}"))?
+            .map_err(|err| err.to_string())?;
+        let entries =
+            model_registry::entries_for_provider(&merged, &provider.id, &upstream_models);
+        info!(
             request_id = %request_id,
             action = "fetch_models",
+            channel = "upstream",
+            stage = "done",
             provider_id = %input.provider_id,
-            error = %err,
-            "fetch upstream model list: provider not found"
+            upstream_count = upstream_models.len(),
+            enabled_count = entries.iter().filter(|entry| entry.enabled).count(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "fetch upstream model list finished"
         );
-        err
-    })?;
-    let upstream_models: Vec<String> = if crate::experimental_free::is_experimental_free(&provider) {
-        crate::experimental_free::candidate_models()
-            .into_iter()
-            .map(|model| model.to_string())
-            .collect()
-    } else {
-        let base_url = crate::model::resolve_provider_base_url(
-            provider.base_url.clone(),
-            &provider.protocol,
-            provider.auto_adapt_base_url,
-        );
-        runtime
-            .gateway
-            .list_provider_models(base_url.trim(), provider.api_key.trim(), None)
-            .await
-            .map_err(|err| {
-                let message = err.to_string();
-                warn!(
-                    request_id = %request_id,
-                    action = "fetch_models",
-                    provider_id = %input.provider_id,
-                    base_url = %base_url,
-                    error = %message,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "fetch upstream model list failed"
-                );
-                message
-            })?
-    };
+        Ok::<Vec<ModelEntry>, String>(entries)
+    })
+    .await;
 
-    let config_dir = runtime.paths.config_dir.clone();
-    let existing = model_registry::load(&config_dir);
-    let merged = model_registry::merge_entries(&existing, &provider.id, &upstream_models);
-    model_registry::save(&config_dir, &merged).map_err(|err| err.to_string())?;
-    let entries = model_registry::entries_for_provider(&merged, &provider.id, &upstream_models);
-    info!(
-        request_id = %request_id,
-        action = "fetch_models",
-        channel = "upstream",
-        stage = "done",
-        provider_id = %input.provider_id,
-        upstream_count = upstream_models.len(),
-        enabled_count = entries.iter().filter(|entry| entry.enabled).count(),
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        "fetch upstream model list finished"
-    );
-    Ok(entries)
+    match outcome {
+        Ok(result) => result,
+        Err(_) => {
+            warn!(
+                request_id = %request_id,
+                action = "fetch_models",
+                provider_id = %input.provider_id,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "fetch upstream model list timed out"
+            );
+            Err("获取模型列表超时（25 秒），请检查网络或稍后重试".to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -1090,6 +1131,14 @@ pub async fn set_model_enabled(
     input: SetModelEnabledInput,
 ) -> Result<(), String> {
     set_model_enabled_core(runtime.inner(), input).await
+}
+
+/// 注册表读改写锁：并发单条探测时各命令都按「load → apply → save → 更新快照」
+/// 写同一份 model-registry.json；不加锁会各自读到旧表、后写覆盖先写、丢掉前面的结果。
+/// 只锁这段临界区，耗时的网络探测在锁外并发进行，不退化成串行。
+fn registry_write_lock() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 /// 批量探测指定模型（限并发 3），结果一次性回写注册表并返回最新条目。
@@ -1145,6 +1194,8 @@ pub(crate) async fn probe_models_core(
         .collect::<Vec<_>>()
         .await;
 
+    // 只锁读改写与快照更新；上面的 probe_llm_connectivity 网络探测在锁外并发。
+    let _guard = registry_write_lock().lock().await;
     let config_dir = runtime.paths.config_dir.clone();
     let mut registry = model_registry::load(&config_dir);
     for (model_name, probe) in results {
@@ -1155,11 +1206,13 @@ pub(crate) async fn probe_models_core(
         .gateway
         .set_model_registry_snapshot(registry.entries.clone())
         .await;
-    Ok(model_registry::entries_for_provider(
+    let entries = model_registry::entries_for_provider(
         &registry,
         &provider.id,
         &input.model_names,
-    ))
+    );
+    drop(_guard);
+    Ok(entries)
 }
 
 #[tauri::command]

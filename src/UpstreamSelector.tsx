@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { invoke } from './transport';
+import { invokeWithDeadline } from './transport';
 import { ChevronDown, Play, RefreshCw, RotateCcw, Shuffle } from 'lucide-react'
 import { t } from './i18n'
 import { FreeChannelWelcome } from './FreeChannelWelcome'
@@ -42,14 +42,6 @@ type FreeModelProbe = {
 }
 type FreeRouteChoice = { model: string; host: string }
 
-/** test_provider_models 的单模型探测结果（仅自定义通道「获取并测试」用） */
-type ModelTestResult = {
-  modelName: string
-  available: boolean
-  latencyMs: number | null
-  tokensPerSec: number | null
-}
-
 type ModelOption = {
   name: string
   host?: string
@@ -59,6 +51,8 @@ type ModelOption = {
   tokensPerSec?: number | null
   chatOnly?: boolean
   source?: 'live' | 'cache'
+  /** 真实在途探测（含排队中）：仅这些行显示行内转圈，结果返回即清除 */
+  probing?: boolean
 }
 
 /** get_config 里本组件只关心「获取模型行为」两个开关（snake_case，缺省按产品默认） */
@@ -67,37 +61,28 @@ type FetchModeConfig = {
   custom_models_fetch_and_test?: boolean
 }
 
-/** UI 操作的 IPC 兜底超时：后端探测预算 20s，这里留少量余量；超时必须落到真实错误态。 */
-const FETCH_MODELS_TIMEOUT_MS = 25_000
-
-async function invokeWithDeadline<T>(
-  cmd: string,
-  args?: Record<string, unknown>,
-  timeoutMs = FETCH_MODELS_TIMEOUT_MS,
-): Promise<T> {
-  let timer: number | undefined
-  try {
-    return await Promise.race([
-      invoke<T>(cmd, args),
-      new Promise<T>((_resolve, reject) => {
-        timer = window.setTimeout(
-          () => reject(new Error(t('upstream.fetchTimeout', { cmd }))),
-          timeoutMs,
-        )
-      }),
-    ])
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer)
-  }
-}
-
 /** 与 src-tauri/src/strategy_box.rs 的 StrategyBox 对齐（这里只关心对外 model id） */
 type StrategyBoxOption = { id: string; name: string; publicModelId: string; enabled: boolean }
 
-/** 与 src-tauri/src/model_registry.rs 的 ModelEntry 对齐（这里只关心启用状态） */
-type ModelEntry = { modelName: string; enabled: boolean }
+/** probe_models 写回注册表的真实探测报告 */
+type RegistryProbeView = {
+  ok: boolean
+  latencyMs: number
+  tokensPerSec: number
+  error?: string | null
+}
+
+/** 与 src-tauri/src/model_registry.rs 的 ModelEntry 对齐（这里只关心启用状态与探测结果） */
+type ModelEntry = {
+  modelName: string
+  enabled: boolean
+  lastProbe?: RegistryProbeView | null
+}
 
 const FREE_PROVIDER_ID = 'sugt-free'
+
+/** 逐条探测的并发上限：先显示列表，再按真实结果逐行回填。 */
+const PROBE_CONCURRENCY = 3
 
 /** 与 src-tauri/src/gateway.rs 的 ProviderTestOutcome 对齐（真实 LLM 探测报告） */
 type ProviderTestReport = {
@@ -268,6 +253,11 @@ function ModelListbox({
                 <span className="model-listbox-name">
                   {isPlaceholder ? `${m.name}${t('upstream.modelDisabled')}` : modelRowLabel(m)}
                 </span>
+                {m.probing && (
+                  <span className="spin" title={t('upstream.probing')}>
+                    <RefreshCw size={12} aria-label={t('upstream.probing')} />
+                  </span>
+                )}
                 {metrics && <span className="model-listbox-metrics">{metrics}</span>}
               </div>
             )
@@ -295,11 +285,12 @@ export function UpstreamSelector({
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [modelsLoaded, setModelsLoaded] = useState(false)
+  const [probeProgress, setProbeProgress] = useState<{ done: number; total: number } | null>(null)
   const [boxModels, setBoxModels] = useState<StrategyBoxOption[]>([])
 
   // 策略盒子对外 model id 也是可选上游：挂载时拉一次，失败静默忽略，不打扰控制台。
   useEffect(() => {
-    invoke<StrategyBoxOption[]>('list_strategy_boxes')
+    invokeWithDeadline<StrategyBoxOption[]>('list_strategy_boxes')
       .then((list) => setBoxModels(list.filter((box) => box.enabled && box.publicModelId)))
       .catch(() => undefined)
   }, [])
@@ -380,11 +371,48 @@ export function UpstreamSelector({
     setModelsLoaded(true)
   }
 
+  /**
+   * 并发上限 3 的逐条探测：每条 resolve 立即回填，未完成的保留行内转圈；
+   * 单条失败/超时只让该行回到「未知」，不拖垮整轮。
+   */
+  const probeInPool = async <T,>(
+    items: T[],
+    keyOf: (item: T) => string,
+    probeOne: (item: T) => Promise<void>,
+  ): Promise<void> => {
+    if (items.length === 0) return
+    let done = 0
+    setProbeProgress({ done: 0, total: items.length })
+    const queue = [...items]
+    const worker = async () => {
+      while (true) {
+        const item = queue.shift()
+        if (item === undefined) return
+        try {
+          await probeOne(item)
+        } catch {
+          // 失败/超时不伪造可用状态，只让该行保持「未知」。
+        } finally {
+          setModels((prev) =>
+            prev.map((row) =>
+              row.name === keyOf(item) ? { ...row, probing: false } : row,
+            ),
+          )
+          done += 1
+          setProbeProgress({ done, total: items.length })
+        }
+      }
+    }
+    const workers = Math.min(PROBE_CONCURRENCY, items.length)
+    await Promise.all(Array.from({ length: workers }, () => worker()))
+  }
+
   const fetchModels = async () => {
     const provider = providers.find((p) => p.id === upstreamProviderId)
     if (!provider) return
     setModelsBusy(true)
     setFetchError(null)
+    setProbeProgress(null)
     try {
       const cfg = await invokeWithDeadline<FetchModeConfig>('get_config')
       if (provider.experimental) {
@@ -410,22 +438,30 @@ export function UpstreamSelector({
         )
         setModelsLoaded(true)
 
-        // 只有开启「获取并测试」才打真实补全；后端整轮预算 20s，未完成的路由回退缓存。
+        // 只有开启「获取并测试」才打真实补全：对可见路由逐条调用单模型命令，
+        // 缓存仅用于立即兜底展示，绝不冒充真实探测结果。
         if (cfg.free_models_fetch_and_test ?? true) {
-          const probes = await invokeWithDeadline<FreeModelProbe[]>(
-            'probe_experimental_free_models',
+          setModels((prev) =>
+            prev.map((row) =>
+              visible.some((choice) => choice.model === row.name)
+                ? { ...row, probing: true }
+                : row,
+            ),
           )
-          const byName = new Map(probes.map((probe) => [probe.name, probe]))
-          setModels(
-            visible.map((choice) => ({
-              name: choice.model,
-              host: choice.host,
-              ...probeToModelFields(byName.get(choice.model)),
-            })),
-          )
-          if (!visible.some((choice) => byName.get(choice.model)?.available)) {
-            pushToast(t('upstream.freeEmpty'), 'error')
-          }
+          let anyAvailable = false
+          await probeInPool(visible, (choice) => choice.model, async (choice) => {
+            const probe = await invokeWithDeadline<FreeModelProbe>(
+              'probe_experimental_free_model',
+              { model: choice.model },
+            )
+            setModels((prev) =>
+              prev.map((row) =>
+                row.name === probe.name ? { ...row, ...probeToModelFields(probe) } : row,
+              ),
+            )
+            if (probe.available) anyAvailable = true
+          })
+          if (!anyAvailable) pushToast(t('upstream.freeEmpty'), 'error')
         }
         pushToast(t('upstream.fetchedModels', { count: visible.length }), 'ok')
         onRefresh()
@@ -433,25 +469,36 @@ export function UpstreamSelector({
         const entries = await invokeWithDeadline<ModelEntry[]>('list_model_registry', {
           input: { provider_id: provider.id },
         })
+        const shouldProbe = cfg.custom_models_fetch_and_test ?? false
         const rows: ModelOption[] = entries
           .filter((entry) => entry.enabled)
-          .map((entry) => ({ name: entry.modelName, available: null }))
-        // 「获取并测试」：逐模型真实探测，按 modelName 合并指标；未测到/失败的行不显示指标。
-        if (cfg.custom_models_fetch_and_test ?? false) {
-          const tests = await invokeWithDeadline<ModelTestResult[]>('test_provider_models', {
-            id: provider.id,
-          })
-          const byModel = new Map(tests.map((item) => [item.modelName, item]))
-          for (const row of rows) {
-            const hit = byModel.get(row.name)
-            if (!hit) continue
-            row.available = hit.available
-            row.latencyMs = hit.latencyMs
-            row.tokensPerSec = hit.tokensPerSec
-          }
-        }
+          .map((entry) => ({ name: entry.modelName, available: null, probing: shouldProbe }))
+        // 先让列表立即出现（available:null = 未知），再逐条真实探测回填。
         setModels(rows)
         setModelsLoaded(true)
+        if (shouldProbe) {
+          await probeInPool(rows, (row) => row.name, async (row) => {
+            const result = await invokeWithDeadline<ModelEntry[]>('probe_models', {
+              input: { provider_id: provider.id, model_names: [row.name] },
+            })
+            const report =
+              result.find((entry) => entry.modelName === row.name)?.lastProbe ??
+              result[0]?.lastProbe
+            if (!report) return
+            setModels((prev) =>
+              prev.map((item) =>
+                item.name === row.name
+                  ? {
+                      ...item,
+                      available: report.ok,
+                      latencyMs: report.latencyMs,
+                      tokensPerSec: report.tokensPerSec,
+                    }
+                  : item,
+              ),
+            )
+          })
+        }
         pushToast(t('upstream.fetchedModels', { count: rows.length }), 'ok')
         onRefresh()
       }
@@ -486,14 +533,14 @@ export function UpstreamSelector({
     }
     if (opts?.silent) {
       try {
-        await invoke('save_provider', { input })
+        await invokeWithDeadline('save_provider', { input })
         onRefresh()
       } catch (e) {
         pushToast(String(e), 'error')
       }
       return
     }
-    await run(() => invoke('save_provider', { input }), t('upstream.toastSwitched'))
+    await run(() => invokeWithDeadline('save_provider', { input }), t('upstream.toastSwitched'))
     onRefresh()
   }
 
@@ -501,7 +548,7 @@ export function UpstreamSelector({
     if (!upstreamProviderId || testing) return
     setTesting(true)
     try {
-      const outcome = await invoke<ProviderTestOutcome>('test_provider', {
+      const outcome = await invokeWithDeadline<ProviderTestOutcome>('test_provider', {
         id: upstreamProviderId,
       })
       if (outcome.report.ok) {
@@ -529,6 +576,7 @@ export function UpstreamSelector({
     const model = activeProvider?.model_name
     if (!model || !isExperimental || modelsBusy) return
     setModelsBusy(true)
+    setProbeProgress(null)
     try {
       const probe = await invokeWithDeadline<FreeModelProbe>('probe_experimental_free_model', {
         model,
@@ -615,9 +663,14 @@ export function UpstreamSelector({
             ) : (
               <code className="access-code">{activeProvider.model_name}</code>
             )}
-            {isExperimental && modelsBusy && (
+            {modelsBusy && (isExperimental || probeProgress !== null) && (
               <span className="hint compact upstream-probe-hint">
                 {t('upstream.probing')}
+                {probeProgress !== null &&
+                  ` · ${t('upstream.probeProgress', {
+                    done: probeProgress.done,
+                    total: probeProgress.total,
+                  })}`}
               </span>
             )}
             {isExperimental && !modelsBusy && models.some((m) => m.available) && (

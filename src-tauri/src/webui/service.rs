@@ -232,6 +232,13 @@ pub async fn dispatch(runtime: &AppRuntime, cmd: &str, args: &Value) -> Result<V
         "probe_experimental_free_models" => {
             to_value(crate::commands::probe_experimental_free_models_core(runtime).await?)
         }
+        "probe_experimental_free_model" => {
+            // 浏览器端传 { model: "..." }；兼容裸值 / arg / value 形式。
+            let model: String = field(args, &["model"]).or_else(|_| single(args))?;
+            to_value(
+                crate::commands::probe_experimental_free_model_core(runtime, model).await?,
+            )
+        }
         "set_active_provider" => {
             let id: String = single(args)?;
             to_value(crate::commands::set_active_provider_core(runtime, id).await?)

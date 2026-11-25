@@ -1,9 +1,10 @@
 /** 「模型列表」主 tab（v1.1.11 R2）。
  * 作用：把某个服务商返回的模型摊成可观测、可治理的清单 —— 批量探测连通性/延迟/速度，
  * 逐条启用或禁用。数据来自 model_registry 的三条命令，registry 状态与 provider 配置解耦。
- * 批量探测按 3 条一批调用，批间 await，保证 UI 不卡死且进度逐批回填。 */
+ * 列表先显示再加载；探测按并发上限 3 逐条进行，每条完成即回填真实数据，
+ * 未完成的行内转圈并显示进度，绝不因单条超时/失败卡住整页。 */
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { invoke } from './transport';
+import { invoke, invokeWithDeadline } from './transport';
 import { Play, RefreshCw } from 'lucide-react'
 import { ConfirmModal } from './ConfirmModal'
 import { t } from './i18n'
@@ -40,8 +41,8 @@ type Props = {
   run: (action: () => Promise<unknown>, ok?: string) => Promise<void>
 }
 
-/** 分批并发：每批最多 3 个 model_name。 */
-const PROBE_BATCH = 3
+/** 逐条探测的并发上限：不等整批返回，每条 resolve 就立即回填。 */
+const PROBE_CONCURRENCY = 3
 
 function formatProbeTime(iso: string): string {
   const date = new Date(iso)
@@ -63,13 +64,29 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
   const [providerId, setProviderId] = useState('')
   const [entries, setEntries] = useState<ModelEntry[]>([])
   const [loading, setLoading] = useState(false)
+  /** 与 loading 独立：true 表示「已成功加载过（哪怕是空列表）」，避免空列表误显示成加载中。 */
+  const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [probing, setProbing] = useState(false)
+  /** 行内在途的真实探测：只有这些行显示「测试中」，其余立即显示实测结果。 */
+  const [probeBusy, setProbeBusy] = useState<Set<string>>(new Set())
+  const [probeDone, setProbeDone] = useState(0)
+  const [probeTotal, setProbeTotal] = useState(0)
   const [applying, setApplying] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [rowBusy, setRowBusy] = useState<Set<string>>(new Set())
   const [confirmTestAll, setConfirmTestAll] = useState(false)
   const selectAllRef = useRef<HTMLInputElement>(null)
+  /** 递增请求 token：切 provider / 卸载后丢弃过期响应，避免竞态与卸载后 setState。 */
+  const requestTokenRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   // 服务商列表每 3 秒会被外层刷新替换新数组；这里只在当前选中消失时才切换，
   // 避免刷新把用户手选的 provider 打回第一个。
@@ -81,28 +98,40 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
   }, [providers])
 
   const load = useCallback(async (pid: string) => {
+    const token = ++requestTokenRef.current
+    // 重新加载即作废上一轮探测：切 provider 后旧行不能继续转圈。
+    setProbing(false)
+    setProbeBusy(new Set())
+    setProbeDone(0)
+    setProbeTotal(0)
     if (!pid) {
       setEntries([])
+      setLoaded(false)
       setLoadError(null)
+      setLoading(false)
       return
     }
     setLoading(true)
     setLoadError(null)
     try {
-      const list = await invoke<ModelEntry[]>('list_model_registry', {
+      const list = await invokeWithDeadline<ModelEntry[]>('list_model_registry', {
         input: { provider_id: pid },
       })
+      if (!mountedRef.current || token !== requestTokenRef.current) return
       setEntries(list)
+      setLoaded(true)
       setSelected((prev) => {
         const keep = new Set<string>()
         for (const entry of list) if (prev.has(entry.id)) keep.add(entry.id)
         return keep
       })
     } catch (error) {
-      setEntries([])
+      if (!mountedRef.current || token !== requestTokenRef.current) return
+      // 缓存优先：加载失败时保留既有 entries，只把错误显示出来。
+      setLoaded(true)
       setLoadError(String(error))
     } finally {
-      setLoading(false)
+      if (mountedRef.current && token === requestTokenRef.current) setLoading(false)
     }
   }, [])
 
@@ -132,30 +161,55 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
     })
   }
 
-  /** 逐批探测并即时合并结果；返回成功/失败条数。 */
+  /** 逐条并发探测（上限 3）：每条返回立即回填该条真实数据；未完成的留在行内转圈。 */
   const probe = async (names: string[]): Promise<{ ok: number; fail: number }> => {
     let ok = 0
     let fail = 0
     if (!providerId || names.length === 0) return { ok, fail }
+    const pid = providerId
+    const token = requestTokenRef.current
     setProbing(true)
-    try {
-      for (let i = 0; i < names.length; i += PROBE_BATCH) {
-        const batch = names.slice(i, i + PROBE_BATCH)
-        const result = await invoke<ModelEntry[]>('probe_models', {
-          input: { provider_id: providerId, model_names: batch },
-        })
-        const merged = new Map(result.map((entry) => [entry.id, entry]))
-        for (const entry of result) {
-          if (entry.lastProbe?.ok) ok += 1
-          else fail += 1
+    setProbeDone(0)
+    setProbeTotal(names.length)
+    setProbeBusy(new Set(names))
+    const queue = [...names]
+    const worker = async () => {
+      while (true) {
+        const name = queue.shift()
+        if (name === undefined) return
+        if (!mountedRef.current || token !== requestTokenRef.current) return
+        try {
+          const result = await invokeWithDeadline<ModelEntry[]>('probe_models', {
+            input: { provider_id: pid, model_names: [name] },
+          })
+          if (!mountedRef.current || token !== requestTokenRef.current) return
+          const hit = result.find((entry) => entry.modelName === name) ?? result[0]
+          if (hit) {
+            setEntries((prev) =>
+              prev.map((entry) =>
+                entry.id === hit.id || entry.modelName === hit.modelName ? hit : entry,
+              ),
+            )
+            if (hit.lastProbe?.ok) ok += 1
+            else fail += 1
+          }
+        } catch {
+          // 单条失败/超时不影响其它条目：该行保持「未知」，不计入 ok/fail。
+        } finally {
+          if (mountedRef.current && token === requestTokenRef.current) {
+            setProbeBusy((prev) => {
+              const next = new Set(prev)
+              next.delete(name)
+              return next
+            })
+            setProbeDone((prev) => prev + 1)
+          }
         }
-        setEntries((prev) => prev.map((entry) => merged.get(entry.id) ?? entry))
       }
-    } catch (error) {
-      pushToast(String(error), 'error')
-    } finally {
-      setProbing(false)
     }
+    const workers = Math.min(PROBE_CONCURRENCY, names.length)
+    await Promise.all(Array.from({ length: workers }, () => worker()))
+    if (mountedRef.current && token === requestTokenRef.current) setProbing(false)
     return { ok, fail }
   }
 
@@ -268,11 +322,13 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
     }
   }
 
-  const busy = loading || probing || applying
+  // 探测中不再禁用整个页面：只有加载 / 写入这类全局操作才进入 busy，
+  // 行开关、选择框等保持可用，避免「整页卡死」。
+  const busy = loading || applying
 
   const emptyText = !providerId
     ? t('modelList.pickProvider')
-    : loading
+    : loading && !loaded
       ? t('common.loading')
       : loadError
         ? t('modelList.loadFailed')
@@ -313,7 +369,7 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
         <button
           type="button"
           className="ghost tiny-btn"
-          disabled={busy || entries.length === 0}
+          disabled={busy || probing || entries.length === 0}
           onClick={() => setConfirmTestAll(true)}
         >
           <Play size={14} />
@@ -322,7 +378,7 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
         <button
           type="button"
           className="ghost tiny-btn"
-          disabled={busy || entries.length === 0}
+          disabled={busy || probing || entries.length === 0}
           onClick={() => void testSelected()}
         >
           {t('modelList.testSelected')}
@@ -355,6 +411,8 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
         {probing && (
           <span className="hint compact model-list-note">
             {t('modelList.probing')}
+            {' · '}
+            {t('modelList.probeProgress', { done: probeDone, total: probeTotal })}
           </span>
         )}
       </div>
@@ -426,13 +484,23 @@ export function ModelListPanel({ providers, pushToast, run }: Props) {
                     )}
                   </td>
                   <td>
-                    <span
-                      className="model-list-status"
-                      title={probeResult?.error || statusLabel}
-                    >
-                      <span className={`model-list-dot ${statusClass}`} />
-                      {statusLabel}
-                    </span>
+                    {probeBusy.has(entry.modelName) ? (
+                      <span
+                        className="model-list-status hint compact"
+                        title={t('modelList.probing')}
+                      >
+                        <RefreshCw size={12} className="spin" />
+                        {t('modelList.probing')}
+                      </span>
+                    ) : (
+                      <span
+                        className="model-list-status"
+                        title={probeResult?.error || statusLabel}
+                      >
+                        <span className={`model-list-dot ${statusClass}`} />
+                        {statusLabel}
+                      </span>
+                    )}
                   </td>
                   <td className="model-list-col-metric">
                     {probeResult?.ok && probeResult.latencyMs > 0

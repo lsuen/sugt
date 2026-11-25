@@ -141,8 +141,10 @@ fn dismiss_menu(app: &AppHandle) {
 /// 右键菜单是独立小窗，不改精灵透明窗的大小和底色。
 /// 已打开则 focus，不再「再点一次关掉」——Windows 上一次右键会连发
 /// pointerdown + contextmenu + auxclick，toggle 会刚开就关。
+// Windows 上必须走 async command：同步 command 里建 WebView2 窗口会死锁
+// （CreateCoreWebView2Controller 完成回调等待主线程），表现为右键无反应。
 #[tauri::command]
-pub fn pet_open_menu(app: AppHandle) -> Result<(), String> {
+pub async fn pet_open_menu(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(MENU_LABEL) {
         let _ = existing.set_focus();
         let _ = app.emit("sugt://pet-menu-opened", ());

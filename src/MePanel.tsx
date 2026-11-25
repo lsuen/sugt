@@ -261,6 +261,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
   const [busy, setBusy] = useState(false);
   const [awaiting, setAwaiting] = useState(false);
   const [live, setLive] = useState('');
+  const [livePhases, setLivePhases] = useState<string[]>([]);
   const [liveSteps, setLiveSteps] = useState<MeStep[]>([]);
   const [error, setError] = useState('');
   const [clearArmed, setClearArmed] = useState(false);
@@ -344,22 +345,36 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     }).catch((err: unknown) => {
       if (!stop) setError(errorText(err));
     });
+    // 阶段文案全部来自真实事件；相邻重复只记一条，首个 delta 到达时不再被抹掉。
+    const pushPhase = (text: string) => {
+      const phase = text.trim();
+      if (!phase) return;
+      setLivePhases((prev) => (prev[prev.length - 1] === phase ? prev : [...prev, phase]));
+    };
     client.subscribe((event) => {
       if (event.kind === 'thinking') {
+        const phase = (event.text || '').trim();
+        if (phase) {
+          setLive(phase);
+          pushPhase(phase);
+        }
         setLiveDraft('');
-        setLive(event.text || t('me.thinking'));
       }
       if (event.kind === 'delta') {
-        setLive('');
+        // 正文逐字更新，阶段文案保留：让"发消息→等回应→生成"全程可见。
         setLiveDraft(event.text || '');
       }
       if (event.kind === 'running') {
         setLiveDraft('');
-        setLive(event.command || event.text || t('me.working'));
+        const label = event.command || event.text || t('me.working');
+        setLive(label);
+        pushPhase(label);
       }
       if (event.kind === 'ran') {
         setLiveDraft('');
-        setLive(event.command || t('me.working'));
+        const label = event.command || t('me.working');
+        setLive(label);
+        pushPhase(label);
         setLiveSteps((prev) => [...prev, {
           command: event.command,
           output: event.output,
@@ -384,7 +399,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     const node = logRef.current;
     if (!node || !stickToBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
-  }, [session, live, liveDraft, liveSteps, awaiting]);
+  }, [session, live, livePhases, liveDraft, liveSteps, awaiting]);
 
   useLayoutEffect(() => {
     const node = inputRef.current;
@@ -421,6 +436,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
       awaitingRef.current = waitForSu;
       if (waitForSu) {
         setLive(t('me.thinking'));
+        setLivePhases([]);
         setLiveDraft('');
         setLiveSteps([]);
         showRunFlash(null);
@@ -463,6 +479,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
         setAwaiting(false);
         awaitingRef.current = false;
         setLive('');
+        setLivePhases([]);
         setLiveDraft('');
         setLiveSteps([]);
         refreshStatus();
@@ -512,6 +529,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
     setAwaiting(false);
     awaitingRef.current = false;
     setLive('');
+    setLivePhases([]);
   }
 
   async function handleStop() {
@@ -856,6 +874,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
           <SuBubble
             content={liveDraft}
             steps={liveSteps}
+            phases={livePhases}
             live={liveDraft ? (live || undefined) : (live || t('me.thinking'))}
             streaming={Boolean(liveDraft)}
             pending={null}
@@ -1103,6 +1122,7 @@ export function MePanel({ api, onOpenClients, onOpenModels, onOpenSkills, onRout
 type SuBubbleProps = {
   content: string;
   steps: MeStep[];
+  phases?: string[];
   pending: MePending | null;
   busy: boolean;
   live?: string;
@@ -1234,6 +1254,7 @@ function BubbleTools({
 function SuBubble({
   content,
   steps,
+  phases,
   pending,
   busy,
   live,
@@ -1260,7 +1281,20 @@ function SuBubble({
     <article className="me-su">
       <span className={live || streaming ? 'me-seal live' : 'me-seal'} aria-hidden>su</span>
       <div className="me-su-body">
-        {live && <p className="me-live">{live}</p>}
+        {phases && phases.length > 0 ? (
+          <div className="me-process-list">
+            {phases.map((phase, index) => (
+              <p
+                key={`${index}-${phase}`}
+                className={index === phases.length - 1 ? 'me-live' : 'me-slip-note'}
+              >
+                {phase}
+              </p>
+            ))}
+          </div>
+        ) : (
+          live && <p className="me-live">{live}</p>
+        )}
         {parsed.text && (
           <div className={streaming ? 'me-stream' : undefined}>
             <MeMarkdown text={parsed.text} />

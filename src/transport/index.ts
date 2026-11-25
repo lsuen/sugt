@@ -84,6 +84,33 @@ export async function invoke<T>(
   return payload.data as T;
 }
 
+/**
+ * 带超时兜底的 invoke：探测类命令可能长时间不返回，裸 invoke 会让 UI 永久停在「加载中」。
+ * 超时后抛清晰的中文错误，让调用方落到真实错误态；正常返回时清除定时器。
+ */
+export async function invokeWithDeadline<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+  // 略宽于后端 list_model_registry 的 25s 端到端超时：让后端的中文错误先返回，
+  // 前端只在后端彻底不响应（进程卡死/IPC 丢失）时才兜底，避免吞掉真实错误。
+  timeoutMs = 28_000,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      invoke<T>(cmd, args),
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`请求超时（${cmd}），请稍后重试`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 // 浏览器端事件总线：与 Tauri listen/emit 同语义，应用内部可自消费、不抛错。
 type BrowserHandler = (event: { payload: unknown }) => void;
 const browserListeners = new Map<string, Set<BrowserHandler>>();

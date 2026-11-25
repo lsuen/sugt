@@ -463,6 +463,8 @@ function AppMain() {
   const [clients, setClients] = useState<ClientsEnvStatus | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [busy, setBusy] = useState(false);
+  /** 一键测试：只在途的这几行禁用操作，避免整页锁死。 */
+  const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   // 主窗口 Toast 统一接入通知队列：去重合并 / 优先级截取 / TTL 清理 / 悬停暂停。 —— 孙文龙 sun
   const {
     visible: visibleNotices,
@@ -777,22 +779,34 @@ function AppMain() {
   };
 
   const testAllProviders = async () => {
-    setBusy(true);
+    if (providers.length === 0) return;
+    const queue = [...providers];
+    const workers = Math.min(3, queue.length);
+    setTestingIds(new Set(queue.map((provider) => provider.id)));
     let available = 0;
     let unavailable = 0;
     let latencySum = 0;
     let speedSum = 0;
     let okCount = 0;
-    // 探测是真实对话（单次最长 30s）：限 3 个一批并发，既不等串行长队，也不一次打满上游。
-    const batchSize = 3;
-
-    try {
-      for (let index = 0; index < providers.length; index += batchSize) {
-        const batch = providers.slice(index, index + batchSize);
-        const outcomes = await Promise.all(
-          batch.map((provider) => invoke<ProviderTestOutcome>('test_provider', { id: provider.id })),
-        );
-        outcomes.forEach((outcome) => {
+    // 探测是真实对话（单次最长 30s）：并发上限 3，每条完成即更新该行，不等整批。
+    const worker = async () => {
+      while (true) {
+        const provider = queue.shift();
+        if (!provider) return;
+        try {
+          const outcome = await invoke<ProviderTestOutcome>('test_provider', { id: provider.id });
+          // 后端已写回状态；本地立即同步该行，用户不用等整轮结束。
+          setProviders((prev) =>
+            prev.map((item) =>
+              item.id === provider.id
+                ? {
+                  ...item,
+                  status: outcome.status,
+                  last_error: outcome.report.ok ? null : outcome.report.error,
+                }
+                : item,
+            ),
+          );
           if (outcome.status === 'Available') available += 1;
           if (outcome.status === 'Unavailable') unavailable += 1;
           if (outcome.report.ok) {
@@ -800,22 +814,28 @@ function AppMain() {
             speedSum += outcome.report.tokensPerSec;
             okCount += 1;
           }
-        });
+        } catch (error) {
+          pushToast(formatInvokeError(error), 'error');
+        } finally {
+          setTestingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(provider.id);
+            return next;
+          });
+        }
       }
-      const summary = t('models.toastTestAll', { a: available, b: unavailable });
-      const metrics = okCount > 0
-        ? t('models.toastTestAllProbe', {
-          latency: Math.round(latencySum / okCount),
-          speed: (speedSum / okCount).toFixed(1),
-        })
-        : '';
-      pushToast(`${summary}${metrics}`, unavailable > 0 ? 'info' : 'ok');
-      await refresh();
-    } catch (error) {
-      pushToast(String(error), 'error');
-    } finally {
-      setBusy(false);
-    }
+    };
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    const summary = t('models.toastTestAll', { a: available, b: unavailable });
+    const metrics = okCount > 0
+      ? t('models.toastTestAllProbe', {
+        latency: Math.round(latencySum / okCount),
+        speed: (speedSum / okCount).toFixed(1),
+      })
+      : '';
+    pushToast(`${summary}${metrics}`, unavailable > 0 ? 'info' : 'ok');
+    // 真实数据已逐行回填，末尾只做一次一致性刷新。
+    await refresh();
   };
 
   const statusBadge = useMemo(() => {
@@ -1113,7 +1133,15 @@ function AppMain() {
                     {t('models.restoreZen')}
                   </button>
                 )}
-                <button className="ghost tiny-btn" disabled={busy || providers.length === 0} onClick={testAllProviders}>{t('models.testAll')}</button>
+                {testingIds.size > 0 && (
+                  <span className="hint compact">
+                    {t('models.testAllProgress', {
+                      done: providers.length - testingIds.size,
+                      total: providers.length,
+                    })}
+                  </span>
+                )}
+                <button className="ghost tiny-btn" disabled={busy || testingIds.size > 0 || providers.length === 0} onClick={testAllProviders}>{t('models.testAll')}</button>
                 <button className="primary tiny-btn" disabled={busy} onClick={openNewProvider}><Plus size={14} />{t('models.add')}</button>
               </div>
             </div>
@@ -1121,6 +1149,8 @@ function AppMain() {
             <div className="provider-list-scroll">
               {providers.map((provider) => {
                 const isActive = provider.id === activeProviderId;
+                // 一键测试期间只锁正在测的这一行，其余行照常操作。
+                const testingThisRow = busy || testingIds.has(provider.id);
                 const className = `provider${isActive ? ' active' : ''}${provider.enabled ? '' : ' disabled'}`;
                 return (
                   <div className={className} key={provider.id}>
@@ -1144,11 +1174,15 @@ function AppMain() {
                       {provider.last_error && <span className="error-text">{provider.last_error}</span>}
                     </div>
                     <div className="provider-actions">
-                      {provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
+                      {testingIds.has(provider.id) ? (
+                        <span className="spin" title={t('modelList.probing')}>
+                          <Activity size={18} aria-label={t('modelList.probing')} />
+                        </span>
+                      ) : provider.status === 'Available' ? <CheckCircle2 className="ok-text" size={18} /> : provider.status === 'Unavailable' ? <XCircle className="bad-text" size={18} /> : <span className="dot" />}
                       {provider.experimental && (
                         <button
                           className="tiny"
-                          disabled={busy}
+                          disabled={testingThisRow}
                           onClick={() => {
                             setFreeSettingsRequireAccept(false);
                             setFreeSettingsOpen(true);
@@ -1157,10 +1191,10 @@ function AppMain() {
                           {t('freeSettings.open')}
                         </button>
                       )}
-                      <button className="tiny" disabled={busy || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
-                      <button className="tiny" disabled={busy} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
-                      <button className="tiny" disabled={busy} onClick={() => void testSingleProvider(provider)}>{t('common.test')}</button>
-                      <button className="tiny danger-link" disabled={busy} onClick={() => setDeleteTarget(provider)}><Trash2 size={14} /></button>
+                      <button className="tiny" disabled={testingThisRow || isActive || !provider.enabled} onClick={() => run(() => invoke('set_active_provider', { id: provider.id }), t('models.toastDefault'))}>{isActive ? t('models.isDefault') : t('models.setDefault')}</button>
+                      <button className="tiny" disabled={testingThisRow} onClick={() => setProviderEnabled(provider, !provider.enabled)}>{provider.enabled ? t('common.disabled') : t('common.enabled')}</button>
+                      <button className="tiny" disabled={testingThisRow} onClick={() => void testSingleProvider(provider)}>{t('common.test')}</button>
+                      <button className="tiny danger-link" disabled={testingThisRow} onClick={() => setDeleteTarget(provider)}><Trash2 size={14} /></button>
                     </div>
                   </div>
                 );
