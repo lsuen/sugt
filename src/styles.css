@@ -3330,6 +3330,10 @@ button:disabled { opacity: .46; cursor: not-allowed; }
   font-size: 12px;
   line-height: 1.5;
   color: var(--text);
+  /* 待确认卡片里整条命令可能很长，同样只在框内滚动，别把确认按钮顶到屏幕外 */
+  max-height: 200px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .me-files { display: flex; flex-direction: column; gap: 8px; }
 .me-file {
